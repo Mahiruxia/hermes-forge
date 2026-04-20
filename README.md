@@ -27,6 +27,8 @@ Hermes Forge 不是 Hermes Agent 的官方客户端，而是围绕 Hermes Agent 
 
 ## 快速开始
 
+如果你已经熟悉命令行，可以直接运行：
+
 ```bash
 git clone https://github.com/Mahiruxia/hermes-forge.git
 cd hermes-forge
@@ -53,6 +55,38 @@ npm test
 npm run build
 npm run package:portable
 ```
+
+## 给 Agent 的一键部署指令
+
+如果你不熟悉命令行，可以把下面这段话直接发给你的本地 Agent，例如 Codex、Cursor Agent、Hermes、Claude Code 或其他具备终端能力的开发 Agent：
+
+```text
+请帮我在当前电脑上部署并运行 Hermes Forge。
+
+项目地址：https://github.com/Mahiruxia/hermes-forge
+
+请按以下步骤执行：
+1. 检查当前系统是否已经安装 Git、Node.js 20+ 和 npm。
+2. 如果缺少 Git 或 Node.js，请先告诉我需要安装什么，并征求我确认后再安装。
+3. 选择一个合适的开发目录，克隆仓库：
+   git clone https://github.com/Mahiruxia/hermes-forge.git
+4. 进入项目目录并安装依赖：
+   cd hermes-forge
+   npm install
+5. 如果根目录没有 .env，请从 .env.example 复制一份：
+   - macOS / Linux: cp .env.example .env
+   - Windows PowerShell: Copy-Item .env.example .env
+6. 运行质量检查：
+   npm run check
+   npm test
+7. 检查通过后启动开发版：
+   npm run dev
+8. 如果启动失败，请读取错误信息，优先检查 Node 版本、依赖安装、端口占用、Electron 启动错误和 Hermes CLI 配置。
+
+请不要提交或上传 .env、user-data、dist、release、日志、快照或任何本地密钥。
+```
+
+Agent 部署时请注意：Hermes Forge 目前仍是早期社区版本。首次启动可能还需要配置 Hermes 根路径、本地模型 endpoint 或 Provider Key；如果未检测到 Hermes，应用内的一键部署会尝试自动克隆并初始化 Hermes Agent。
 
 ## 运行时配置
 
