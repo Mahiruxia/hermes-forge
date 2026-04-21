@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle } from "lucide-react";
+import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench } from "lucide-react";
 import { useAppStore } from "../store";
-import type { HermesInstallEvent } from "../../shared/types";
+import type { HermesInstallEvent, SetupCheck, SetupDependencyRepairId } from "../../shared/types";
 
 export function WelcomePage(props: { onComplete: () => void }) {
   const store = useAppStore();
@@ -9,6 +9,8 @@ export function WelcomePage(props: { onComplete: () => void }) {
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("正在检测本地 Hermes...");
   const [detail, setDetail] = useState("");
+  const [setupChecks, setSetupChecks] = useState<SetupCheck[]>([]);
+  const [repairingDependency, setRepairingDependency] = useState<SetupDependencyRepairId | undefined>();
   const autoInstallAttemptedRef = useRef(false);
   const installRunningRef = useRef(false);
 
@@ -23,6 +25,7 @@ export function WelcomePage(props: { onComplete: () => void }) {
     async function detectHermes() {
       setStatus("detecting");
       setProgress(20);
+      void refreshSetupChecks();
 
       try {
         if (!window.workbenchClient || typeof window.workbenchClient.getHermesProbe !== "function") {
@@ -82,6 +85,35 @@ export function WelcomePage(props: { onComplete: () => void }) {
     setProgress(Math.max(0, Math.min(100, event.progress)));
     setMessage(event.message);
     setDetail(event.detail ?? "");
+    if (event.stage === "completed" || event.stage === "failed") {
+      void refreshSetupChecks();
+    }
+  }
+
+  async function refreshSetupChecks() {
+    try {
+      const summary = await window.workbenchClient.getSetupSummary();
+      const primaryIds = new Set(["git", "python", "winget", "hermes", "model", "model-placeholder", "model-secret", "weixin-aiohttp"]);
+      setSetupChecks(summary.checks.filter((check) => primaryIds.has(check.id)).slice(0, 8));
+    } catch (error) {
+      console.warn("Failed to load setup summary:", error);
+    }
+  }
+
+  async function handleRepairDependency(id: SetupDependencyRepairId) {
+    if (repairingDependency || installRunningRef.current) return;
+    setRepairingDependency(id);
+    try {
+      const result = await window.workbenchClient.repairSetupDependency(id);
+      setMessage(result.message);
+      setDetail(result.recommendedFix ?? result.logPath ?? "");
+      await refreshSetupChecks();
+    } catch (error) {
+      setMessage("依赖修复失败");
+      setDetail(error instanceof Error ? error.message : "未知错误");
+    } finally {
+      setRepairingDependency(undefined);
+    }
   }
 
   async function handleAutoDeploy() {
@@ -91,6 +123,7 @@ export function WelcomePage(props: { onComplete: () => void }) {
     setProgress((current) => Math.max(current, 12));
     setMessage("正在执行 Hermes 自动安装...");
     setDetail("首次进入会自动检测环境、下载 Hermes、安装依赖并完成健康检查。");
+    void refreshSetupChecks();
 
     try {
       const result = await window.workbenchClient.installHermes();
@@ -98,6 +131,7 @@ export function WelcomePage(props: { onComplete: () => void }) {
       setMessage(result.message);
       setDetail(result.logPath ? `安装日志：${result.logPath}` : detail);
       setProgress(result.ok ? 100 : 0);
+      void refreshSetupChecks();
 
       if (!result.ok) {
         setStatus("not-found");
@@ -240,6 +274,14 @@ export function WelcomePage(props: { onComplete: () => void }) {
               <p className="mt-2 text-xs text-slate-400">{progress}%</p>
             </div>
           )}
+
+          {setupChecks.length ? (
+            <DependencyChecklist
+              checks={setupChecks}
+              repairingDependency={repairingDependency}
+              onRepair={handleRepairDependency}
+            />
+          ) : null}
         </div>
 
         <p className="mt-6 text-center text-xs text-slate-400">
@@ -248,4 +290,65 @@ export function WelcomePage(props: { onComplete: () => void }) {
       </div>
     </div>
   );
+}
+
+function DependencyChecklist(props: {
+  checks: SetupCheck[];
+  repairingDependency?: SetupDependencyRepairId;
+  onRepair: (id: SetupDependencyRepairId) => void | Promise<void>;
+}) {
+  return (
+    <div className="mt-6 border-t border-slate-100 pt-4 text-left">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Preflight</p>
+          <p className="mt-1 text-sm font-semibold text-slate-800">首次运行体检</p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-500">
+          {props.checks.filter((check) => check.status === "ok").length}/{props.checks.length}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {props.checks.map((check) => (
+          <div key={check.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${welcomeSetupDotClass(check.status)}`} />
+                  <p className="text-xs font-semibold text-slate-800">{check.label}</p>
+                </div>
+                <p className="mt-1 break-words text-[11px] leading-4 text-slate-500 [overflow-wrap:anywhere]">{check.message}</p>
+              </div>
+              {check.autoFixId ? (
+                <button
+                  type="button"
+                  onClick={() => void props.onRepair(check.autoFixId!)}
+                  disabled={props.repairingDependency === check.autoFixId}
+                  className="shrink-0 rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-indigo-600 shadow-sm ring-1 ring-slate-200 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <Wrench size={12} />
+                    {props.repairingDependency === check.autoFixId ? "修复中" : welcomeSetupFixLabel(check.autoFixId)}
+                  </span>
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function welcomeSetupDotClass(status: SetupCheck["status"]) {
+  if (status === "ok") return "bg-emerald-500";
+  if (status === "warning") return "bg-amber-500";
+  if (status === "running") return "bg-slate-400";
+  return "bg-rose-500";
+}
+
+function welcomeSetupFixLabel(id: SetupDependencyRepairId) {
+  if (id === "git") return "装 Git";
+  if (id === "python") return "装 Python";
+  return "修微信";
 }

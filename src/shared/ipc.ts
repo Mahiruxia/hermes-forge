@@ -66,6 +66,7 @@ export const IpcChannels = {
   updateHermes: "updates:hermes",
   installHermes: "setup:install-hermes",
   installHermesEvent: "setup:install-hermes:event",
+  repairSetupDependency: "setup:repair-dependency",
   getRuntimeConfig: "config:get-runtime",
   getConfigOverview: "config:get-overview",
   testHermesWindowsBridge: "hermes:windows-bridge:test",

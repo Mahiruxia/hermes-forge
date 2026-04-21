@@ -34,6 +34,8 @@ import type {
   SecretRefStatus,
   SecretSaveInput,
   SecretVaultStatus,
+  SetupDependencyRepairId,
+  SetupDependencyRepairResult,
   SetupSummary,
   SnapshotRecord,
   SnapshotRestoreResult,
@@ -172,6 +174,7 @@ declare global {
       onClientUpdateEvent(callback: (event: ClientUpdateEvent) => void): () => void;
       updateHermes(): Promise<EngineMaintenanceResult>;
       installHermes(): Promise<HermesInstallResult>;
+      repairSetupDependency(id: SetupDependencyRepairId): Promise<SetupDependencyRepairResult>;
       onInstallHermesEvent(callback: (event: HermesInstallEvent) => void): () => void;
       getRuntimeConfig(): Promise<RuntimeConfig>;
       getConfigOverview(workspacePath?: string): Promise<any>;

@@ -52,6 +52,7 @@ const quickTextFileInputSchema = z.object({
   content: z.string().max(20000).optional(),
 });
 const attachmentSourcePathsSchema = z.array(workspacePathInputSchema).max(12);
+const setupDependencyRepairIdSchema = z.enum(["git", "python", "weixin_aiohttp"]);
 
 const connectorPlatformIdSchema = z.enum([
   "telegram",
@@ -369,6 +370,9 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     services.setupService.installHermes((payload) => {
       event.sender.send(IpcChannels.installHermesEvent, payload);
     }),
+  );
+  ipcMain.handle(IpcChannels.repairSetupDependency, (_event, id: unknown) =>
+    services.setupService.repairDependency(setupDependencyRepairIdSchema.parse(id)),
   );
   ipcMain.handle(IpcChannels.getRuntimeConfig, () => services.configStore.read());
   ipcMain.handle(IpcChannels.testHermesWindowsBridge, () => services.hermesWindowsBridgeTestService.test());

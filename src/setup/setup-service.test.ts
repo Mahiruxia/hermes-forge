@@ -43,8 +43,17 @@ beforeEach(async () => {
     if (command === "python" && args[0] === "--version") {
       return { exitCode: 0, stdout: "Python fixture", stderr: "" };
     }
+    if (command === "python" && args[0] === "-c") {
+      return { exitCode: 0, stdout: "aiohttp ok", stderr: "" };
+    }
     if (command === "python" && args[0] === "-m") {
       return { exitCode: 0, stdout: "pip ok", stderr: "" };
+    }
+    if (command === "winget" && args[0] === "--version") {
+      return { exitCode: 0, stdout: "v1.9.0", stderr: "" };
+    }
+    if (command === "winget" && args[0] === "install") {
+      return { exitCode: 0, stdout: "install ok", stderr: "" };
     }
     if ((command === "python" || command === "py") && args.at(-1) === "--version") {
       return { exitCode: 0, stdout: "Hermes Agent 0.1.0", stderr: "" };
@@ -162,6 +171,79 @@ describe("SetupService installHermes", () => {
 
     expect(result.ok).toBe(true);
     expect(events).toEqual(expect.arrayContaining(["preflight", "cloning", "installing_dependencies", "health_check", "completed"]));
+  });
+});
+
+describe("SetupService dependency health", () => {
+  it("marks missing Git and Python as first-run repairable dependencies", async () => {
+    config = {
+      defaultModelProfileId: "local",
+      modelProfiles: [{ id: "local", provider: "local", model: "gpt-5.4", baseUrl: "http://127.0.0.1:8080/v1" }],
+      updateSources: {},
+      enginePaths: {},
+    };
+    healthCheckMock.mockResolvedValueOnce({
+      engineId: "hermes",
+      label: "Hermes",
+      available: true,
+      mode: "cli",
+      path: path.join(tempRoot, "Hermes Agent"),
+      message: "Hermes CLI ready",
+    });
+    runCommandMock.mockImplementation(async (command: string, args: string[] = []) => {
+      if ((command === "git" || command === "python") && args[0] === "--version") {
+        return { exitCode: 1, stdout: "", stderr: `${command} missing` };
+      }
+      if (command === "python" && args[0] === "-c") {
+        return { exitCode: 1, stdout: "", stderr: "No module named aiohttp" };
+      }
+      if (command === "node" && args[0] === "--version") {
+        return { exitCode: 0, stdout: "v22.0.0", stderr: "" };
+      }
+      if (command === "winget" && args[0] === "--version") {
+        return { exitCode: 0, stdout: "v1.9.0", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const service = createService();
+
+    const summary = await service.getSummary();
+
+    const git = summary.checks.find((check) => check.id === "git");
+    const python = summary.checks.find((check) => check.id === "python");
+    const weixin = summary.checks.find((check) => check.id === "weixin-aiohttp");
+    expect(git).toMatchObject({ status: "missing", canAutoFix: true, autoFixId: "git", blocking: false });
+    expect(python).toMatchObject({ status: "missing", canAutoFix: true, autoFixId: "python", blocking: false });
+    expect(weixin).toMatchObject({ status: "warning", canAutoFix: true, autoFixId: "weixin_aiohttp", blocking: false });
+    expect(summary.ready).toBe(true);
+  });
+
+  it("repairs system dependencies through winget", async () => {
+    const service = createService();
+
+    const result = await service.repairDependency("git");
+
+    expect(result.ok).toBe(true);
+    expect(result.command).toContain("winget install --id Git.Git");
+    expect(runCommandMock).toHaveBeenCalledWith(
+      "winget",
+      expect.arrayContaining(["install", "--id", "Git.Git"]),
+      expect.objectContaining({ cwd: process.cwd() }),
+    );
+  });
+
+  it("repairs the Weixin aiohttp dependency through pip", async () => {
+    const service = createService();
+
+    const result = await service.repairDependency("weixin_aiohttp");
+
+    expect(result.ok).toBe(true);
+    expect(result.command).toBe("python -m pip install --upgrade aiohttp");
+    expect(runCommandMock).toHaveBeenCalledWith(
+      "python",
+      ["-m", "pip", "install", "--upgrade", "aiohttp"],
+      expect.objectContaining({ cwd: process.cwd() }),
+    );
   });
 });
 

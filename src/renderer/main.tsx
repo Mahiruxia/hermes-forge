@@ -1,6 +1,17 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { ActivityLog, EngineEvent, RuntimeConfig, SecretVaultStatus, SetupSummary, TaskEventEnvelope, TaskType, WorkSession } from "../shared/types";
+import type {
+  ActivityLog,
+  EngineEvent,
+  RuntimeConfig,
+  SecretVaultStatus,
+  SetupCheck,
+  SetupDependencyRepairId,
+  SetupSummary,
+  TaskEventEnvelope,
+  TaskType,
+  WorkSession,
+} from "../shared/types";
 import { DashboardView } from "./dashboard/DashboardView";
 import { WelcomePage } from "./dashboard/WelcomePage";
 import { ToastContainer } from "./dashboard/ToastNotification";
@@ -65,6 +76,8 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
   const [secretRef, setSecretRef] = useState(overview?.secrets[0]?.ref ?? "");
   const [secretValue, setSecretValue] = useState("");
   const [saveNotice, setSaveNotice] = useState<string>("");
+  const [repairingDependency, setRepairingDependency] = useState<SetupDependencyRepairId | undefined>();
+  const [setupActionRunning, setSetupActionRunning] = useState<string | undefined>();
 
   function showSaveNotice(message: string) {
     setSaveNotice(message);
@@ -113,6 +126,49 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
     });
     await props.onRefresh();
     showSaveNotice("Hermes 设置已保存");
+  }
+
+  async function handleSetupFix(check: SetupCheck) {
+    if (repairingDependency || setupActionRunning) return;
+
+    if (check.autoFixId) {
+      setRepairingDependency(check.autoFixId);
+      try {
+        const result = await window.workbenchClient.repairSetupDependency(check.autoFixId);
+        await props.onRefresh();
+        showSaveNotice(result.message);
+      } catch (error) {
+        showSaveNotice(error instanceof Error ? error.message : "依赖修复失败");
+      } finally {
+        setRepairingDependency(undefined);
+      }
+      return;
+    }
+
+    if (check.fixAction === "install_hermes") {
+      setSetupActionRunning(check.id);
+      try {
+        const result = await window.workbenchClient.installHermes();
+        await props.onRefresh();
+        showSaveNotice(result.message);
+      } catch (error) {
+        showSaveNotice(error instanceof Error ? error.message : "Hermes 自动安装失败");
+      } finally {
+        setSetupActionRunning(undefined);
+      }
+      return;
+    }
+
+    if (check.fixAction === "configure_model") {
+      setActiveSection("providers");
+      showSaveNotice("请在模型提供商中补齐默认模型配置");
+      return;
+    }
+
+    if (check.fixAction === "configure_hermes" || check.fixAction === "open_settings") {
+      setActiveSection("general");
+      showSaveNotice("请在常规设置中检查 Hermes 路径和运行权限");
+    }
   }
 
   return (
@@ -340,14 +396,12 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
                 </div>
                 <div className="mt-3 space-y-3">
                   {(overview?.health?.blocking ?? []).map((check, index) => (
-                    <div key={`blocking-${index}`} className="rounded-xl border border-rose-200/80 bg-white/70 px-3 py-3">
-                      <div className="flex items-center gap-2">
-                        <StatusDot tone="error" />
-                        <p className="font-medium">{check.label}</p>
-                      </div>
-                      <p className="mt-1.5 text-rose-600">{check.message}</p>
-                      <p className="mt-2 text-[11px] text-rose-500">建议动作：先进入对应设置项修复，再返回工作台执行任务。</p>
-                    </div>
+                    <SetupCheckCard
+                      key={`blocking-${check.id}-${index}`}
+                      check={check}
+                      onFix={handleSetupFix}
+                      busy={Boolean((check.autoFixId && repairingDependency === check.autoFixId) || setupActionRunning === check.id)}
+                    />
                   ))}
                 </div>
               </div>
@@ -360,31 +414,13 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
               <p className="mt-1 leading-5">如果出现红色阻塞项，优先修复；黄色项通常表示建议优化，不一定会阻止当前任务运行。</p>
             </div>
             <div className="space-y-3">
-              {(overview?.health?.checks ?? []).slice(0, 6).map((check, index) => (
-                <div
-                  key={`${check.label}-${index}`}
-                  className={`rounded-2xl border px-4 py-4 text-[12px] ${
-                    check.status === "failed" || check.status === "missing"
-                      ? "border-rose-200 bg-rose-50/80 text-rose-700"
-                      : check.status === "warning"
-                        ? "border-amber-200 bg-amber-50/80 text-amber-700"
-                        : "border-slate-200/70 bg-slate-50/70 text-slate-600"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <StatusDot
-                        tone={check.status === "failed" || check.status === "missing" ? "error" : check.status === "warning" ? "warning" : "ok"}
-                        pulse={check.status === "running"}
-                      />
-                      <p className="font-medium text-slate-900">{check.label}</p>
-                    </div>
-                    <span className="rounded-full bg-white/80 px-2 py-1 text-[11px] font-medium uppercase tracking-[0.08em]">
-                      {check.status}
-                    </span>
-                  </div>
-                  <p className="mt-2 leading-6">{check.message}</p>
-                </div>
+              {(overview?.health?.checks ?? []).map((check, index) => (
+                <SetupCheckCard
+                  key={`${check.id}-${index}`}
+                  check={check}
+                  onFix={handleSetupFix}
+                  busy={Boolean((check.autoFixId && repairingDependency === check.autoFixId) || setupActionRunning === check.id)}
+                />
               ))}
               {!(overview?.health?.checks.length) ? <p className="text-[12px] text-slate-400">暂无健康检查信息。</p> : null}
             </div>
@@ -411,6 +447,85 @@ function ConfigRow(props: { label: string; value: string }) {
       <span className="max-w-[65%] break-words text-right font-medium text-slate-700 [overflow-wrap:anywhere]">{props.value}</span>
     </div>
   );
+}
+
+function SetupCheckCard(props: {
+  check: SetupCheck;
+  onFix: (check: SetupCheck) => void | Promise<void>;
+  busy?: boolean;
+}) {
+  const tone = setupStatusTone(props.check.status);
+  const danger = props.check.status === "failed" || props.check.status === "missing";
+  const warning = props.check.status === "warning";
+  const fixLabel = setupFixButtonLabel(props.check);
+  const cardClass = danger
+    ? "border-rose-200 bg-rose-50/80 text-rose-700"
+    : warning
+      ? "border-amber-200 bg-amber-50/80 text-amber-700"
+      : "border-slate-200/70 bg-slate-50/70 text-slate-600";
+
+  return (
+    <div className={`rounded-2xl border px-4 py-4 text-[12px] ${cardClass}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <StatusDot tone={tone} pulse={props.check.status === "running"} />
+            <p className="font-medium text-slate-900">{props.check.label}</p>
+          </div>
+          {props.check.description ? (
+            <p className="mt-1.5 leading-5 text-slate-500">{props.check.description}</p>
+          ) : null}
+        </div>
+        <span className="shrink-0 rounded-full bg-white/80 px-2 py-1 text-[11px] font-medium uppercase tracking-[0.08em]">
+          {setupStatusLabel(props.check.status)}
+        </span>
+      </div>
+      <p className="mt-2 break-words leading-6 [overflow-wrap:anywhere]">{props.check.message}</p>
+      {props.check.recommendedAction ? (
+        <p className="mt-2 rounded-xl bg-white/65 px-3 py-2 leading-5 text-slate-600">
+          建议：{props.check.recommendedAction}
+        </p>
+      ) : null}
+      {fixLabel ? (
+        <button
+          type="button"
+          onClick={() => void props.onFix(props.check)}
+          disabled={props.busy}
+          className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {props.busy ? "处理中..." : fixLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function setupStatusTone(status: SetupCheck["status"]): "ok" | "warning" | "error" | "neutral" {
+  if (status === "failed" || status === "missing") return "error";
+  if (status === "warning") return "warning";
+  if (status === "running") return "neutral";
+  return "ok";
+}
+
+function setupStatusLabel(status: SetupCheck["status"]) {
+  const labels: Record<SetupCheck["status"], string> = {
+    ok: "正常",
+    missing: "缺失",
+    warning: "注意",
+    running: "检测中",
+    failed: "失败",
+  };
+  return labels[status];
+}
+
+function setupFixButtonLabel(check: SetupCheck) {
+  if (check.autoFixId === "git") return "一键安装 Git";
+  if (check.autoFixId === "python") return "一键安装 Python";
+  if (check.autoFixId === "weixin_aiohttp") return "修复微信依赖";
+  if (check.fixAction === "install_hermes") return "自动安装 Hermes";
+  if (check.fixAction === "configure_model") return "打开模型配置";
+  if (check.fixAction === "configure_hermes" || check.fixAction === "open_settings") return "打开常规设置";
+  return "";
 }
 
 function HealthSummaryCard(props: {

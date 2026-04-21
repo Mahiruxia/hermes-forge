@@ -872,14 +872,26 @@ export type RuntimeConfig = {
 };
 
 export type SetupRequirementStatus = "ok" | "missing" | "warning" | "running" | "failed";
-export type SetupFixAction = "configure_hermes" | "configure_model" | "open_settings";
+export type SetupDependencyRepairId = "git" | "python" | "weixin_aiohttp";
+export type SetupFixAction =
+  | "configure_hermes"
+  | "configure_model"
+  | "open_settings"
+  | "install_hermes"
+  | "install_git"
+  | "install_python"
+  | "install_weixin_dependency";
 
 export type SetupCheck = {
   id: string;
   label: string;
   status: SetupRequirementStatus;
   message: string;
+  description?: string;
+  recommendedAction?: string;
   fixAction?: SetupFixAction;
+  canAutoFix?: boolean;
+  autoFixId?: SetupDependencyRepairId;
   blocking?: boolean;
 };
 
@@ -887,6 +899,17 @@ export type SetupSummary = {
   ready: boolean;
   blocking: SetupCheck[];
   checks: SetupCheck[];
+};
+
+export type SetupDependencyRepairResult = {
+  ok: boolean;
+  id: SetupDependencyRepairId;
+  message: string;
+  command?: string;
+  stdout?: string;
+  stderr?: string;
+  logPath?: string;
+  recommendedFix?: string;
 };
 
 export type SecretVaultStatus = {

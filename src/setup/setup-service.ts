@@ -11,6 +11,8 @@ import type {
   HermesInstallResult,
   RuntimeConfig,
   SetupCheck,
+  SetupDependencyRepairId,
+  SetupDependencyRepairResult,
   SetupSummary,
 } from "../shared/types";
 import { missingSecretMessage, normalizeOpenAiCompatibleBaseUrl, requiresStoredSecret } from "../shared/model-config";
@@ -33,10 +35,26 @@ export class SetupService {
   async getSummary(workspacePath?: string): Promise<SetupSummary> {
     const config = await this.configStore.read();
     const checks: SetupCheck[] = [
-      await this.checkCommand("git", ["--version"], "git", "Git"),
+      await this.checkCommand("git", ["--version"], "git", "Git", {
+        statusOnFailure: "missing",
+        description: "Hermes 首次自动安装需要 Git 拉取核心仓库；已安装 Hermes 的用户不一定受影响。",
+        recommendedAction: "点击一键安装 Git，或手动安装 Git for Windows 后重启客户端。",
+        fixAction: "install_git",
+        autoFixId: "git",
+        blocking: false,
+      }),
       await this.checkCommand("node", ["--version"], "node", "Node.js"),
-      await this.checkCommand("python", ["--version"], "python", "Python"),
+      await this.checkCommand("python", ["--version"], "python", "Python", {
+        statusOnFailure: "missing",
+        description: "Hermes CLI、微信连接器和部分本地桥接能力依赖 Python 运行环境。",
+        recommendedAction: "点击一键安装 Python 3.12，或手动安装后确保 python 命令在 PATH 中可用。",
+        fixAction: "install_python",
+        autoFixId: "python",
+        blocking: false,
+      }),
+      await this.checkWinget(),
       await this.checkHermes(),
+      await this.checkPythonPackage("weixin-aiohttp", "微信连接依赖", "aiohttp", "aiohttp"),
       await this.checkModelConfig(config),
       await this.checkWritable("user-data", "用户数据目录", this.appPaths.baseDir()),
     ];
@@ -54,20 +72,30 @@ export class SetupService {
       blocking: false,
     }));
     const mergedChecks = [...checks, ...suggestionChecks];
-    const blocking = mergedChecks.filter((check) => check.status === "missing" || check.status === "failed");
+    const blocking = mergedChecks.filter((check) =>
+      check.blocking !== false && (check.status === "missing" || check.status === "failed"),
+    );
     return { ready: blocking.length === 0, blocking, checks: mergedChecks };
   }
 
   private buildSuggestions(checks: SetupCheck[]) {
     const suggestions: string[] = [];
+    const git = checks.find((check) => check.id === "git");
     const python = checks.find((check) => check.id === "python");
     const hermes = checks.find((check) => check.id === "hermes");
+    const weixin = checks.find((check) => check.id === "weixin-aiohttp");
     const model = checks.find((check) => check.id === "model" || check.id === "model-placeholder" || check.id === "model-secret");
+    if (git?.status !== "ok") {
+      suggestions.push("首次自动安装 Hermes 需要 Git；如果客户机器没有 Git，请在系统状态页一键安装或改用手动 Hermes 路径。");
+    }
     if (python?.status !== "ok") {
       suggestions.push("建议优先修复 Python 环境，否则 Hermes CLI 与更新动作可能无法正常运行。");
     }
     if (hermes?.status !== "ok") {
       suggestions.push("建议先完成 Hermes 路径和 CLI 自检，再进行真实任务执行。");
+    }
+    if (weixin?.status !== "ok") {
+      suggestions.push("微信端需要 Python aiohttp 依赖；未安装时桌面聊天仍可用，但微信扫码/网关可能失败。");
     }
     if (model?.status !== "ok") {
       suggestions.push("建议先确认默认模型与密钥配置，避免任务启动后才失败。");
@@ -109,6 +137,24 @@ export class SetupService {
       });
     }
     return await this.installInFlight;
+  }
+
+  async repairDependency(id: SetupDependencyRepairId): Promise<SetupDependencyRepairResult> {
+    switch (id) {
+      case "git":
+        return await this.repairWithWinget(id, "Git", "Git.Git");
+      case "python":
+        return await this.repairWithWinget(id, "Python", "Python.Python.3.12");
+      case "weixin_aiohttp":
+        return await this.repairPythonPackage(id, "aiohttp", "aiohttp");
+      default:
+        return {
+          ok: false,
+          id,
+          message: "未知依赖修复项。",
+          recommendedFix: "请刷新系统状态后重试。",
+        };
+    }
   }
 
   private async performInstallHermes(publish?: InstallPublisher): Promise<HermesInstallResult> {
@@ -264,16 +310,134 @@ export class SetupService {
     }
   }
 
+  private async repairWithWinget(
+    id: SetupDependencyRepairId,
+    label: string,
+    packageId: string,
+  ): Promise<SetupDependencyRepairResult> {
+    const log: string[] = [];
+    const startedAt = new Date().toISOString();
+    const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
+    const logPath = path.join(logDir, `dependency-${id}-${startedAt.replace(/[:.]/g, "-")}.log`);
+
+    try {
+      const winget = await this.runLogged("winget", ["--version"], process.cwd(), log, 15_000);
+      if (winget.exitCode !== 0) {
+        const message = "未检测到 Windows 包管理器 winget，无法自动安装系统依赖。";
+        await this.writeInstallLog(logDir, logPath, message, log);
+        return {
+          ok: false,
+          id,
+          message,
+          stdout: winget.stdout,
+          stderr: winget.stderr,
+          logPath,
+          recommendedFix: `请手动安装 ${label}，安装后重启 Hermes Forge。`,
+        };
+      }
+
+      const args = [
+        "install",
+        "--id",
+        packageId,
+        "-e",
+        "--source",
+        "winget",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+      ];
+      const result = await this.runLogged("winget", args, process.cwd(), log, DEFAULT_INSTALL_TIMEOUT_MS);
+      const ok = result.exitCode === 0;
+      const message = ok
+        ? `${label} 安装命令已执行完成，请重启 Hermes Forge 后重新检测。`
+        : `${label} 自动安装失败，详情见修复日志：${logPath}`;
+      await this.writeInstallLog(logDir, logPath, message, log);
+      return {
+        ok,
+        id,
+        message,
+        command: `winget ${args.join(" ")}`,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        logPath,
+        recommendedFix: ok ? "重启客户端并重新打开系统状态页确认依赖是否就绪。" : `请手动安装 ${label} 后重试。`,
+      };
+    } catch (error) {
+      const message = `${label} 自动修复流程异常：${error instanceof Error ? error.message : String(error)}`;
+      log.push(message);
+      await this.writeInstallLog(logDir, logPath, message, log);
+      return {
+        ok: false,
+        id,
+        message,
+        logPath,
+        recommendedFix: `请手动安装 ${label} 后重启客户端。`,
+      };
+    }
+  }
+
+  private async repairPythonPackage(
+    id: SetupDependencyRepairId,
+    label: string,
+    packageName: string,
+  ): Promise<SetupDependencyRepairResult> {
+    const log: string[] = [];
+    const startedAt = new Date().toISOString();
+    const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
+    const logPath = path.join(logDir, `dependency-${id}-${startedAt.replace(/[:.]/g, "-")}.log`);
+    const candidates: Array<{ command: string; args: string[] }> = [
+      { command: "python", args: ["-m", "pip", "install", "--upgrade", packageName] },
+      { command: "py", args: ["-3", "-m", "pip", "install", "--upgrade", packageName] },
+    ];
+
+    let lastResult: Awaited<ReturnType<typeof runCommand>> | undefined;
+    let lastCommand = "";
+    for (const candidate of candidates) {
+      lastCommand = `${candidate.command} ${candidate.args.join(" ")}`;
+      const result = await this.runLogged(candidate.command, candidate.args, process.cwd(), log, DEFAULT_INSTALL_TIMEOUT_MS);
+      lastResult = result;
+      if (result.exitCode === 0) {
+        const message = `${label} 已安装或更新完成。`;
+        await this.writeInstallLog(logDir, logPath, message, log);
+        return {
+          ok: true,
+          id,
+          message,
+          command: lastCommand,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          logPath,
+          recommendedFix: "请重新尝试微信扫码或刷新系统状态确认依赖已就绪。",
+        };
+      }
+    }
+
+    const message = `${label} 自动安装失败，详情见修复日志：${logPath}`;
+    await this.writeInstallLog(logDir, logPath, message, log);
+    return {
+      ok: false,
+      id,
+      message,
+      command: lastCommand,
+      stdout: lastResult?.stdout ?? "",
+      stderr: lastResult?.stderr ?? "",
+      logPath,
+      recommendedFix: `请在终端手动执行 python -m pip install ${packageName}，或先修复 Python/pip 环境。`,
+    };
+  }
+
   private async checkHermes(): Promise<SetupCheck> {
     const health = await this.hermes.healthCheck();
     if (!health.available) {
       return {
         id: "hermes",
         label: "Hermes",
-        status: "warning",
+        status: "missing",
         message: `Hermes 未完全就绪：${health.message}`,
-        fixAction: "configure_hermes",
-        blocking: false,
+        description: "核心 Agent 未就绪时，桌面端可以打开配置页，但无法可靠执行真实任务。",
+        recommendedAction: "优先点击自动安装 Hermes；如果已经手动安装，请在常规设置里指定 Hermes 根目录。",
+        fixAction: "install_hermes",
+        blocking: true,
       };
     }
 
@@ -412,16 +576,95 @@ export class SetupService {
     return result;
   }
 
-  private async checkCommand(id: string, args: string[], checkId: string, label: string): Promise<SetupCheck> {
+  private async checkCommand(
+    id: string,
+    args: string[],
+    checkId: string,
+    label: string,
+    options: {
+      statusOnFailure?: SetupCheck["status"];
+      description?: string;
+      recommendedAction?: string;
+      fixAction?: SetupCheck["fixAction"];
+      autoFixId?: SetupDependencyRepairId;
+      blocking?: boolean;
+    } = {},
+  ): Promise<SetupCheck> {
     const result = await runCommand(id, args, { cwd: process.cwd(), timeoutMs: 8000 });
+    const ok = result.exitCode === 0;
     return {
       id: checkId,
       label,
-      status: result.exitCode === 0 ? "ok" : "warning",
+      status: ok ? "ok" : options.statusOnFailure ?? "warning",
       message:
-        result.exitCode === 0
+        ok
           ? (result.stdout || result.stderr).trim() || `${label} 可用。`
           : `${label} 检测失败：${result.stderr || result.stdout}。建议先修复该基础环境后再运行 Hermes 任务。`,
+      description: options.description,
+      recommendedAction: ok ? undefined : options.recommendedAction,
+      fixAction: ok ? undefined : options.fixAction,
+      canAutoFix: ok ? undefined : Boolean(options.autoFixId),
+      autoFixId: ok ? undefined : options.autoFixId,
+      blocking: options.blocking ?? false,
+    };
+  }
+
+  private async checkWinget(): Promise<SetupCheck> {
+    if (process.platform !== "win32") {
+      return {
+        id: "winget",
+        label: "Windows 包管理器",
+        status: "ok",
+        message: "当前不是 Windows 打包环境，跳过 winget 检测。",
+        description: "winget 仅用于 Windows 客户端的一键安装 Git/Python。",
+        blocking: false,
+      };
+    }
+
+    const result = await runCommand("winget", ["--version"], { cwd: process.cwd(), timeoutMs: 8000 });
+    const ok = result.exitCode === 0;
+    return {
+      id: "winget",
+      label: "Windows 包管理器",
+      status: ok ? "ok" : "warning",
+      message: ok
+        ? (result.stdout || result.stderr).trim() || "winget 可用。"
+        : `winget 检测失败：${result.stderr || result.stdout || "系统未返回详细信息"}`,
+      description: "Git/Python 的一键修复依赖 winget；没有 winget 时仍可手动安装依赖。",
+      recommendedAction: ok ? undefined : "请在 Microsoft Store 更新“应用安装程序”，或手动安装 Git/Python。",
+      blocking: false,
+    };
+  }
+
+  private async checkPythonPackage(
+    id: string,
+    label: string,
+    moduleName: string,
+    packageName: string,
+  ): Promise<SetupCheck> {
+    const script = `import ${moduleName}; print("${packageName} ok")`;
+    const result = await runCommand("python", ["-c", script], {
+      cwd: process.cwd(),
+      timeoutMs: 10_000,
+      env: {
+        PYTHONUTF8: "1",
+        PYTHONIOENCODING: "utf-8",
+        NO_COLOR: "1",
+      },
+    });
+    const ok = result.exitCode === 0;
+    return {
+      id,
+      label,
+      status: ok ? "ok" : "warning",
+      message: ok
+        ? (result.stdout || result.stderr).trim() || `${label} 可用。`
+        : `${label} 缺失或不可用：${result.stderr || result.stdout || "Python 无法导入该模块"}`,
+      description: "微信二维码登录与本地网关的部分异步 HTTP 能力依赖该 Python 包。",
+      recommendedAction: ok ? undefined : `点击修复微信依赖，或手动执行 python -m pip install ${packageName}。`,
+      fixAction: ok ? undefined : "install_weixin_dependency",
+      canAutoFix: ok ? undefined : true,
+      autoFixId: ok ? undefined : "weixin_aiohttp",
       blocking: false,
     };
   }

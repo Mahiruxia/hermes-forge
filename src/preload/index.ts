@@ -20,6 +20,8 @@ import type {
   SecretRefStatus,
   SecretSaveInput,
   SecretVaultStatus,
+  SetupDependencyRepairId,
+  SetupDependencyRepairResult,
   SetupSummary,
   SnapshotRecord,
   SnapshotRestoreResult,
@@ -174,6 +176,8 @@ const api = {
   },
   updateHermes: () => ipcRenderer.invoke(IpcChannels.updateHermes) as Promise<EngineMaintenanceResult>,
   installHermes: () => ipcRenderer.invoke(IpcChannels.installHermes) as Promise<HermesInstallResult>,
+  repairSetupDependency: (id: SetupDependencyRepairId) =>
+    ipcRenderer.invoke(IpcChannels.repairSetupDependency, id) as Promise<SetupDependencyRepairResult>,
   onInstallHermesEvent: (callback: (event: HermesInstallEvent) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: HermesInstallEvent) => callback(payload);
     ipcRenderer.on(IpcChannels.installHermesEvent, wrapped);
