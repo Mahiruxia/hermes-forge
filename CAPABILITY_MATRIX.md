@@ -18,6 +18,7 @@
 | 微信扫码 | 已闭环到 timeout/retry | 主进程状态机覆盖 `idle -> success|timeout|failed|cancelled`。 |
 | Renderer 审批卡 | 已联通 | `approval` 事件驱动卡片创建与关闭。 |
 | Renderer 连接器面板 | 已联通 runtime 状态 | UI 区分配置状态、运行状态、二维码超时态。 |
+| 客户端自动更新 | 已接 GitHub Releases | `electron-updater` 支持启动检查、后台下载、进度 IPC 与重启提示；仍需真实 Release 包验证。 |
 | 测试 | 已覆盖关键主链路 | 包含 approval service、usage meter、Windows tool executor、connector helper、renderer/store。 |
 | Smoke / Electron E2E | 未引入 | 当前仍以 Vitest 单元/集成为主，后续再接桌面冒烟。 |
 
