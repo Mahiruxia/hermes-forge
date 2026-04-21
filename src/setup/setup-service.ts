@@ -4,14 +4,25 @@ import path from "node:path";
 import type { AppPaths } from "../main/app-paths";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { EngineAdapter } from "../adapters/engine-adapter";
-import type { SecretVault } from "../auth/secret-vault";
 import { runCommand } from "../process/command-runner";
-import type { EngineMaintenanceResult, HermesInstallResult, RuntimeConfig, SetupCheck, SetupSummary } from "../shared/types";
+import type {
+  EngineMaintenanceResult,
+  HermesInstallEvent,
+  HermesInstallResult,
+  RuntimeConfig,
+  SetupCheck,
+  SetupSummary,
+} from "../shared/types";
 import { missingSecretMessage, normalizeOpenAiCompatibleBaseUrl, requiresStoredSecret } from "../shared/model-config";
 
 const DEFAULT_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
+const DEFAULT_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+
+type InstallPublisher = (event: HermesInstallEvent) => void;
 
 export class SetupService {
+  private installInFlight?: Promise<HermesInstallResult>;
+
   constructor(
     private readonly appPaths: AppPaths,
     private readonly hermes: EngineAdapter,
@@ -72,7 +83,7 @@ export class SetupService {
     log.push(`$ python ${hermesCli} update`);
     const result = await runCommand("python", [hermesCli, "update"], {
       cwd: hermesRoot,
-      timeoutMs: 10 * 60 * 1000,
+      timeoutMs: DEFAULT_INSTALL_TIMEOUT_MS,
       env: {
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
@@ -91,84 +102,166 @@ export class SetupService {
     return { ok, engineId: "hermes", message, log, logPath };
   }
 
-  async installHermes(): Promise<HermesInstallResult> {
+  async installHermes(publish?: InstallPublisher): Promise<HermesInstallResult> {
+    if (!this.installInFlight) {
+      this.installInFlight = this.performInstallHermes(publish).finally(() => {
+        this.installInFlight = undefined;
+      });
+    }
+    return await this.installInFlight;
+  }
+
+  private async performInstallHermes(publish?: InstallPublisher): Promise<HermesInstallResult> {
     const log: string[] = [];
     const startedAt = new Date().toISOString();
     const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
-    await fs.mkdir(logDir, { recursive: true });
     const logPath = path.join(logDir, `hermes-install-${startedAt.replace(/[:.]/g, "-")}.log`);
 
-    const finish = async (result: Omit<HermesInstallResult, "engineId" | "log" | "logPath">) => {
-      await fs.writeFile(logPath, [result.message, "", ...log].join("\n"), "utf8");
+    const emit = (stage: HermesInstallEvent["stage"], progress: number, message: string, detail?: string) => {
+      const line = `[${stage}] ${message}${detail ? ` | ${detail}` : ""}`;
+      log.push(line);
+      publish?.({
+        stage,
+        message,
+        detail,
+        progress,
+        startedAt,
+        at: new Date().toISOString(),
+      });
+    };
+
+    const finish = async (
+      result: Omit<HermesInstallResult, "engineId" | "log" | "logPath">,
+      stage: HermesInstallEvent["stage"],
+    ) => {
+      if (stage === "completed" || stage === "failed") {
+        emit(stage, stage === "completed" ? 100 : 100, result.message, result.rootPath);
+      }
+      await this.writeInstallLog(logDir, logPath, result.message, log);
       return { ...result, engineId: "hermes" as const, log, logPath };
     };
 
-    const currentHealth = await this.hermes.healthCheck().catch((error) => {
-      log.push(`Current Hermes check failed: ${error instanceof Error ? error.message : String(error)}`);
-      return undefined;
-    });
-    if (currentHealth?.available) {
-      const rootPath = currentHealth.path ?? await this.configStore.getEnginePath("hermes");
-      await this.saveHermesRoot(rootPath);
-      log.push(`Hermes is already available at ${rootPath}.`);
-      return finish({ ok: true, rootPath, message: `已检测到可用 Hermes：${rootPath}` });
-    }
+    let stagingPath: string | undefined;
+    let quarantinedPath: string | undefined;
 
-    const repoUrl = process.env.HERMES_INSTALL_REPO_URL?.trim() || DEFAULT_HERMES_REPO_URL;
-    const rootPath = process.env.HERMES_INSTALL_DIR?.trim() || path.join(os.homedir(), "Hermes Agent");
-    log.push(`Install target: ${rootPath}`);
-    log.push(`Repository: ${repoUrl}`);
-
-    const git = await this.runLogged("git", ["--version"], process.cwd(), log, 15000);
-    if (git.exitCode !== 0) {
-      return finish({ ok: false, rootPath, message: "无法一键部署 Hermes：未检测到可用 Git。请先安装 Git，或手动配置 Hermes 根路径。" });
-    }
-
-    const python = await this.runLogged("python", ["--version"], process.cwd(), log, 15000);
-    if (python.exitCode !== 0) {
-      return finish({ ok: false, rootPath, message: "无法一键部署 Hermes：未检测到可用 Python。请先安装 Python，或手动配置 Hermes 根路径。" });
-    }
-
-    const existingEntries = await fs.readdir(rootPath).catch(() => undefined);
-    if (!existingEntries) {
-      await fs.mkdir(path.dirname(rootPath), { recursive: true });
-      const clone = await this.runLogged("git", ["clone", "--depth", "1", repoUrl, rootPath], path.dirname(rootPath), log, 10 * 60 * 1000);
-      if (clone.exitCode !== 0) {
-        return finish({ ok: false, rootPath, message: `Hermes 克隆失败，详情见安装日志：${logPath}` });
+    try {
+      emit("preflight", 5, "正在检测本机环境。");
+      const currentHealth = await this.hermes.healthCheck().catch((error) => {
+        log.push(`Current Hermes check failed: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      });
+      if (currentHealth?.available) {
+        const rootPath = currentHealth.path ?? await this.configStore.getEnginePath("hermes");
+        await this.saveHermesRoot(rootPath);
+        log.push(`Hermes is already available at ${rootPath}.`);
+        return await finish({ ok: true, rootPath, message: `已检测到可用 Hermes：${rootPath}` }, "completed");
       }
-    } else if (existingEntries.length === 0) {
-      const clone = await this.runLogged("git", ["clone", "--depth", "1", repoUrl, "."], rootPath, log, 10 * 60 * 1000);
-      if (clone.exitCode !== 0) {
-        return finish({ ok: false, rootPath, message: `Hermes 克隆失败，详情见安装日志：${logPath}` });
-      }
-    } else {
-      const hermesCliExists = await this.exists(path.join(rootPath, "hermes"));
-      if (!hermesCliExists) {
-        return finish({
+
+      const repoUrl = process.env.HERMES_INSTALL_REPO_URL?.trim() || DEFAULT_HERMES_REPO_URL;
+      const rootPath = process.env.HERMES_INSTALL_DIR?.trim() || this.defaultInstallRoot();
+      const parentDir = path.dirname(rootPath);
+      const managedDefaultPath = this.samePath(rootPath, this.defaultInstallRoot());
+      log.push(`Install target: ${rootPath}`);
+      log.push(`Repository: ${repoUrl}`);
+
+      await this.assertWritableDirectory(logDir, "安装日志目录", log);
+      await this.assertWritableDirectory(parentDir, "Hermes 安装父目录", log);
+
+      const git = await this.runLogged("git", ["--version"], process.cwd(), log, 15000);
+      if (git.exitCode !== 0) {
+        return await finish({
           ok: false,
           rootPath,
-          message: `目标目录已存在但未找到 Hermes CLI：${rootPath}。为避免覆盖用户文件，请清空该目录、设置 HERMES_INSTALL_DIR，或手动配置正确路径。`,
-        });
+          message: "无法自动安装 Hermes：未检测到可用 Git。请先安装 Git，或在设置里手动指定 Hermes 路径。",
+        }, "failed");
       }
-      log.push("Target directory already contains Hermes CLI; skipping clone.");
-    }
 
-    await this.installPythonDependencies(rootPath, log);
-    await this.saveHermesRoot(rootPath);
+      const python = await this.runLogged("python", ["--version"], process.cwd(), log, 15000);
+      if (python.exitCode !== 0) {
+        return await finish({
+          ok: false,
+          rootPath,
+          message: "无法自动安装 Hermes：未检测到可用 Python。请先安装 Python，或在设置里手动指定 Hermes 路径。",
+        }, "failed");
+      }
 
-    const health = await this.hermes.healthCheck().catch((error) => {
-      log.push(`Post-install health check threw: ${error instanceof Error ? error.message : String(error)}`);
-      return undefined;
-    });
-    if (!health?.available) {
-      return finish({
-        ok: false,
-        rootPath,
-        message: `Hermes 已下载到 ${rootPath}，但健康检查仍未通过：${health?.message ?? "未知错误"}。详情见安装日志：${logPath}`,
+      const targetState = await this.inspectTargetDirectory(rootPath, log);
+      if (targetState.exists && targetState.hasHermesCli) {
+        log.push("Target directory already contains Hermes CLI; skipping clone.");
+      } else {
+        if (targetState.exists && !targetState.isEmpty) {
+          if (!managedDefaultPath || !targetState.recoverable) {
+            return await finish({
+              ok: false,
+              rootPath,
+              message: `目标目录已存在但看起来不是可自动恢复的 Hermes 安装：${rootPath}。请在设置里改用空目录，或手动清理后重试。`,
+            }, "failed");
+          }
+          emit("recovering", 18, "检测到上次残留的 Hermes 安装目录，正在自动迁移旧残留。", rootPath);
+          quarantinedPath = `${rootPath}.stale-${Date.now()}`;
+          await fs.rename(rootPath, quarantinedPath);
+          log.push(`Quarantined stale install to ${quarantinedPath}`);
+        } else if (targetState.exists && targetState.isEmpty) {
+          await fs.rm(rootPath, { recursive: true, force: true });
+          log.push(`Removed empty target directory ${rootPath} before staging install.`);
+        }
+
+        emit("cloning", 32, "正在下载 Hermes 核心文件。", repoUrl);
+        stagingPath = path.join(parentDir, `.hermes-install-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+        const clone = await this.runLogged("git", ["clone", "--depth", "1", repoUrl, stagingPath], parentDir, log, DEFAULT_INSTALL_TIMEOUT_MS);
+        if (clone.exitCode !== 0) {
+          await this.cleanupDirectory(stagingPath, log);
+          return await finish({ ok: false, rootPath, message: `Hermes 下载失败，详情见安装日志：${logPath}` }, "failed");
+        }
+
+        await fs.rename(stagingPath, rootPath);
+        log.push(`Promoted staged install from ${stagingPath} to ${rootPath}`);
+        stagingPath = undefined;
+      }
+
+      emit("installing_dependencies", 62, "正在安装 Hermes 运行依赖。", rootPath);
+      await this.installPythonDependencies(rootPath, log);
+
+      emit("health_check", 82, "正在校验 Hermes 是否可启动。", rootPath);
+      const localHealth = await this.checkInstalledHermes(rootPath, log);
+      if (!localHealth.available) {
+        return await finish({
+          ok: false,
+          rootPath,
+          message: `Hermes 文件已落地到 ${rootPath}，但本地自检未通过：${localHealth.message}。详情见安装日志：${logPath}`,
+        }, "failed");
+      }
+
+      await this.writeManagedMarker(rootPath, repoUrl);
+      const previousHermesRoot = (await this.configStore.read()).enginePaths?.hermes;
+      await this.saveHermesRoot(rootPath);
+
+      const adapterHealth = await this.hermes.healthCheck().catch((error) => {
+        log.push(`Post-install adapter health check threw: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
       });
-    }
+      if (!adapterHealth?.available) {
+        await this.restoreHermesRoot(previousHermesRoot);
+        return await finish({
+          ok: false,
+          rootPath,
+          message: `Hermes 已安装到 ${rootPath}，但客户端复检仍未通过：${adapterHealth?.message ?? "未知错误"}。详情见安装日志：${logPath}`,
+        }, "failed");
+      }
 
-    return finish({ ok: true, rootPath, message: `Hermes 部署完成并通过健康检查：${rootPath}` });
+      return await finish({ ok: true, rootPath, message: `Hermes 已自动安装完成并通过检查：${rootPath}` }, "completed");
+    } catch (error) {
+      if (stagingPath) {
+        await this.cleanupDirectory(stagingPath, log);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      log.push(`Install crashed: ${message}`);
+      return await finish({
+        ok: false,
+        message: `Hermes 自动安装失败：${message}`,
+        rootPath: quarantinedPath ? path.dirname(quarantinedPath) : undefined,
+      }, "failed");
+    }
   }
 
   private async checkHermes(): Promise<SetupCheck> {
@@ -271,14 +364,14 @@ export class SetupService {
 
   private async installPythonDependencies(rootPath: string, log: string[]) {
     if (await this.exists(path.join(rootPath, "pyproject.toml"))) {
-      const result = await this.runLogged("python", ["-m", "pip", "install", "-e", "."], rootPath, log, 10 * 60 * 1000);
+      const result = await this.runLogged("python", ["-m", "pip", "install", "-e", "."], rootPath, log, DEFAULT_INSTALL_TIMEOUT_MS);
       if (result.exitCode !== 0) {
         log.push("Editable pip install failed; continuing to health check so the user gets a precise runtime error.");
       }
       return;
     }
     if (await this.exists(path.join(rootPath, "requirements.txt"))) {
-      const result = await this.runLogged("python", ["-m", "pip", "install", "-r", "requirements.txt"], rootPath, log, 10 * 60 * 1000);
+      const result = await this.runLogged("python", ["-m", "pip", "install", "-r", "requirements.txt"], rootPath, log, DEFAULT_INSTALL_TIMEOUT_MS);
       if (result.exitCode !== 0) {
         log.push("requirements.txt pip install failed; continuing to health check so the user gets a precise runtime error.");
       }
@@ -293,6 +386,20 @@ export class SetupService {
         ...(config.enginePaths ?? {}),
         hermes: rootPath,
       },
+    });
+  }
+
+  private async restoreHermesRoot(previousRootPath?: string) {
+    const config = await this.configStore.read();
+    const nextEnginePaths = { ...(config.enginePaths ?? {}) };
+    if (previousRootPath?.trim()) {
+      nextEnginePaths.hermes = previousRootPath;
+    } else {
+      delete nextEnginePaths.hermes;
+    }
+    await this.configStore.write({
+      ...config,
+      enginePaths: nextEnginePaths,
     });
   }
 
@@ -319,6 +426,117 @@ export class SetupService {
     };
   }
 
+  private async inspectTargetDirectory(rootPath: string, log: string[]) {
+    try {
+      const entries = await fs.readdir(rootPath);
+      const hasHermesCli = await this.exists(path.join(rootPath, "hermes"));
+      const marker = await this.exists(path.join(rootPath, ".zhenghebao-managed-install.json"));
+      const recoverableSignals = [
+        ".git",
+        ".zhenghebao-managed-install.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "README.md",
+      ];
+      const recoverable = entries.some((entry) => recoverableSignals.includes(entry));
+      return {
+        exists: true,
+        isEmpty: entries.length === 0,
+        hasHermesCli,
+        recoverable: marker || recoverable,
+      };
+    } catch (error) {
+      const code = this.errorCode(error);
+      if (code === "ENOENT") {
+        return { exists: false, isEmpty: true, hasHermesCli: false, recoverable: false };
+      }
+      throw new Error(`无法访问安装目录 ${rootPath}：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async assertWritableDirectory(targetPath: string, label: string, log: string[]) {
+    try {
+      await fs.mkdir(targetPath, { recursive: true });
+      const probe = path.join(targetPath, `.zhenghebao-install-probe-${Date.now()}`);
+      await fs.writeFile(probe, "ok", "utf8");
+      await fs.unlink(probe);
+      log.push(`${label} 可写：${targetPath}`);
+    } catch (error) {
+      throw new Error(`${label} 不可写：${targetPath}。${error instanceof Error ? error.message : "未知错误"}`);
+    }
+  }
+
+  private async checkInstalledHermes(rootPath: string, log: string[]) {
+    const cliPath = path.join(rootPath, "hermes");
+    if (!(await this.exists(cliPath))) {
+      return { available: false, message: `未找到 Hermes CLI：${cliPath}` };
+    }
+
+    const candidates: Array<{ command: string; args: string[] }> = [
+      { command: "python", args: [cliPath, "--version"] },
+      { command: "py", args: ["-3", cliPath, "--version"] },
+    ];
+    let lastMessage = "未找到可用 Python 解释器。";
+    for (const candidate of candidates) {
+      const result = await runCommand(candidate.command, candidate.args, {
+        cwd: rootPath,
+        timeoutMs: 20_000,
+        env: {
+          PYTHONUTF8: "1",
+          PYTHONIOENCODING: "utf-8",
+          PYTHONPATH: `${rootPath}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
+          NO_COLOR: "1",
+        },
+      });
+      const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+      log.push(`Install health via ${candidate.command}: ${output || `exit ${result.exitCode ?? "unknown"}`}`);
+      if (result.exitCode === 0) {
+        return { available: true, message: output || "Hermes CLI 可启动。" };
+      }
+      lastMessage = output || `${candidate.command} 退出码 ${result.exitCode ?? "unknown"}`;
+    }
+    return { available: false, message: lastMessage };
+  }
+
+  private async writeManagedMarker(rootPath: string, repoUrl: string) {
+    const markerPath = path.join(rootPath, ".zhenghebao-managed-install.json");
+    await fs.writeFile(markerPath, JSON.stringify({
+      source: "zhenghebao",
+      repoUrl,
+      installedAt: new Date().toISOString(),
+    }, null, 2), "utf8");
+  }
+
+  private async writeInstallLog(logDir: string, logPath: string, message: string, log: string[]) {
+    try {
+      await fs.mkdir(logDir, { recursive: true });
+      await fs.writeFile(logPath, [message, "", ...log].join("\n"), "utf8");
+    } catch {
+      // 日志写入失败不应吞掉主流程结果
+    }
+  }
+
+  private async cleanupDirectory(targetPath: string, log: string[]) {
+    try {
+      await fs.rm(targetPath, { recursive: true, force: true });
+      log.push(`Cleaned up ${targetPath}`);
+    } catch (error) {
+      log.push(`Failed to clean up ${targetPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private defaultInstallRoot() {
+    return path.join(os.homedir(), "Hermes Agent");
+  }
+
+  private samePath(left: string, right: string) {
+    return path.resolve(left).replace(/[\\/]+$/, "").toLowerCase() === path.resolve(right).replace(/[\\/]+$/, "").toLowerCase();
+  }
+
+  private errorCode(error: unknown) {
+    return typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  }
+
   private async exists(targetPath: string) {
     try {
       await fs.access(targetPath);
@@ -328,3 +546,7 @@ export class SetupService {
     }
   }
 }
+
+type SecretVault = {
+  hasSecret(ref: string): Promise<boolean>;
+};

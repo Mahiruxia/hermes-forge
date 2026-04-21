@@ -16,7 +16,11 @@ export class HermesToolLoopRunner {
     return typeof this.hermesAdapter.planToolStep === "function";
   }
 
-  async *run(request: EngineRunRequest, signal: AbortSignal): AsyncIterable<EngineEvent> {
+  async *run(
+    request: EngineRunRequest,
+    signal: AbortSignal,
+    publishEvent?: (event: EngineEvent) => Promise<void>,
+  ): AsyncIterable<EngineEvent> {
     if (!this.hermesAdapter.planToolStep) {
       throw new Error("Hermes adapter does not support tool loop planning.");
     }
@@ -67,7 +71,10 @@ export class HermesToolLoopRunner {
       }
 
       yield { type: "tool_call", toolName: output.tool, argsPreview: summarizeToolInput(output), at: now() };
-      const result = await this.windowsToolExecutor.execute(output);
+      const result = await this.windowsToolExecutor.execute(output, {
+        taskRunId: request.sessionId,
+        publish: publishEvent,
+      });
       transcript.push({ role: "observation", content: result });
       yield {
         type: "tool_result",

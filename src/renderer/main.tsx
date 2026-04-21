@@ -5,6 +5,9 @@ import { DashboardView } from "./dashboard/DashboardView";
 import { WelcomePage } from "./dashboard/WelcomePage";
 import { ToastContainer } from "./dashboard/ToastNotification";
 import { PageLoader } from "./dashboard/LoadingIndicator";
+import { ModelConfigWizard } from "./dashboard/components/panels/ModelConfigWizard";
+import { ConfigCenterLayout, type ConfigSectionId } from "./dashboard/components/settings/ConfigCenterLayout";
+import { ToggleSwitch } from "./dashboard/components/settings/ToggleSwitch";
 import { useAppStore, type RecentWorkspace } from "./store";
 import { safePromiseWithFallback } from "./utils/safePromise";
 import "./styles.css";
@@ -33,6 +36,14 @@ type ConfigOverview = {
     defaultProfileId?: string;
     providerProfiles: Array<{ id: string; provider: string; label: string; apiKeySecretRef?: string }>;
     modelProfiles: Array<{ id: string; provider: string; model: string; baseUrl?: string; secretRef?: string }>;
+    summary?: {
+      sourceType?: string;
+      currentModel?: string;
+      baseUrl?: string;
+      secretStatus?: string;
+      message?: string;
+      recommendedFix?: string;
+    };
   };
   secrets: Array<{ ref: string; exists: boolean; createdAt?: string; updatedAt?: string; lastUsedAt?: string }>;
   health?: SetupSummary;
@@ -40,6 +51,7 @@ type ConfigOverview = {
 
 function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; onRefresh: () => Promise<void> }) {
   const overview = props.overview;
+  const [activeSection, setActiveSection] = useState<ConfigSectionId>("general");
   const [rootPath, setRootPath] = useState(overview?.hermes.rootPath ?? "");
   const [warmupMode, setWarmupMode] = useState(overview?.hermes.warmupMode ?? "cheap");
   const [permissions, setPermissions] = useState(overview?.hermes.permissions ?? {
@@ -50,15 +62,9 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
     memoryRead: true,
     contextBridge: true,
   });
-  const [defaultProfileId, setDefaultProfileId] = useState(overview?.models.defaultProfileId ?? "");
   const [secretRef, setSecretRef] = useState(overview?.secrets[0]?.ref ?? "");
   const [secretValue, setSecretValue] = useState("");
-  const [localBaseUrl, setLocalBaseUrl] = useState("http://127.0.0.1:8081/v1");
-  const [localModel, setLocalModel] = useState("");
-  const [localSecretRef, setLocalSecretRef] = useState("");
   const [saveNotice, setSaveNotice] = useState<string>("");
-  const [modelTestNotice, setModelTestNotice] = useState<string>("");
-  const [modelTestTone, setModelTestTone] = useState<"green" | "amber" | "rose">("amber");
 
   function showSaveNotice(message: string) {
     setSaveNotice(message);
@@ -67,86 +73,9 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
     }, 2200);
   }
 
-  const modelProfiles = overview?.models.modelProfiles ?? [];
-  const providerProfiles = overview?.models.providerProfiles ?? [];
-
-  useEffect(() => {
-    setDefaultProfileId(overview?.models.defaultProfileId ?? "");
-  }, [overview?.models.defaultProfileId]);
-
   useEffect(() => {
     setSecretRef(overview?.secrets[0]?.ref ?? "");
-    setLocalSecretRef(overview?.secrets[0]?.ref ?? "");
   }, [overview?.secrets]);
-
-  useEffect(() => {
-    const localProfile = (overview?.models.modelProfiles ?? []).find((profile) => profile.provider === "custom" && profile.baseUrl);
-    if (localProfile) {
-      setLocalBaseUrl(localProfile.baseUrl ?? "http://127.0.0.1:8081/v1");
-      setLocalModel(localProfile.model ?? "");
-      setLocalSecretRef(localProfile.secretRef ?? "");
-    }
-  }, [overview?.models.modelProfiles]);
-
-  async function saveModelSettings() {
-    await window.workbenchClient.updateModelConfig({
-      defaultProfileId,
-    });
-    await props.onRefresh();
-    showSaveNotice("模型设置已保存");
-  }
-
-  async function saveLocalModelSettings() {
-    if (!localBaseUrl.trim() || !localModel.trim()) {
-      setModelTestTone("amber");
-      setModelTestNotice("请先填写本地/内网模型的 Base URL 和模型名。\n");
-      return;
-    }
-    const nextProfileId = "custom-local-endpoint";
-    const nextProfiles = [
-      ...modelProfiles.filter((profile) => profile.id !== nextProfileId),
-      {
-        id: nextProfileId,
-        provider: "custom",
-        model: localModel.trim(),
-        baseUrl: localBaseUrl.trim(),
-        ...(localSecretRef.trim() ? { secretRef: localSecretRef.trim() } : {}),
-      },
-    ];
-    await window.workbenchClient.updateModelConfig({
-      defaultProfileId: nextProfileId,
-      modelProfiles: nextProfiles,
-    });
-    setDefaultProfileId(nextProfileId);
-    await props.onRefresh();
-    const test = await window.workbenchClient.testModelConnection(nextProfileId).catch((error: unknown) => ({ ok: false, message: error instanceof Error ? error.message : "连接测试失败" }));
-    setModelTestTone(test.ok ? "green" : "rose");
-    setModelTestNotice(test.message);
-    showSaveNotice("本地/内网模型设置已保存");
-  }
-
-  async function testLocalModelSettings() {
-    if (!localBaseUrl.trim() || !localModel.trim()) {
-      setModelTestTone("amber");
-      setModelTestNotice("请先填写 Base URL 和模型名，再测试连接。\n");
-      return;
-    }
-    const nextProfileId = "custom-local-endpoint";
-    const nextProfiles = [
-      ...modelProfiles.filter((profile) => profile.id !== nextProfileId),
-      {
-        id: nextProfileId,
-        provider: "custom",
-        model: localModel.trim(),
-        baseUrl: localBaseUrl.trim(),
-        ...(localSecretRef.trim() ? { secretRef: localSecretRef.trim() } : {}),
-      },
-    ];
-    await window.workbenchClient.updateModelConfig({ modelProfiles: nextProfiles });
-    const test = await window.workbenchClient.testModelConnection(nextProfileId).catch((error: unknown) => ({ ok: false, message: error instanceof Error ? error.message : "连接测试失败" }));
-    setModelTestTone(test.ok ? "green" : "rose");
-    setModelTestNotice(test.message);
-  }
 
   async function saveSecretSettings() {
     if (!secretRef.trim() || !secretValue.trim()) return;
@@ -162,101 +91,6 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
     showSaveNotice(`密钥已删除：${ref}`);
   }
 
-  const selectedModel = modelProfiles.find((item) => item.id === defaultProfileId);
-  const presetTargets = [
-    { label: "OpenAI / GPT-4o", provider: "openai", model: "gpt-4o", baseUrl: "https://api.openai.com/v1", secretRef: "provider.openai.apiKey" },
-    { label: "Anthropic / Claude Sonnet", provider: "anthropic", model: "claude-sonnet-4.5", baseUrl: "https://api.anthropic.com", secretRef: "provider.anthropic.apiKey" },
-    { label: "OpenRouter / Auto", provider: "openrouter", model: "openrouter/auto", baseUrl: "https://openrouter.ai/api/v1", secretRef: "provider.openrouter.apiKey" },
-    { label: "OpenRouter / 大象 Pythia-12B", provider: "openrouter", model: "eleuther-ai/pythia-12b", baseUrl: "https://openrouter.ai/api/v1", secretRef: "provider.openrouter.apiKey" },
-    { label: "本地 / Mock", provider: "local", model: "mock-model" },
-  ].map((preset) => ({
-    ...preset,
-    profileId: modelProfiles.find((profile) => profile.provider === preset.provider && profile.model === preset.model)?.id,
-  }));
-
-  async function applyModelPreset(preset: typeof presetTargets[number]) {
-    if (preset.profileId) {
-      setDefaultProfileId(preset.profileId);
-      showSaveNotice(`已选择预设：${preset.label}`);
-      return;
-    }
-    const nextProfileId = `preset-${preset.provider}-${preset.model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-    const nextProfiles = [
-      ...modelProfiles,
-      {
-        id: nextProfileId,
-        provider: preset.provider,
-        model: preset.model,
-        ...(preset.baseUrl ? { baseUrl: preset.baseUrl } : {}),
-        ...(preset.secretRef ? { secretRef: preset.secretRef } : {}),
-      },
-    ];
-    await window.workbenchClient.updateModelConfig({
-      defaultProfileId: nextProfileId,
-      modelProfiles: nextProfiles,
-    });
-    await props.onRefresh();
-    setDefaultProfileId(nextProfileId);
-    showSaveNotice(`已创建并选中预设：${preset.label}`);
-  }
-
-  function inferProviderHealth(provider: string, profile?: { secretRef?: string; baseUrl?: string }) {
-    if (provider === "local") return { tone: "green" as const, label: "本地模型不需要 API Key" };
-    if (provider === "custom") {
-      return profile?.secretRef
-        ? { tone: "green" as const, label: "当前自定义模型使用可选密钥引用" }
-        : { tone: "green" as const, label: "当前自定义模型允许无 API Key 运行" };
-    }
-    const hasSecret = (overview?.secrets ?? []).some((secret) => secret.exists && secret.ref.toLowerCase().includes(provider));
-    return hasSecret
-      ? { tone: "green" as const, label: "已检测到对应密钥" }
-      : { tone: "amber" as const, label: "可能缺少对应密钥" };
-  }
-
-  function providerToneClass(tone: "green" | "amber") {
-    return tone === "green" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700";
-  }
-
-  function providerAction(provider: string, profile?: { secretRef?: string; baseUrl?: string }) {
-    if (provider === "local") return "可直接保存并使用";
-    if (provider === "custom") {
-      return profile?.secretRef
-        ? "如果本地/内网网关要求鉴权，请确认密钥引用有效。"
-        : "LM Studio、OpenAI 兼容本地接口通常可以不填 API Key。";
-    }
-    return `建议先在密钥区确认 ${provider} 的 API Key。`;
-  }
-
-  const providerHealth = selectedModel ? inferProviderHealth(selectedModel.provider, selectedModel) : undefined;
-
-  function modelReadyState(): { tone: "green" | "amber" | "rose"; message: string; hint: string } {
-    if (!selectedModel) {
-      return { tone: "amber", message: "尚未选择默认模型。", hint: "先选择一个默认模型，再保存设置。" };
-    }
-    const provider = providerProfiles.find((item) => item.provider === selectedModel.provider || item.id === selectedModel.provider);
-    if (selectedModel.provider === "custom") {
-      if (!selectedModel.baseUrl?.trim()) {
-        return { tone: "rose", message: "当前本地/自定义模型缺少 Base URL。", hint: "请先填写本地/内网模型地址，再测试连接。" };
-      }
-      return {
-        tone: "green",
-        message: selectedModel.secretRef ? "当前本地/内网模型已具备基础配置。" : "当前本地/内网模型已具备基础配置（无需 API Key）。",
-        hint: "建议先测试连接，通过后即可返回工作台开始任务。",
-      };
-    }
-    if (selectedModel.provider !== "local" && !selectedModel.secretRef && !provider?.apiKeySecretRef) {
-      return { tone: "rose", message: "当前模型缺少密钥引用。", hint: "请先在密钥区保存对应 provider 的 API Key。" };
-    }
-    return { tone: "green", message: "当前默认模型已具备基础配置。", hint: "保存后可直接返回工作台开始任务。" };
-  }
-
-  const modelState = modelReadyState();
-
-  function cardTone(tone: "green" | "amber" | "rose") {
-    if (tone === "green") return "border-emerald-200 bg-emerald-50 text-emerald-700";
-    if (tone === "rose") return "border-rose-200 bg-rose-50 text-rose-700";
-    return "border-amber-200 bg-amber-50 text-amber-700";
-  }
 
   useEffect(() => {
     setRootPath(overview?.hermes.rootPath ?? "");
@@ -282,56 +116,110 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
   }
 
   return (
-    <section className="absolute inset-0 overflow-auto bg-[#f9fafb] text-slate-900">
-      <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-4 px-5 py-6">
-        <div className="flex items-center justify-between gap-3">
+    <ConfigCenterLayout
+      activeSection={activeSection}
+      onSectionChange={setActiveSection}
+      onBack={props.onBack}
+      saveNotice={saveNotice}
+      title="Hermes 配置中心"
+      description="用更清晰的分区方式管理运行环境、模型来源、密钥和系统健康状态。"
+    >
+      {activeSection === "general" ? (
+        <section className="space-y-4">
           <div>
-            <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-emerald-600">配置中心</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Hermes 配置中心</h1>
-            <p className="mt-1 text-[14px] text-slate-500">这里集中管理 Hermes、模型、密钥与健康检查；主工作台只负责任务输入与结果展示。</p>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              General
+            </p>
+            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
+              常规设置
+            </h2>
+            <p className="mt-2 text-[14px] leading-6 text-slate-500">
+              管理 Hermes 根路径、预热策略和运行权限。
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            {saveNotice ? <span className="rounded-full bg-emerald-50 px-3 py-1 text-[12px] font-medium text-emerald-700">{saveNotice}</span> : null}
-            <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50" onClick={props.onBack} type="button">
-              返回工作台
-            </button>
-          </div>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
           <ConfigCard title="Hermes">
-            <label className="block text-[12px] text-slate-500">
-              <span className="mb-1 block">Hermes 根路径</span>
-              <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none" placeholder="输入 Hermes 根路径" />
-            </label>
-            <label className="block text-[12px] text-slate-500">
-              <span className="mb-1 block">预热模式</span>
-              <select value={warmupMode} onChange={(event) => setWarmupMode(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none">
-                <option value="off">off</option>
-                <option value="cheap">cheap</option>
-                <option value="real_probe">real_probe</option>
-              </select>
-            </label>
-            <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[12px] text-slate-600">
-              <p className="mb-2 font-medium text-slate-800">权限</p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {[
-                  ["enabled", "启用 Hermes"],
-                  ["workspaceRead", "读取项目"],
-                  ["fileWrite", "写入文件"],
-                  ["commandRun", "运行命令"],
-                  ["memoryRead", "读取记忆"],
-                  ["contextBridge", "桥接上下文"],
-                ].map(([key, label]) => (
-                  <label key={key} className="inline-flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(permissions[key as keyof typeof permissions])}
-                      onChange={(event) => setPermissions({ ...permissions, [key]: event.target.checked })}
-                    />
-                    {label}
-                  </label>
-                ))}
+            <div className="grid gap-3">
+              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 p-4">
+                <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Runtime</p>
+                <label className="mt-3 block text-[12px] text-slate-500">
+                  <span className="mb-1.5 block">Hermes 根路径</span>
+                  <input
+                    value={rootPath}
+                    onChange={(event) => setRootPath(event.target.value)}
+                    className="w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
+                    placeholder="输入 Hermes 根路径"
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 p-4">
+                <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Warmup</p>
+                <label className="mt-3 block text-[12px] text-slate-500">
+                  <span className="mb-1.5 block">预热模式</span>
+                  <select
+                    value={warmupMode}
+                    onChange={(event) => setWarmupMode(event.target.value)}
+                    className="w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
+                  >
+                    <option value="off">off</option>
+                    <option value="cheap">cheap</option>
+                    <option value="real_probe">real_probe</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Permissions</p>
+                    <h3 className="mt-2 text-[15px] font-semibold text-slate-900">权限控制</h3>
+                    <p className="mt-1 text-[13px] leading-6 text-slate-500">
+                      把常用能力拆成独立开关，减少传统复选框带来的信息噪音。
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-500 shadow-sm">
+                    {Object.values(permissions).filter(Boolean).length}/{Object.keys(permissions).length} 已启用
+                  </span>
+                </div>
+
+                <div className="mt-4 grid gap-3">
+                  <ToggleSwitch
+                    checked={permissions.enabled}
+                    onChange={(checked) => setPermissions({ ...permissions, enabled: checked })}
+                    label="启用 Hermes"
+                    description="关闭后将阻止 Hermes 在桌面端运行任务。"
+                  />
+                  <ToggleSwitch
+                    checked={permissions.workspaceRead}
+                    onChange={(checked) => setPermissions({ ...permissions, workspaceRead: checked })}
+                    label="读取项目"
+                    description="允许读取当前工作区的文件与目录结构。"
+                  />
+                  <ToggleSwitch
+                    checked={permissions.fileWrite}
+                    onChange={(checked) => setPermissions({ ...permissions, fileWrite: checked })}
+                    label="写入文件"
+                    description="允许创建、修改或删除工作区内文件。"
+                  />
+                  <ToggleSwitch
+                    checked={permissions.commandRun}
+                    onChange={(checked) => setPermissions({ ...permissions, commandRun: checked })}
+                    label="运行命令"
+                    description="允许调用终端、Shell 和脚本执行。"
+                  />
+                  <ToggleSwitch
+                    checked={permissions.memoryRead}
+                    onChange={(checked) => setPermissions({ ...permissions, memoryRead: checked })}
+                    label="读取记忆"
+                    description="允许读取 USER / MEMORY 等长期记忆文件。"
+                  />
+                  <ToggleSwitch
+                    checked={permissions.contextBridge}
+                    onChange={(checked) => setPermissions({ ...permissions, contextBridge: checked })}
+                    label="桥接上下文"
+                    description="允许 Hermes 访问桌面桥接与宿主上下文能力。"
+                  />
+                </div>
               </div>
             </div>
             <div className="flex justify-end">
@@ -340,74 +228,46 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
               </button>
             </div>
           </ConfigCard>
+        </section>
+      ) : null}
 
-          <ConfigCard title="模型">
-            <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[12px] text-blue-700">
-              <p className="font-medium">本地 / 内网模型</p>
-              <p className="mt-1 text-[11px] text-blue-600">适用于 LM Studio、本地 OpenAI 兼容接口、内网模型网关等场景。</p>
-            </div>
-            <label className="block text-[12px] text-slate-500">
-              <span className="mb-1 block">Base URL</span>
-              <input value={localBaseUrl} onChange={(event) => setLocalBaseUrl(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none" placeholder="例如 http://127.0.0.1:8081/v1" />
-            </label>
-            <label className="block text-[12px] text-slate-500">
-              <span className="mb-1 block">模型名</span>
-              <input value={localModel} onChange={(event) => setLocalModel(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none" placeholder="例如 qwen2.5-coder:latest" />
-            </label>
-            <label className="block text-[12px] text-slate-500">
-              <span className="mb-1 block">密钥引用（可选）</span>
-              <input value={localSecretRef} onChange={(event) => setLocalSecretRef(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none" placeholder="如果本地网关需要 API Key，可填对应 secret ref" />
-            </label>
-            {modelTestNotice ? <div className={`rounded-xl border px-3 py-2 text-[12px] ${cardTone(modelTestTone)}`}><p className="font-medium">连接测试</p><p className="mt-1 whitespace-pre-wrap">{modelTestNotice}</p></div> : null}
-            <div className="flex flex-wrap justify-end gap-2">
-              <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void testLocalModelSettings()} type="button">
-                测试本地模型连接
-              </button>
-              <button className="rounded-xl bg-slate-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveLocalModelSettings()} type="button">
-                保存为默认本地模型
-              </button>
-            </div>
-            <div className={`rounded-xl border px-3 py-2 text-[12px] ${cardTone(modelState.tone)}`}>
-              <p className="font-medium">模型状态</p>
-              <p className="mt-1">{modelState.message}</p>
-              <p className="mt-1 text-[11px] opacity-80">{modelState.hint}</p>
-            </div>
-            <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[12px] text-slate-500">
-              <p className="font-medium text-slate-700">主流预设</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {presetTargets.map((preset) => (
-                  <button key={preset.label} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50" onClick={() => void applyModelPreset(preset)} type="button">
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-2 text-[11px] text-slate-400">点击预设时，如果当前不存在对应 profile，系统会自动创建最小可用配置。</p>
-            </div>
-            {providerHealth ? <div className={`rounded-xl border px-3 py-2 text-[12px] ${providerToneClass(providerHealth.tone)}`}><p className="font-medium">Provider 状态</p><p className="mt-1">{providerHealth.label}</p><p className="mt-1 text-[11px] opacity-80">{providerAction(selectedModel?.provider ?? "", selectedModel)}</p></div> : null}
-            <label className="block text-[12px] text-slate-500">
-              <span className="mb-1 block">默认模型</span>
-              <select value={defaultProfileId} onChange={(event) => setDefaultProfileId(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none">
-                <option value="">请选择默认模型</option>
-                {modelProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>{profile.provider} / {profile.model}</option>
-                ))}
-              </select>
-            </label>
-            <ConfigRow label="当前选中" value={selectedModel ? `${selectedModel.provider} / ${selectedModel.model}` : "未配置"} />
-            <ConfigRow label="默认 Provider" value={selectedModel?.provider ?? "未配置"} />
-            <ConfigRow label="Provider 数量" value={`${providerProfiles.length}`} />
-            <ConfigRow label="Profile 数量" value={`${modelProfiles.length}`} />
-            <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[12px] text-slate-500">
-              <p className="font-medium text-slate-700">当前可用 Provider</p>
-              <p className="mt-1 leading-5">{providerProfiles.length ? providerProfiles.map((provider) => provider.label || provider.provider).join("、") : "暂无 Provider 配置"}</p>
-            </div>
-            <div className="flex justify-end">
-              <button className="rounded-xl bg-slate-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveModelSettings()} type="button">
-                保存模型设置
-              </button>
-            </div>
+      {activeSection === "providers" ? (
+        <section className="space-y-4">
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              Providers
+            </p>
+            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
+              模型提供商
+            </h2>
+            <p className="mt-2 text-[14px] leading-6 text-slate-500">
+              选择模型来源，并只在需要时展开对应配置项。
+            </p>
+          </div>
+          <ConfigCard title="模型来源">
+            <ModelConfigWizard
+              models={overview?.models ?? { defaultProfileId: undefined, providerProfiles: [], modelProfiles: [] }}
+              secrets={overview?.secrets ?? []}
+              onRefresh={props.onRefresh}
+              onSaved={showSaveNotice}
+            />
           </ConfigCard>
+        </section>
+      ) : null}
 
+      {activeSection === "secrets" ? (
+        <section className="space-y-4">
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              Secrets
+            </p>
+            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
+              密钥管理
+            </h2>
+            <p className="mt-2 text-[14px] leading-6 text-slate-500">
+              统一保存和删除 API Key，避免配置分散。
+            </p>
+          </div>
           <ConfigCard title="密钥">
             <ConfigRow label="已记录条目" value={`${overview?.secrets.length ?? 0}`} />
             <label className="block text-[12px] text-slate-500">
@@ -441,41 +301,97 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
               {!(overview?.secrets.length) ? <p className="text-[12px] text-slate-400">暂无密钥元信息。</p> : null}
             </div>
           </ConfigCard>
+        </section>
+      ) : null}
 
+      {activeSection === "health" ? (
+        <section className="space-y-4">
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              Health
+            </p>
+            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
+              系统状态
+            </h2>
+            <p className="mt-2 text-[14px] leading-6 text-slate-500">
+              查看阻塞项、环境状态和修复建议。
+            </p>
+          </div>
           <ConfigCard title="健康检查">
-            <ConfigRow label="整体状态" value={overview?.health?.ready ? "就绪" : "待完善"} />
-            <ConfigRow label="阻塞项" value={`${overview?.health?.blocking.length ?? 0}`} />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <HealthSummaryCard
+                label="整体状态"
+                value={overview?.health?.ready ? "系统就绪" : "需要处理"}
+                tone={overview?.health?.ready ? "ok" : "error"}
+                detail={overview?.health?.ready ? "当前没有阻塞 Hermes 运行的关键问题。" : "仍然存在会阻止任务启动或影响运行的配置问题。"}
+              />
+              <HealthSummaryCard
+                label="阻塞项"
+                value={`${overview?.health?.blocking.length ?? 0}`}
+                tone={(overview?.health?.blocking.length ?? 0) > 0 ? "error" : "ok"}
+                detail={(overview?.health?.blocking.length ?? 0) > 0 ? "建议优先修复这些项目，再开始任务。" : "当前没有检测到阻塞项。"}
+              />
+            </div>
             {(overview?.health?.blocking.length ?? 0) > 0 ? (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
-                <p className="mb-2 font-medium">需要优先处理的阻塞项</p>
-                <div className="space-y-2">
+              <div className="rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-4 text-[12px] text-rose-700">
+                <div className="flex items-center gap-2">
+                  <StatusDot tone="error" pulse />
+                  <p className="font-medium">需要优先处理的阻塞项</p>
+                </div>
+                <div className="mt-3 space-y-3">
                   {(overview?.health?.blocking ?? []).map((check, index) => (
-                    <div key={`blocking-${index}`}>
-                      <p className="font-medium">{check.label}</p>
-                      <p className="mt-0.5 text-rose-600">{check.message}</p>
-                      <p className="mt-1 text-[11px] text-rose-500">建议动作：先进入对应设置项修复，再返回工作台执行任务。</p>
+                    <div key={`blocking-${index}`} className="rounded-xl border border-rose-200/80 bg-white/70 px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <StatusDot tone="error" />
+                        <p className="font-medium">{check.label}</p>
+                      </div>
+                      <p className="mt-1.5 text-rose-600">{check.message}</p>
+                      <p className="mt-2 text-[11px] text-rose-500">建议动作：先进入对应设置项修复，再返回工作台执行任务。</p>
                     </div>
                   ))}
                 </div>
               </div>
             ) : null}
-            <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[12px] text-slate-500">
-              <p className="font-medium text-slate-700">建议</p>
+            <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 px-4 py-4 text-[12px] text-slate-500">
+              <div className="flex items-center gap-2">
+                <StatusDot tone="neutral" />
+                <p className="font-medium text-slate-700">建议</p>
+              </div>
               <p className="mt-1 leading-5">如果出现红色阻塞项，优先修复；黄色项通常表示建议优化，不一定会阻止当前任务运行。</p>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-3">
               {(overview?.health?.checks ?? []).slice(0, 6).map((check, index) => (
-                <div key={`${check.label}-${index}`} className={`rounded-xl border px-3 py-2 text-[12px] ${check.status === "failed" || check.status === "missing" ? "border-rose-200 bg-rose-50 text-rose-700" : check.status === "warning" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-slate-100 bg-slate-50 text-slate-600"}`}>
-                  <p className="font-medium">{check.label} · {check.status}</p>
-                  <p className="mt-0.5">{check.message}</p>
+                <div
+                  key={`${check.label}-${index}`}
+                  className={`rounded-2xl border px-4 py-4 text-[12px] ${
+                    check.status === "failed" || check.status === "missing"
+                      ? "border-rose-200 bg-rose-50/80 text-rose-700"
+                      : check.status === "warning"
+                        ? "border-amber-200 bg-amber-50/80 text-amber-700"
+                        : "border-slate-200/70 bg-slate-50/70 text-slate-600"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <StatusDot
+                        tone={check.status === "failed" || check.status === "missing" ? "error" : check.status === "warning" ? "warning" : "ok"}
+                        pulse={check.status === "running"}
+                      />
+                      <p className="font-medium text-slate-900">{check.label}</p>
+                    </div>
+                    <span className="rounded-full bg-white/80 px-2 py-1 text-[11px] font-medium uppercase tracking-[0.08em]">
+                      {check.status}
+                    </span>
+                  </div>
+                  <p className="mt-2 leading-6">{check.message}</p>
                 </div>
               ))}
               {!(overview?.health?.checks.length) ? <p className="text-[12px] text-slate-400">暂无健康检查信息。</p> : null}
             </div>
           </ConfigCard>
-        </div>
-      </div>
-    </section>
+        </section>
+      ) : null}
+    </ConfigCenterLayout>
   );
 }
 
@@ -494,6 +410,47 @@ function ConfigRow(props: { label: string; value: string }) {
       <span className="text-slate-400">{props.label}</span>
       <span className="max-w-[65%] break-words text-right font-medium text-slate-700 [overflow-wrap:anywhere]">{props.value}</span>
     </div>
+  );
+}
+
+function HealthSummaryCard(props: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: "ok" | "warning" | "error" | "neutral";
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 px-4 py-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <StatusDot tone={props.tone} pulse={props.tone !== "neutral"} />
+          <p className="text-[12px] font-medium text-slate-500">{props.label}</p>
+        </div>
+        <span className="text-[15px] font-semibold text-slate-900">{props.value}</span>
+      </div>
+      <p className="mt-2 text-[12px] leading-5 text-slate-500">{props.detail}</p>
+    </div>
+  );
+}
+
+function StatusDot(props: {
+  tone: "ok" | "warning" | "error" | "neutral";
+  pulse?: boolean;
+}) {
+  const toneClass =
+    props.tone === "ok"
+      ? "bg-emerald-500"
+      : props.tone === "warning"
+        ? "bg-amber-500"
+        : props.tone === "error"
+          ? "bg-rose-500"
+          : "bg-slate-400";
+
+  return (
+    <span className="relative inline-flex h-2.5 w-2.5 shrink-0">
+      {props.pulse ? <span className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-30 ${toneClass}`} /> : null}
+      <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${toneClass}`} />
+    </span>
   );
 }
 
@@ -530,6 +487,15 @@ function App() {
     let pendingEvents: TaskEventEnvelope[] = [];
     let rafId: number | null = null;
 
+    function handleAuxiliaryEvent(event: TaskEventEnvelope) {
+      if (event.event.type !== "approval") return;
+      if (event.event.outcome === "requested") {
+        store.upsertApprovalCard(event.event.request);
+        return;
+      }
+      store.resolveApprovalCard(event.event.request.id, event.event.request.status);
+    }
+
     function flushEvents() {
       rafId = null;
       const events = pendingEvents;
@@ -537,6 +503,7 @@ function App() {
       for (const event of events) {
         store.pushEvent(event);
         store.applyTaskEvent(event);
+        handleAuxiliaryEvent(event);
         if (event.event.type === "result") {
           const currentState = useAppStore.getState();
           store.pushActivityLog({
@@ -578,9 +545,11 @@ function App() {
         for (const e of events) {
           store.pushEvent(e);
           store.applyTaskEvent(e);
+          handleAuxiliaryEvent(e);
         }
         store.pushEvent(event);
         store.applyTaskEvent(event);
+        handleAuxiliaryEvent(event);
         if (event.event.type === "result") {
           const currentState = useAppStore.getState();
           store.pushActivityLog({

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WindowsToolExecutor } from "./windows-tool-executor";
 import type { AutoHotkeyService } from "./autohotkey-service";
 import type { CommandResult } from "../process/command-runner";
-import type { EnginePermissionPolicy } from "../shared/types";
+import type { EngineEvent, EnginePermissionPolicy } from "../shared/types";
 
 vi.mock("electron", () => ({
   clipboard: {
@@ -73,6 +73,21 @@ describe("WindowsToolExecutor", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain("missing");
   });
+
+  it("blocks dangerous tools when approval is denied", async () => {
+    const publish = vi.fn(async (_event: EngineEvent) => undefined);
+    const approval = vi.fn(async () => ({ approved: false }));
+    const executor = createExecutor({}, undefined, undefined, approval);
+
+    const result = await executor.execute(
+      { type: "tool_call", tool: "windows.files.writeText", input: { path: path.join(tempRoot, "denied.txt"), content: "x" } },
+      { taskRunId: "task-1", publish },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("用户拒绝批准");
+    expect(approval).toHaveBeenCalled();
+  });
 });
 
 function createExecutor(
@@ -82,6 +97,7 @@ function createExecutor(
     status: async () => ({ available: true, executablePath: "AutoHotkey64.exe", message: "ok" }),
     runScript: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
   } as AutoHotkeyService,
+  approval = vi.fn(async () => ({ approved: true })),
 ) {
   return new WindowsToolExecutor(
     async () => ({
@@ -95,5 +111,6 @@ function createExecutor(
     }),
     ahk,
     runner,
+    approval,
   );
 }

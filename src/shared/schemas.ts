@@ -71,6 +71,8 @@ export const modelOptionSchema = z.object({
   contextWindow: z.number().int().positive().optional(),
   supportsStreaming: z.boolean().optional(),
   supportsTools: z.boolean().optional(),
+  inputCostPer1kUsd: z.number().nonnegative().max(1000).optional(),
+  outputCostPer1kUsd: z.number().nonnegative().max(1000).optional(),
 });
 
 export const modelProviderProfileSchema = z.object({

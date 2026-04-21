@@ -48,6 +48,7 @@
     "@tanstack/react-query": "^5.99.0",
     "@types/qrcode": "^1.5.6",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.3",
     "jsdom": "^26.1.0",
     "lucide-react": "^1.8.0",
     "qrcode": "^1.5.4",
@@ -65,11 +66,25 @@
   "build": {
     "appId": "dev.hermesforge.desktop",
     "productName": "Hermes Forge",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Mahiruxia",
+        "repo": "hermes-forge"
+      }
+    ],
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/electron-updater/**/*",
+      "node_modules/fs-extra/**/*",
+      "node_modules/js-yaml/**/*",
+      "node_modules/lazy-val/**/*",
+      "node_modules/lodash.isequal/**/*",
+      "node_modules/semver/**/*",
       "node_modules/sql.js/**/*",
       "node_modules/zod/**/*",
       "package.json"
@@ -82,6 +97,10 @@
       {
         "from": "resources/hermes-windows-mcp-server.py",
         "to": "hermes-windows-mcp-server.py"
+      },
+      {
+        "from": "resources/hermes-headless-runner.py",
+        "to": "hermes-headless-runner.py"
       }
     ],
     "win": {

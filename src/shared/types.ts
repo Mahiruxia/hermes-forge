@@ -275,6 +275,7 @@ export type HermesConnectorPlatform = {
 export type HermesConnectorConfig = {
   platform: HermesConnectorPlatform;
   status: HermesConnectorStatus;
+  runtimeStatus: "stopped" | "running" | "error";
   enabled: boolean;
   configured: boolean;
   missingRequired: string[];
@@ -300,6 +301,14 @@ export type HermesConnectorListResult = {
 
 export type HermesGatewayStatus = {
   running: boolean;
+  managedRunning: boolean;
+  healthStatus: "running" | "stopped" | "error";
+  autoStartState?: "idle" | "starting" | "running" | "failed";
+  autoStartMessage?: string;
+  lastExitCode?: number | null;
+  lastExitAt?: string;
+  restartCount?: number;
+  backoffUntil?: string;
   pid?: number;
   startedAt?: string;
   command?: string;
@@ -324,8 +333,12 @@ export type WeixinQrLoginPhase =
   | "syncing"
   | "starting_gateway"
   | "success"
+  | "timeout"
   | "failed"
   | "cancelled";
+
+export type WeixinRecoveryAction = "install_aiohttp";
+export type WeixinFailureKind = "recoverable" | "manual_fix" | "external_unreachable";
 
 export type WeixinQrLoginStatus = {
   running: boolean;
@@ -340,12 +353,31 @@ export type WeixinQrLoginStatus = {
   accountId?: string;
   userId?: string;
   gatewayStarted?: boolean;
+  failureCode?: string;
+  lastHeartbeatAt?: string;
+  attempt?: number;
+  recoveryAction?: WeixinRecoveryAction;
+  recoveryCommand?: string;
+  runtimePythonLabel?: string;
+  failureKind?: WeixinFailureKind;
+  recommendedFix?: string;
 };
 
 export type WeixinQrLoginResult = {
   ok: boolean;
   status: WeixinQrLoginStatus;
   message: string;
+};
+
+export type WeixinDependencyInstallResult = {
+  ok: boolean;
+  message: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  failureCategory?: "network" | "pip_unavailable" | "permission_denied" | "interpreter_error" | "unknown";
+  recommendedFix?: string;
+  status?: WeixinQrLoginStatus;
 };
 
 export type HermesProfile = {
@@ -371,14 +403,31 @@ export type SlashCommandResult = {
   nextAction?: "send" | "clear" | "new-session" | "open-settings" | "open-workspace" | "show-help" | "noop";
 };
 
+export type ApprovalChoice = "once" | "session" | "always" | "deny";
+
+export type ApprovalActionKind =
+  | "file_write"
+  | "file_delete"
+  | "command_run"
+  | "window_control"
+  | "keyboard_input"
+  | "mouse_input"
+  | "automation";
+
 export type ApprovalRequest = {
   id: string;
+  taskRunId: string;
   title: string;
   command?: string;
   path?: string;
+  patternKey: string;
+  scopeKey: string;
+  actionKind: ApprovalActionKind;
+  details?: string;
   risk: "low" | "medium" | "high";
-  status: "pending" | "approved" | "denied";
+  status: "pending" | "approved" | "denied" | "expired";
   createdAt: string;
+  expiresAt?: string;
 };
 
 export type ClarifyRequest = {
@@ -526,6 +575,28 @@ export type EngineUpdateStatus = {
   message: string;
 };
 
+export type ClientUpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export type ClientUpdateEvent = {
+  status: ClientUpdateStatus;
+  message: string;
+  currentVersion?: string;
+  latestVersion?: string;
+  percent?: number;
+  bytesPerSecond?: number;
+  transferred?: number;
+  total?: number;
+  manual?: boolean;
+  at: string;
+};
+
 export type MemoryStatus = {
   engineId: EngineId;
   workspaceId: string;
@@ -542,6 +613,8 @@ export type ModelOption = {
   contextWindow?: number;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
+  inputCostPer1kUsd?: number;
+  outputCostPer1kUsd?: number;
 };
 
 export type ModelProviderProfile = {
@@ -609,6 +682,7 @@ export type ContextRequest = {
 
 export type EngineRunRequest = {
   sessionId: string;
+  conversationId?: string;
   workspaceId: string;
   workspacePath: string;
   userInput: string;
@@ -664,6 +738,7 @@ export type EngineEvent =
   | { type: "tool_call"; toolName: string; argsPreview: string; callId?: string; status?: "running" | "complete" | "failed"; summary?: string; at: string }
   | { type: "tool_result"; toolName: string; outputPreview?: string; callId?: string; success?: boolean; status?: "running" | "complete" | "failed"; summary?: string; at: string }
   | { type: "file_change"; path: string; changeType: "create" | "update" | "delete"; at: string }
+  | { type: "approval"; request: ApprovalRequest; outcome: "requested" | "approved" | "denied" | "expired" | "auto_approved"; choice?: ApprovalChoice; message: string; at: string }
   | { type: "memory_access"; engineId: EngineId; action: "read" | "write" | "summarize"; source: string; at: string }
   | { type: "result"; success: boolean; title: string; detail: string; at: string };
 
@@ -852,6 +927,35 @@ export type ModelConnectionTestResult = {
   ok: boolean;
   profileId?: string;
   message: string;
+  sourceType?: "local_openai" | "openrouter" | "openai" | "custom_gateway" | "legacy";
+  normalizedBaseUrl?: string;
+  availableModels?: string[];
+  failureCategory?:
+    | "network_unreachable"
+    | "invalid_url"
+    | "auth_missing"
+    | "auth_invalid"
+    | "model_not_found"
+    | "path_invalid"
+    | "server_error"
+    | "unknown";
+  recommendedFix?: string;
+};
+
+export type LocalModelDiscoveryCandidate = {
+  baseUrl: string;
+  ok: boolean;
+  availableModels: string[];
+  message: string;
+  failureCategory?: ModelConnectionTestResult["failureCategory"];
+};
+
+export type LocalModelDiscoveryResult = {
+  ok: boolean;
+  candidates: LocalModelDiscoveryCandidate[];
+  recommendedBaseUrl?: string;
+  recommendedModel?: string;
+  message: string;
 };
 
 export type EngineProbeKind = "cheap" | "real";
@@ -877,6 +981,24 @@ export type EngineMaintenanceResult = {
 
 export type HermesInstallResult = EngineMaintenanceResult & {
   rootPath?: string;
+};
+
+export type HermesInstallStage =
+  | "preflight"
+  | "recovering"
+  | "cloning"
+  | "installing_dependencies"
+  | "health_check"
+  | "completed"
+  | "failed";
+
+export type HermesInstallEvent = {
+  stage: HermesInstallStage;
+  message: string;
+  detail?: string;
+  progress: number;
+  startedAt: string;
+  at: string;
 };
 
 export type EngineProbeMetric = {

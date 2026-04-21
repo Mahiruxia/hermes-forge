@@ -16,6 +16,7 @@ export type CommandOptions = {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
+  detached?: boolean;
 };
 
 const activeChildren = new Set<ChildProcessWithoutNullStreams>();
@@ -44,6 +45,7 @@ export function runCommand(command: string, args: string[], options: CommandOpti
       env: { ...process.env, ...options.env },
       windowsHide: true,
       shell: false,
+      detached: options.detached ?? false,
     });
     activeChildren.add(child);
     let stdout = "";
@@ -88,6 +90,7 @@ export async function* streamCommand(
     env: { ...process.env, ...options.env },
     windowsHide: true,
     shell: false,
+    detached: options.detached ?? false,
   });
   activeChildren.add(child);
 

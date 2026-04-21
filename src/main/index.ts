@@ -6,6 +6,7 @@ import { registerIpcHandlers } from "./ipc";
 import { RuntimeConfigStore } from "./runtime-config";
 import { RuntimeEnvResolver } from "./runtime-env-resolver";
 import { SessionLog } from "./session-log";
+import { ApprovalService } from "./approval-service";
 import { HermesWindowsBridgeTestService } from "./hermes-windows-bridge-test-service";
 import { WindowsControlBridge } from "./windows-control-bridge";
 import { WindowsNativeIntentService } from "./windows-native-intent-service";
@@ -16,7 +17,9 @@ import { SecretVault } from "../auth/secret-vault";
 import { DiagnosticsService } from "../diagnostics/diagnostics-service";
 import { FileTreeService } from "../file-manager/file-tree-service";
 import { HermesConnectorService } from "./hermes-connector-service";
+import { HermesModelSyncService } from "./hermes-model-sync";
 import { HermesWebUiService } from "./hermes-webui-service";
+import { ModelRuntimeProxyService } from "./model-runtime-proxy";
 import { MemoryBudgeter } from "../memory/memory-budgeter";
 import { MemoryBroker } from "../memory/memory-broker";
 import { SnapshotManager } from "../process/snapshot-manager";
@@ -26,8 +29,9 @@ import { TaskRunner } from "../process/task-runner";
 import { WorkspaceLock } from "../process/workspace-lock";
 import { EngineProbeService } from "../probes/engine-probe-service";
 import { SetupService } from "../setup/setup-service";
+import { ClientAutoUpdateService } from "../updater/client-auto-update-service";
 import { UpdateService } from "../updater/update-service";
-import { runCommand } from "../process/command-runner";
+import { killActiveCommands, runCommand } from "../process/command-runner";
 import { resolveEnginePermissions } from "../shared/types";
 
 const portableRoot = process.env.PORTABLE_EXECUTABLE_DIR;
@@ -84,6 +88,24 @@ async function runStartupWarmup(input: {
   }
 }
 
+function scheduleStartupGateway(input: {
+  hermesConnectorService: HermesConnectorService;
+}) {
+  setTimeout(() => {
+    void runStartupGateway(input);
+  }, 1800);
+}
+
+async function runStartupGateway(input: {
+  hermesConnectorService: HermesConnectorService;
+}) {
+  try {
+    await input.hermesConnectorService.autoStartIfConfigured();
+  } catch (error) {
+    console.warn("[Hermes Forge] Gateway auto-start crashed:", error);
+  }
+}
+
 app.whenReady().then(async () => {
   app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
   
@@ -109,11 +131,23 @@ app.whenReady().then(async () => {
   await appPaths.ensureBaseLayout();
 
   const configStore = new RuntimeConfigStore(appPaths.runtimeConfigPath());
+  const approvalService = new ApprovalService(appPaths);
   const budgeter = new MemoryBudgeter();
   const autoHotkeyService = new AutoHotkeyService();
   const windowsToolExecutor = new WindowsToolExecutor(
     async () => resolveEnginePermissions(await configStore.read(), "hermes"),
     autoHotkeyService,
+    runCommand,
+    async (input) => approvalService.request({
+      taskRunId: input.taskRunId,
+      title: input.title,
+      command: input.command,
+      path: input.path,
+      patternKey: input.patternKey,
+      actionKind: input.actionKind,
+      details: input.details,
+      risk: input.risk,
+    }, input.publish),
   );
   windowsControlBridge = new WindowsControlBridge(
     async () => resolveEnginePermissions(await configStore.read(), "hermes"),
@@ -153,9 +187,15 @@ app.whenReady().then(async () => {
   const snapshotManager = new SnapshotManager(appPaths);
   const fileTreeService = new FileTreeService();
   const updateService = new UpdateService([hermes]);
+  const clientAutoUpdateService = new ClientAutoUpdateService(() => mainWindow);
   const secretVault = new SecretVault(path.join(appPaths.vaultDir(), "secrets.enc"));
   await secretVault.status();
-  const runtimeEnvResolver = new RuntimeEnvResolver(configStore, secretVault);
+  const modelRuntimeProxyService = new ModelRuntimeProxyService();
+  const runtimeEnvResolver = new RuntimeEnvResolver(configStore, secretVault, modelRuntimeProxyService);
+  const hermesModelSyncService = new HermesModelSyncService(runtimeEnvResolver);
+  await hermesModelSyncService.syncRuntimeConfig(await configStore.read()).catch((error) => {
+    console.warn("[Hermes Forge] Model sync during startup failed:", error);
+  });
   const engineProbeService = new EngineProbeService(appPaths, hermes, configStore);
   const setupService = new SetupService(appPaths, hermes, configStore, secretVault);
   const diagnosticsService = new DiagnosticsService(
@@ -181,7 +221,19 @@ app.whenReady().then(async () => {
     () => configStore.getEnginePath("hermes"),
     async () => (await configStore.read()).hermesRuntime?.pythonCommand,
   );
-  const windowsNativeIntentService = new WindowsNativeIntentService();
+  const windowsNativeIntentService = new WindowsNativeIntentService(
+    undefined,
+    async (input) => approvalService.request({
+      taskRunId: input.taskRunId,
+      title: input.title,
+      command: input.command,
+      path: input.path,
+      patternKey: input.patternKey,
+      actionKind: input.actionKind,
+      details: input.details,
+      risk: input.risk,
+    }, input.publish),
+  );
   const hermesToolLoopRunner = new HermesToolLoopRunner(hermes, windowsToolExecutor);
   const preflightService = new TaskPreflightService(
     appPaths,
@@ -262,6 +314,7 @@ app.whenReady().then(async () => {
     workSessionService,
     hermes,
     updateService,
+    clientAutoUpdateService,
     engineProbeService,
     configStore,
     runtimeEnvResolver,
@@ -270,8 +323,10 @@ app.whenReady().then(async () => {
     diagnosticsService,
     hermesWebUiService,
     hermesConnectorService,
+    hermesModelSyncService,
     windowsControlBridge,
     hermesWindowsBridgeTestService,
+    approvalService,
     clientInfo: () => ({
       appVersion: app.getVersion(),
       userDataPath,
@@ -281,6 +336,8 @@ app.whenReady().then(async () => {
   });
 
   scheduleStartupWarmup({ hermes, configStore, runtimeEnvResolver });
+  scheduleStartupGateway({ hermesConnectorService });
+  clientAutoUpdateService.scheduleStartupCheck(5000);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -295,7 +352,9 @@ app.whenReady().then(async () => {
   });
 
   app.on("before-quit", () => {
+    killActiveCommands();
     void windowsControlBridge?.stop();
     void hermesConnectorService.shutdown();
+    void modelRuntimeProxyService.shutdown();
   });
 });

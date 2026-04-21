@@ -15,7 +15,9 @@ import type {
   HermesConnectorSaveInput,
   HermesGatewayActionResult,
   HermesGatewayStatus,
+  HermesInstallEvent,
   HermesInstallResult,
+  ClientUpdateEvent,
   HermesWindowsBridgeTestResult,
   HermesMemoryFile,
   HermesProbeSummary,
@@ -25,6 +27,7 @@ import type {
   HermesWebUiOverview,
   HermesWebUiSettings,
   ModelConnectionTestResult,
+  LocalModelDiscoveryResult,
   QuickTextFileInput,
   QuickTextFileResult,
   RuntimeConfig,
@@ -43,6 +46,7 @@ import type {
   WorkspaceSpace,
   WeixinQrLoginResult,
   WeixinQrLoginStatus,
+  WeixinDependencyInstallResult,
 } from "../shared/types";
 
 declare global {
@@ -83,6 +87,7 @@ declare global {
     workbenchClient: {
       pickWorkspaceFolder(): Promise<string | null>;
       pickSessionAttachments(sessionFilesPath: string): Promise<SessionAttachment[]>;
+      importSessionAttachments(sessionFilesPath: string, filePaths: string[]): Promise<SessionAttachment[]>;
       createQuickTextFile(input: QuickTextFileInput): Promise<QuickTextFileResult>;
       openPath(targetPath: string): Promise<{ ok: boolean; message: string }>;
       openHelp(): Promise<{ ok: boolean; message: string }>;
@@ -130,6 +135,7 @@ declare global {
       startWeixinQrLogin(): Promise<WeixinQrLoginResult>;
       getWeixinQrLoginStatus(): Promise<WeixinQrLoginStatus>;
       cancelWeixinQrLogin(): Promise<WeixinQrLoginResult>;
+      installWeixinDependency(): Promise<WeixinDependencyInstallResult>;
       listProjects(): Promise<ProjectGroup[]>;
       saveProject(input: Partial<ProjectGroup>): Promise<ProjectGroup>;
       deleteProject(id: string): Promise<{ ok: boolean; id: string }>;
@@ -156,21 +162,25 @@ declare global {
       previewFile(filePath: string): Promise<FilePreviewResult>;
       getFileBreadcrumb(filePath: string): Promise<FileBreadcrumbItem[]>;
       getGitInfo(workspacePath: string): Promise<{ available: boolean; branch: string; dirtyCount: number; dirtyFiles?: string[] }>;
-      respondApproval(input: { id: string; approved: boolean; editedCommand?: string }): Promise<{ ok: boolean; id: string; approved: boolean; message: string }>;
+      respondApproval(input: { id: string; choice: "once" | "session" | "always" | "deny"; editedCommand?: string }): Promise<{ ok: boolean; id: string; approved: boolean; message: string }>;
       getHermesStatus(workspacePath?: string): Promise<HermesStatusSummary>;
       getHermesProbe(workspacePath?: string): Promise<HermesProbeSummary>;
       warmHermes(): Promise<EngineWarmupResult>;
       probeHermes(workspacePath?: string): Promise<EngineWarmupResult>;
       checkUpdates(): Promise<EngineUpdateStatus[]>;
+      checkClientUpdate(): Promise<ClientUpdateEvent>;
+      onClientUpdateEvent(callback: (event: ClientUpdateEvent) => void): () => void;
       updateHermes(): Promise<EngineMaintenanceResult>;
       installHermes(): Promise<HermesInstallResult>;
+      onInstallHermesEvent(callback: (event: HermesInstallEvent) => void): () => void;
       getRuntimeConfig(): Promise<RuntimeConfig>;
       getConfigOverview(workspacePath?: string): Promise<any>;
       testHermesWindowsBridge(): Promise<HermesWindowsBridgeTestResult>;
       updateHermesConfig(input: unknown): Promise<RuntimeConfig>;
       updateModelConfig(input: unknown): Promise<RuntimeConfig>;
       saveRuntimeConfig(config: RuntimeConfig): Promise<RuntimeConfig>;
-      testModelConnection(profileId?: string): Promise<ModelConnectionTestResult>;
+      testModelConnection(input?: string | Record<string, unknown>): Promise<ModelConnectionTestResult>;
+      discoverLocalModelSources(): Promise<LocalModelDiscoveryResult>;
       getSetupSummary(workspacePath?: string): Promise<SetupSummary>;
       getSecretStatus(): Promise<SecretVaultStatus>;
       saveSecret(input: SecretSaveInput): Promise<{ secretRef: string }>;

@@ -34,7 +34,7 @@ const defaultConfig: RuntimeConfig = {
       label: "OpenRouter",
       baseUrl: "https://openrouter.ai/api/v1",
       apiKeySecretRef: "provider.openrouter.apiKey",
-      models: [{ id: "openrouter/auto", label: "OpenRouter Auto", supportsStreaming: true }],
+      models: [{ id: "openrouter/auto", label: "OpenRouter Auto", supportsStreaming: true, inputCostPer1kUsd: 0.002, outputCostPer1kUsd: 0.006 }],
       status: "unknown",
     },
     {
@@ -42,7 +42,7 @@ const defaultConfig: RuntimeConfig = {
       provider: "openai",
       label: "OpenAI",
       apiKeySecretRef: "provider.openai.apiKey",
-      models: [{ id: "gpt-5.4", label: "GPT-5.4", supportsStreaming: true, supportsTools: true }],
+      models: [{ id: "gpt-5.4", label: "GPT-5.4", supportsStreaming: true, supportsTools: true, inputCostPer1kUsd: 0.002, outputCostPer1kUsd: 0.006 }],
       status: "unknown",
     },
     {
@@ -50,7 +50,7 @@ const defaultConfig: RuntimeConfig = {
       provider: "anthropic",
       label: "Anthropic",
       apiKeySecretRef: "provider.anthropic.apiKey",
-      models: [{ id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5", supportsStreaming: true }],
+      models: [{ id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5", supportsStreaming: true, inputCostPer1kUsd: 0.002, outputCostPer1kUsd: 0.006 }],
       status: "unknown",
     },
   ],

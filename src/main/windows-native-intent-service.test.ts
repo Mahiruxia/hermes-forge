@@ -56,6 +56,47 @@ describe("WindowsNativeIntentService", () => {
     expect(final?.type === "result" ? final.detail : "").toContain("共有 1 个");
   });
 
+  it("opens desktop Edge through the native fast path", async () => {
+    const edgeShortcut = path.join(desktop, "Microsoft Edge.lnk");
+    await fs.writeFile(edgeShortcut, "");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const service = new WindowsNativeIntentService(
+      () => [desktop, publicDesktop],
+      undefined,
+      async (command, args) => {
+        calls.push({ command, args });
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    );
+
+    const result = await service.tryHandle(request("帮我打开我桌面的edge浏览器"));
+    const final = result?.events.find((event) => event.type === "result");
+
+    expect(result?.handled).toBe(true);
+    expect(calls).toEqual([{ command: "cmd.exe", args: ["/c", "start", "", edgeShortcut] }]);
+    expect(final?.type === "result" ? final.success : false).toBe(true);
+    expect(final?.type === "result" ? final.detail : "").toContain(edgeShortcut);
+  });
+
+  it("falls back to the Edge URI when no desktop shortcut exists", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const service = new WindowsNativeIntentService(
+      () => [desktop, publicDesktop],
+      undefined,
+      async (command, args) => {
+        calls.push({ command, args });
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    );
+
+    const result = await service.tryHandle(request("打开桌面的 edge 浏览器"));
+    const final = result?.events.find((event) => event.type === "result");
+
+    expect(result?.handled).toBe(true);
+    expect(calls).toEqual([{ command: "cmd.exe", args: ["/c", "start", "", "microsoft-edge:"] }]);
+    expect(final?.type === "result" ? final.detail : "").toContain("microsoft-edge:");
+  });
+
   it("returns a permission failure when file writing is disabled", async () => {
     const service = new WindowsNativeIntentService(() => [desktop]);
     const result = await service.tryHandle(request("在桌面创建一个 txt", { fileWrite: false }));
@@ -63,6 +104,15 @@ describe("WindowsNativeIntentService", () => {
 
     expect(final?.type === "result" ? final.success : true).toBe(false);
     expect(final?.type === "result" ? final.detail : "").toContain("fileWrite=false");
+  });
+
+  it("returns a permission failure when app launching is disabled", async () => {
+    const service = new WindowsNativeIntentService(() => [desktop]);
+    const result = await service.tryHandle(request("打开桌面的 edge 浏览器", { commandRun: false }));
+    const final = result?.events.find((event) => event.type === "result");
+
+    expect(final?.type === "result" ? final.success : true).toBe(false);
+    expect(final?.type === "result" ? final.detail : "").toContain("commandRun=false");
   });
 
   it("ignores unrelated chat", async () => {

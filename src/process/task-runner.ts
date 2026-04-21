@@ -1,5 +1,7 @@
 import { BrowserWindow } from "electron";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { EngineAdapter } from "../adapters/engine-adapter";
 import type { AppPaths } from "../main/app-paths";
 import type { RuntimeEnvResolver } from "../main/runtime-env-resolver";
@@ -12,6 +14,8 @@ import type { TaskPreflightService } from "./task-preflight-service";
 import type { WorkspaceLock } from "./workspace-lock";
 import { IpcChannels } from "../shared/ipc";
 import { resolveEnginePermissions } from "../shared/types";
+import { deriveTaskEvents } from "./task-derived-event-parser";
+import { createTaskUsageState, trackTaskUsage, type TaskUsageState } from "./task-usage-meter";
 import type {
   AppError,
   ContextBundle,
@@ -20,12 +24,16 @@ import type {
   EngineRuntimeEnv,
   EngineRunRequest,
   RuntimeConfig,
+  SessionAttachment,
   StartTaskInput,
   TaskEventEnvelope,
   TaskStartResult,
 } from "../shared/types";
 
 const now = () => new Date().toISOString();
+const INLINE_IMAGE_PATH_PATTERN =
+  /(?:"([^"\r\n]+\.(?:png|jpe?g|webp|gif|bmp))"|'([^'\r\n]+\.(?:png|jpe?g|webp|gif|bmp))'|([a-zA-Z]:\\[^\r\n"'<>|]+?\.(?:png|jpe?g|webp|gif|bmp)))/gi;
+const MAX_INLINE_IMAGE_BYTES = 50 * 1024 * 1024;
 const HERMES_WAIT_NOTICES = [
   { afterMs: 3_500, message: "Hermes 已启动，正在等待首段输出。" },
   { afterMs: 10_000, message: "Hermes 仍在运行，但暂时还没有返回可显示正文。" },
@@ -34,7 +42,7 @@ const HERMES_WAIT_NOTICES = [
 
 export class TaskRunner {
   private readonly running = new Map<string, AbortController>();
-  private readonly usage = new Map<string, { inputTokens: number; outputTokens: number; estimatedCostUsd: number }>();
+  private readonly usage = new Map<string, TaskUsageState>();
   private readonly metrics = new Map<string, { startedAt: number; preflightMs?: number; contextMs?: number; firstOutputMs?: number }>();
   private readonly lastUsagePublishAt = new Map<string, number>();
   private readonly streamingLifecyclePublished = new Set<string>();
@@ -62,12 +70,13 @@ export class TaskRunner {
     const workSessionId = input.sessionId?.trim() || input.sessionFilesPath;
     const taskRunId = input.clientTaskId?.trim() || crypto.randomUUID();
     const actualEngine = "hermes" as const;
+    const attachments = await resolveInlineImageAttachments(input.userInput, input.attachments ?? []);
     this.metrics.set(taskRunId, { startedAt: startAt });
 
     await this.publishStage(workspaceId, workSessionId, taskRunId, actualEngine, "preflight", "正在执行 Hermes 运行前检查。");
     await this.publishStep(workspaceId, workSessionId, taskRunId, actualEngine, "stage-preflight-entered", false, "已进入 Hermes 运行前检查阶段。");
 
-    const earlyNative = await this.tryStartWindowsNativeFastPath(input, {
+    const earlyNative = await this.tryStartWindowsNativeFastPath(input, attachments, {
       startAt,
       targetPath,
       workspaceId,
@@ -152,20 +161,24 @@ export class TaskRunner {
 
     const controller = new AbortController();
     this.running.set(sessionId, controller);
-    this.usage.set(sessionId, {
-      inputTokens: this.estimateTokens(input.userInput) + this.estimateTokens(contextBundle.summary),
-      outputTokens: 0,
-      estimatedCostUsd: 0,
-    });
+    this.usage.set(
+      sessionId,
+      createTaskUsageState(
+        this.estimateTokens(input.userInput) + this.estimateTokens(contextBundle.summary),
+        runtimeEnv,
+        runtimeConfig,
+      ),
+    );
 
     const runRequest: EngineRunRequest = {
       sessionId,
+      conversationId: workSessionId,
       workspaceId,
       workspacePath: targetPath,
       userInput: input.userInput,
       taskType: input.taskType,
       selectedFiles: input.selectedFiles,
-      attachments: input.attachments ?? [],
+      attachments,
       memoryPolicy: "isolated",
       modelProfileId: input.modelProfileId,
       runtimeEnv: { ...runtimeEnv, executionMode: "local_fast" },
@@ -192,7 +205,10 @@ export class TaskRunner {
       };
     }
 
-    const nativeResult = await this.windowsNativeIntentService?.tryHandle(runRequest);
+    const nativeResult = await this.windowsNativeIntentService?.tryHandle(
+      runRequest,
+      async (event) => this.publish(workspaceId, workSessionId, sessionId, actualEngine, event),
+    );
     if (nativeResult) {
       void this.consumeNativeRun(runRequest, nativeResult, controller, workSessionId);
       await this.publishStep(workspaceId, workSessionId, sessionId, actualEngine, "windows-native-dispatched", true, `任务已交给 Windows 原生兼容执行层，启动链路总耗时 ${Date.now() - startAt}ms。`);
@@ -236,7 +252,11 @@ export class TaskRunner {
       await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "running", "Hermes Tool Loop 已接手任务。");
       await this.publishStep(request.workspaceId, workSessionId, request.sessionId, actualEngine, "stage-tool-loop-entered", false, "已进入 Hermes Windows 工具循环。");
       let failedResult = false;
-      for await (const event of this.hermesToolLoopRunner!.run(request, controller.signal)) {
+      for await (const event of this.hermesToolLoopRunner!.run(
+        request,
+        controller.signal,
+        async (approvalEvent) => this.publish(request.workspaceId, workSessionId, request.sessionId, actualEngine, approvalEvent),
+      )) {
         this.captureFirstOutputMetric(request.sessionId, event);
         if (event.type === "result" && !event.success) {
           failedResult = true;
@@ -276,6 +296,7 @@ export class TaskRunner {
 
   private async tryStartWindowsNativeFastPath(
     input: StartTaskInput,
+    attachments: SessionAttachment[],
     meta: {
       startAt: number;
       targetPath: string;
@@ -300,7 +321,7 @@ export class TaskRunner {
       userInput: input.userInput,
       taskType: input.taskType,
       selectedFiles: input.selectedFiles,
-      attachments: input.attachments ?? [],
+      attachments,
       memoryPolicy: "isolated",
       modelProfileId: input.modelProfileId,
       runtimeEnv,
@@ -319,14 +340,17 @@ export class TaskRunner {
 
     let dispatched = false;
     try {
-      const nativeResult = await this.windowsNativeIntentService.tryHandle(request);
+      const nativeResult = await this.windowsNativeIntentService.tryHandle(
+        request,
+        async (event) => this.publish(meta.workspaceId, meta.workSessionId, meta.sessionId, meta.actualEngine, event),
+      );
       if (!nativeResult) {
         return undefined;
       }
       const controller = new AbortController();
       dispatched = true;
       this.running.set(meta.sessionId, controller);
-      this.usage.set(meta.sessionId, { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 });
+      this.usage.set(meta.sessionId, createTaskUsageState(0, runtimeEnv, runtimeConfig));
       void this.consumeNativeRun(request, nativeResult, controller, meta.workSessionId);
       await this.publishStep(
         meta.workspaceId,
@@ -552,6 +576,15 @@ export class TaskRunner {
     }
 
     const message = error instanceof Error ? error.message : "未知错误";
+    if (/NoConsoleScreenBufferError|No Windows console found|prompt_toolkit\.output\.win32/i.test(message)) {
+      return {
+        category: "cli-console-missing",
+        title: "Hermes CLI 缺少可用控制台",
+        message: `${message}。这更像是 Windows 下的 CLI 启动方式与控制台环境不兼容，并不是模型或密钥本身有问题。建议优先检查 Hermes 运行模式、Python 环境，或切到 WSL 模式后重试。`,
+        stageMessage: `Hermes CLI 控制台初始化失败：${message}`,
+        retryable: true,
+      };
+    }
     if (/退出码/i.test(message)) {
       return {
         category: "cli-failed",
@@ -653,12 +686,7 @@ export class TaskRunner {
   }
 
   private trackUsage(sessionId: string, event: EngineEvent) {
-    if (event.type !== "stdout" && event.type !== "stderr" && event.type !== "result") return;
-    const usage = this.usage.get(sessionId);
-    if (!usage) return;
-    const text = event.type === "result" ? `${event.title} ${event.detail}` : event.line;
-    usage.outputTokens += this.estimateTokens(text);
-    usage.estimatedCostUsd = (usage.inputTokens * 0.002 + usage.outputTokens * 0.006) / 1000;
+    trackTaskUsage(this.usage.get(sessionId), event, (text) => this.estimateTokens(text));
   }
 
   private estimateTokens(text: string) {
@@ -727,40 +755,78 @@ export class TaskRunner {
 
   private async publishDerivedEvents(workspaceId: string, workSessionId: string | undefined, sessionId: string, engineId: "hermes", event: EngineEvent) {
     if (event.type !== "stdout" && event.type !== "stderr") return;
-    const derivedEvents = [
-      this.deriveToolCall(event.line),
-      ...this.deriveFileChanges(event.line),
-    ].filter((item): item is EngineEvent => Boolean(item));
+    const derivedEvents = deriveTaskEvents(event.line);
     for (const derivedEvent of derivedEvents) {
       const envelope: TaskEventEnvelope = { taskRunId: sessionId, workSessionId, sessionId, engineId, event: derivedEvent };
       await this.sessionLog.append(workspaceId, envelope);
       this.getMainWindow()?.webContents.send(IpcChannels.taskEvent, envelope);
     }
   }
+}
 
-  private deriveToolCall(line: string): EngineEvent | undefined {
-    const text = line.trim();
-    const toolMatch =
-      text.match(/^(?:tool|工具)(?:\s*call)?[:：]\s*(.+)$/i) ??
-      text.match(/^\$\s*([a-zA-Z0-9._-]+)(.*)$/) ??
-      text.match(/^(git|npm|pnpm|yarn|node|python|pip|cargo|go|uv|bash|pwsh|powershell)\b(.*)$/i);
-    if (!toolMatch) return undefined;
-    const toolName = (toolMatch[1] ?? "").trim();
-    const argsPreview = toolMatch[2]?.trim() || text;
-    if (!toolName) return undefined;
-    return { type: "tool_call", toolName, argsPreview, at: now() };
+export function extractInlineImagePaths(text: string): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(INLINE_IMAGE_PATH_PATTERN)) {
+    const candidate = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+    if (!candidate || !isSupportedImagePath(candidate)) {
+      continue;
+    }
+    const key = normalizeAttachmentPathKey(candidate);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    paths.push(candidate);
   }
+  return paths;
+}
 
-  private deriveFileChanges(line: string): EngineEvent[] {
-    const text = line.trim();
-    const matches: EngineEvent[] = [];
-    const normalized = text.replace(/^[-*]\s*/, "");
-    const createMatch = normalized.match(/(?:创建|新建|新增|created?|wrote)\s+(.+\.[^\s]+)$/i);
-    const updateMatch = normalized.match(/(?:修改|更新|覆盖|updated?|modified?)\s+(.+\.[^\s]+)$/i);
-    const deleteMatch = normalized.match(/(?:删除|移除|deleted?|removed?)\s+(.+\.[^\s]+)$/i);
-    if (createMatch?.[1]) matches.push({ type: "file_change", changeType: "create", path: createMatch[1], at: now() });
-    if (updateMatch?.[1]) matches.push({ type: "file_change", changeType: "update", path: updateMatch[1], at: now() });
-    if (deleteMatch?.[1]) matches.push({ type: "file_change", changeType: "delete", path: deleteMatch[1], at: now() });
-    return matches;
+export async function resolveInlineImageAttachments(text: string, existing: SessionAttachment[]): Promise<SessionAttachment[]> {
+  const result = [...existing];
+  const seen = new Set(existing.flatMap((item) => [item.path, item.originalPath]).filter(Boolean).map(normalizeAttachmentPathKey));
+  for (const imagePath of extractInlineImagePaths(text)) {
+    const key = normalizeAttachmentPathKey(imagePath);
+    if (seen.has(key)) {
+      continue;
+    }
+    try {
+      const stat = await fs.stat(imagePath);
+      if (!stat.isFile() || stat.size > MAX_INLINE_IMAGE_BYTES) {
+        continue;
+      }
+      result.push({
+        id: `inline-image-${crypto.randomUUID()}`,
+        name: path.basename(imagePath),
+        path: imagePath,
+        originalPath: imagePath,
+        kind: "image",
+        mimeType: mimeTypeForImagePath(imagePath),
+        size: stat.size,
+        createdAt: now(),
+      });
+      seen.add(key);
+    } catch {
+      // Keep the original text prompt intact if the path is stale or inaccessible.
+    }
   }
+  return result;
+}
+
+export function mimeTypeForImagePath(imagePath: string): string | undefined {
+  const ext = path.extname(imagePath).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".bmp") return "image/bmp";
+  return undefined;
+}
+
+function isSupportedImagePath(imagePath: string) {
+  return /^[a-zA-Z]:\\/.test(imagePath) && mimeTypeForImagePath(imagePath) !== undefined;
+}
+
+function normalizeAttachmentPathKey(imagePath: string) {
+  return process.platform === "win32" ? imagePath.toLowerCase() : imagePath;
 }

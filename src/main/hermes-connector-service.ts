@@ -15,6 +15,7 @@ import type {
   HermesConnectorStatus,
   HermesGatewayActionResult,
   HermesGatewayStatus,
+  WeixinDependencyInstallResult,
   WeixinQrLoginResult,
   WeixinQrLoginStatus,
 } from "../shared/types";
@@ -41,6 +42,13 @@ type PythonCommand = {
   command: string;
   args: string[];
   label: string;
+};
+
+type GatewayStateSnapshot = {
+  running: boolean;
+  pid?: number;
+  updatedAt?: string;
+  message?: string;
 };
 
 const MANAGED_START = "# >>> Hermes Desktop Connectors >>>";
@@ -166,6 +174,12 @@ export class HermesConnectorService {
   private gatewayOutput = "";
   private gatewayError = "";
   private gatewayExitMessage = "";
+  private gatewayLastExitCode?: number | null;
+  private gatewayLastExitAt?: string;
+  private gatewayRestartCount = 0;
+  private gatewayBackoffUntil?: string;
+  private gatewayAutoStartState: HermesGatewayStatus["autoStartState"] = "idle";
+  private gatewayAutoStartMessage = "等待自动启动。";
   private weixinQrProcess?: ChildProcessWithoutNullStreams;
   private weixinQrStatus: WeixinQrLoginStatus = { running: false, phase: "idle", message: "微信扫码登录尚未启动。" };
   private weixinQrLineBuffer = "";
@@ -284,30 +298,68 @@ export class HermesConnectorService {
   }
 
   async status(): Promise<HermesGatewayStatus> {
-    const running = Boolean(this.gatewayProcess && !this.gatewayProcess.killed);
-    const cliStatus = await this.gatewayCliStatus().catch(() => undefined);
+    const managedRunning = Boolean(this.gatewayProcess && !this.gatewayProcess.killed);
+    const [cliStatus, stateStatus] = await Promise.all([
+      this.gatewayCliStatus().catch(() => undefined),
+      this.gatewayStateStatus().catch(() => undefined),
+    ]);
+    const cliRunning = looksLikeGatewayRunning(cliStatus?.stdout, cliStatus?.stderr);
+    const cliFailed = looksLikeGatewayFailure(cliStatus?.stdout, cliStatus?.stderr);
+    const stateRunning = Boolean(stateStatus?.running);
+    const running = managedRunning || cliRunning || stateRunning;
+    const healthStatus = running ? "running" : (this.gatewayError.trim() || cliFailed) ? "error" : "stopped";
     return {
       running,
-      pid: running ? this.gatewayProcess?.pid : undefined,
-      startedAt: running ? this.gatewayStartedAt : undefined,
-      command: running ? "Hermes Python gateway run" : undefined,
-      message: running ? "Gateway 正由桌面端托管运行。" : cliStatus?.message || this.gatewayExitMessage || "Gateway 未由桌面端托管运行。",
+      managedRunning,
+      healthStatus,
+      autoStartState: this.gatewayAutoStartState,
+      autoStartMessage: this.gatewayAutoStartMessage,
+      lastExitCode: this.gatewayLastExitCode,
+      lastExitAt: this.gatewayLastExitAt,
+      restartCount: this.gatewayRestartCount,
+      backoffUntil: this.gatewayBackoffUntil,
+      pid: managedRunning ? this.gatewayProcess?.pid : stateStatus?.pid,
+      startedAt: managedRunning ? this.gatewayStartedAt : stateStatus?.updatedAt,
+      command: managedRunning || stateRunning ? "Hermes Python gateway run" : undefined,
+      message: managedRunning
+        ? "Gateway 正由桌面端托管运行。"
+        : cliRunning
+          ? "Gateway 已运行，但不是由桌面端托管启动。"
+          : stateRunning
+            ? stateStatus?.message || "Gateway 状态文件显示正在运行。"
+            : cliStatus?.message || this.gatewayExitMessage || "Gateway 未由桌面端托管运行。",
       lastOutput: trimLog([this.gatewayOutput, cliStatus?.stdout].filter(Boolean).join("\n")),
       lastError: trimLog([this.gatewayError, cliStatus?.stderr].filter(Boolean).join("\n")),
       checkedAt: new Date().toISOString(),
     };
   }
 
-  async start(): Promise<HermesGatewayActionResult> {
+  async start(options: { forceReplace?: boolean } = {}): Promise<HermesGatewayActionResult> {
     const current = await this.status();
-    if (current.running) {
+    if (current.running && !options.forceReplace) {
+      this.gatewayAutoStartState = "running";
+      this.gatewayAutoStartMessage = "Gateway 已在运行。";
       return { ok: true, status: current, message: "Gateway 已在运行。" };
+    }
+    if (options.forceReplace) {
+      this.gatewayBackoffUntil = undefined;
+    }
+    if (this.gatewayBackoffUntil && Date.parse(this.gatewayBackoffUntil) > Date.now()) {
+      return {
+        ok: false,
+        status: current,
+        message: `Gateway 正在退避期，请在 ${this.gatewayBackoffUntil} 后重试。`,
+      };
     }
     const root = await this.resolveHermesRoot();
     const python = await this.resolvePythonCommand(root);
-    const child = spawn(python.command, [...python.args, path.join(root, "hermes"), "gateway", "run"], {
+    this.gatewayAutoStartState = "starting";
+    this.gatewayAutoStartMessage = "正在启动 Gateway...";
+    await this.clearGatewayRuntimeMarkers();
+    const hermesEnv = await this.readEnvValues();
+    const child = spawn(python.command, [...python.args, path.join(root, "hermes"), "gateway", "run", "--replace"], {
       cwd: root,
-      env: { ...process.env, ...PYTHON_ENV },
+      env: buildGatewayEnv(process.env, hermesEnv),
       windowsHide: true,
       shell: false,
     });
@@ -316,6 +368,7 @@ export class HermesConnectorService {
     this.gatewayOutput = "";
     this.gatewayError = "";
     this.gatewayExitMessage = "";
+    this.gatewayBackoffUntil = undefined;
     this.gatewayOutput = `Using Python: ${python.label}`;
     child.stdout.on("data", (chunk: Buffer) => {
       this.gatewayOutput = trimLog(`${this.gatewayOutput}${chunk.toString("utf8")}`);
@@ -327,11 +380,35 @@ export class HermesConnectorService {
       this.gatewayError = trimLog(`${this.gatewayError}\n${error.message}`);
     });
     child.on("close", (exitCode) => {
+      this.gatewayLastExitCode = exitCode;
+      this.gatewayLastExitAt = new Date().toISOString();
       this.gatewayExitMessage = `Gateway 已退出，退出码：${exitCode ?? "unknown"}`;
+      if ((exitCode ?? 0) !== 0) {
+        this.gatewayRestartCount += 1;
+        this.gatewayBackoffUntil = new Date(Date.now() + 5_000).toISOString();
+        this.gatewayAutoStartState = "failed";
+        this.gatewayAutoStartMessage = this.gatewayError.trim() || this.gatewayExitMessage;
+      } else {
+        this.gatewayAutoStartState = "idle";
+        this.gatewayAutoStartMessage = "Gateway 已停止。";
+      }
       this.gatewayProcess = undefined;
       this.gatewayStartedAt = undefined;
     });
-    return { ok: true, status: await this.status(), message: "Gateway 已启动。" };
+    await this.sleep(1200);
+    const status = await this.status();
+    if (!status.running) {
+      this.gatewayAutoStartState = "failed";
+      this.gatewayAutoStartMessage = status.lastError || status.message || "Gateway 启动失败。";
+      return {
+        ok: false,
+        status,
+        message: status.lastError || status.message || "Gateway 启动失败。",
+      };
+    }
+    this.gatewayAutoStartState = "running";
+    this.gatewayAutoStartMessage = "Gateway 已自动启动。";
+    return { ok: true, status, message: status.managedRunning ? "Gateway 已启动。" : "Gateway 已可用。" };
   }
 
   async stop(): Promise<HermesGatewayActionResult> {
@@ -341,18 +418,49 @@ export class HermesConnectorService {
     await killProcessTree(this.gatewayProcess.pid);
     this.gatewayProcess = undefined;
     this.gatewayStartedAt = undefined;
+    this.gatewayLastExitCode = 0;
+    this.gatewayLastExitAt = new Date().toISOString();
     this.gatewayExitMessage = "Gateway 已由桌面端停止。";
+    this.gatewayAutoStartState = "idle";
+    this.gatewayAutoStartMessage = "Gateway 已停止。";
     return { ok: true, status: await this.status(), message: "Gateway 已停止。" };
   }
 
   async restart(): Promise<HermesGatewayActionResult> {
     await this.stop();
-    return this.start();
+    return this.start({ forceReplace: true });
   }
 
   async shutdown() {
     await this.stop();
     await this.cancelWeixinQrLogin();
+  }
+
+  async autoStartIfConfigured() {
+    this.gatewayAutoStartState = "starting";
+    this.gatewayAutoStartMessage = "正在检查连接器并准备自动启动...";
+    const stored = await this.readConfig();
+    const envValues = await this.readEnvValues();
+    const enabledPlatforms = PLATFORM_REGISTRY
+      .map((platform) => ({ platform, config: stored.platforms?.[platform.id] }))
+      .filter((item) => item.config && item.config.enabled !== false);
+    if (enabledPlatforms.length === 0) {
+      this.gatewayAutoStartState = "idle";
+      this.gatewayAutoStartMessage = "没有已启用的连接器，已跳过自动启动。";
+      return;
+    }
+    for (const item of enabledPlatforms) {
+      const missing = await this.missingRequired(item.platform, item.config, envValues);
+      if (missing.length === 0) {
+        await this.syncEnv().catch(() => undefined);
+        const result = await this.start();
+        this.gatewayAutoStartState = result.ok ? "running" : "failed";
+        this.gatewayAutoStartMessage = result.message;
+        return;
+      }
+    }
+    this.gatewayAutoStartState = "idle";
+    this.gatewayAutoStartMessage = "连接器尚未配置完整，已跳过自动启动。";
   }
 
   getWeixinQrStatus(): WeixinQrLoginStatus {
@@ -365,6 +473,11 @@ export class HermesConnectorService {
     }
     const root = await this.resolveHermesRoot();
     const python = await this.resolvePythonCommand(root);
+    const dependencyStatus = await this.preflightWeixinDependencies(root, python);
+    if (dependencyStatus) {
+      this.weixinQrStatus = dependencyStatus;
+      return { ok: false, status: this.getWeixinQrStatus(), message: dependencyStatus.message };
+    }
     const script = [
       "import asyncio, datetime, json, sys, time",
       "from hermes_constants import get_hermes_home",
@@ -454,7 +567,7 @@ export class HermesConnectorService {
       "                emit({'type': 'phase', 'phase': last_phase, 'message': f'等待微信确认，当前状态：{status}'})",
       "            await asyncio.sleep(1)",
       "    emit({'type': 'error', 'code': 'timeout', 'message': '微信扫码登录超时，请重新扫码。'})",
-      "        return 1",
+      "    return 1",
       "sys.exit(asyncio.run(main()))",
     ].join("\n");
 
@@ -465,6 +578,14 @@ export class HermesConnectorService {
       startedAt: new Date().toISOString(),
       success: undefined,
       message: "正在获取微信二维码...",
+      failureCode: undefined,
+      lastHeartbeatAt: new Date().toISOString(),
+      attempt: (this.weixinQrStatus.attempt ?? 0) + 1,
+      recoveryAction: undefined,
+      recoveryCommand: undefined,
+      runtimePythonLabel: python.label,
+      failureKind: undefined,
+      recommendedFix: undefined,
     };
     const child = spawn(python.command, [...python.args, "-c", script], {
       cwd: root,
@@ -477,6 +598,7 @@ export class HermesConnectorService {
     child.stderr.on("data", (chunk: Buffer) => {
       this.weixinQrStatus = {
         ...this.weixinQrStatus,
+        lastHeartbeatAt: new Date().toISOString(),
         output: trimLog(`${this.weixinQrStatus.output ?? ""}${sanitizeSensitiveLog(chunk.toString("utf8"))}`),
       };
     });
@@ -487,6 +609,8 @@ export class HermesConnectorService {
         phase: "failed",
         completedAt: new Date().toISOString(),
         success: false,
+        failureCode: "spawn_failed",
+        lastHeartbeatAt: new Date().toISOString(),
         message: `微信扫码登录启动失败：${error.message}`,
       };
     });
@@ -497,9 +621,11 @@ export class HermesConnectorService {
       this.weixinQrStatus = {
         ...this.weixinQrStatus,
         running: false,
-        phase: "failed",
+        phase: exitCode === 0 ? "failed" : "timeout",
         completedAt: new Date().toISOString(),
         success: false,
+        failureCode: exitCode === 0 ? "missing_credentials" : "timeout",
+        lastHeartbeatAt: new Date().toISOString(),
         message: exitCode === 0 ? "微信扫码登录已结束，但未返回凭据。" : "微信扫码登录未完成或已超时。",
       };
     });
@@ -518,9 +644,90 @@ export class HermesConnectorService {
       phase: "cancelled",
       completedAt: new Date().toISOString(),
       success: false,
+      failureCode: "cancelled",
+      lastHeartbeatAt: new Date().toISOString(),
       message: "微信扫码登录已取消。",
+      recoveryAction: undefined,
+      recoveryCommand: undefined,
+      failureKind: undefined,
+      recommendedFix: undefined,
     };
     return { ok: true, status: this.getWeixinQrStatus(), message: "微信扫码登录已取消。" };
+  }
+
+  async installWeixinDependency(): Promise<WeixinDependencyInstallResult> {
+    const root = await this.resolveHermesRoot();
+    const python = await this.resolvePythonCommand(root);
+    const dependencyStatus = await this.preflightWeixinDependencies(root, python);
+    const command = `${python.label} -m pip install aiohttp`;
+    if (!dependencyStatus) {
+      const status = this.getWeixinQrStatus();
+      return {
+        ok: true,
+        message: "当前运行环境已具备 aiohttp，准备重新开始扫码。",
+        command,
+        stdout: "",
+        stderr: "",
+        status,
+      };
+    }
+
+    const result = await runCommand(python.command, [...python.args, "-m", "pip", "install", "aiohttp"], {
+      cwd: root,
+      timeoutMs: 120000,
+      env: { ...PYTHON_ENV, PYTHONPATH: root },
+    });
+    const stdout = trimLog(result.stdout || "");
+    const stderr = trimLog(result.stderr || "");
+    if (result.exitCode !== 0) {
+      const failure = classifyWeixinInstallFailure(`${stdout}\n${stderr}`);
+      const status: WeixinQrLoginStatus = {
+        ...dependencyStatus,
+        running: false,
+        phase: "failed",
+        completedAt: new Date().toISOString(),
+        success: false,
+        message: `安装 aiohttp 失败：${failure.message}`,
+        failureKind: "manual_fix",
+        recommendedFix: failure.recommendedFix,
+      };
+      this.weixinQrStatus = status;
+      return {
+        ok: false,
+        message: status.message,
+        command,
+        stdout,
+        stderr,
+        failureCategory: failure.category,
+        recommendedFix: failure.recommendedFix,
+        status,
+      };
+    }
+
+    const afterInstallStatus = await this.preflightWeixinDependencies(root, python);
+    if (afterInstallStatus) {
+      this.weixinQrStatus = afterInstallStatus;
+      return {
+        ok: false,
+        message: afterInstallStatus.message,
+        command,
+        stdout,
+        stderr,
+        failureCategory: "unknown",
+        recommendedFix: afterInstallStatus.recommendedFix,
+        status: afterInstallStatus,
+      };
+    }
+
+    const restart = await this.startWeixinQrLogin();
+    return {
+      ok: restart.ok,
+      message: restart.message,
+      command,
+      stdout,
+      stderr,
+      status: restart.status,
+    };
   }
 
   private handleWeixinQrOutput(text: string) {
@@ -534,6 +741,7 @@ export class HermesConnectorService {
         if (!safeLine.trim()) continue;
         this.weixinQrStatus = {
           ...this.weixinQrStatus,
+          lastHeartbeatAt: new Date().toISOString(),
           output: trimLog(`${this.weixinQrStatus.output ?? ""}${safeLine}\n`),
         };
         continue;
@@ -545,6 +753,7 @@ export class HermesConnectorService {
           phase: "waiting_scan",
           qrUrl: event.qrUrl,
           expiresAt: event.expiresAt,
+          lastHeartbeatAt: new Date().toISOString(),
           message: event.message || "请使用微信扫码。",
         };
         continue;
@@ -554,23 +763,72 @@ export class HermesConnectorService {
           ...this.weixinQrStatus,
           running: true,
           phase: event.phase,
+          lastHeartbeatAt: new Date().toISOString(),
           message: event.message || this.weixinQrStatus.message,
+          recoveryAction: undefined,
+          recoveryCommand: undefined,
+          failureKind: undefined,
+          recommendedFix: undefined,
         };
         continue;
       }
       if (event.type === "error") {
+        const decorated = decorateWeixinFailure(
+          event.code,
+          event.message || "微信扫码登录失败。",
+          this.weixinQrStatus.runtimePythonLabel,
+        );
         this.weixinQrStatus = {
           ...this.weixinQrStatus,
           running: false,
-          phase: "failed",
+          phase: event.code === "timeout" ? "timeout" : "failed",
           completedAt: new Date().toISOString(),
           success: false,
-          message: event.message || "微信扫码登录失败。",
+          failureCode: event.code ?? "unknown_error",
+          lastHeartbeatAt: new Date().toISOString(),
+          message: decorated.message,
+          recoveryAction: decorated.recoveryAction,
+          recoveryCommand: decorated.recoveryCommand,
+          failureKind: decorated.failureKind,
+          recommendedFix: decorated.recommendedFix,
         };
         continue;
       }
       void this.completeWeixinQrLogin(event);
     }
+  }
+
+  private async preflightWeixinDependencies(root: string, python: PythonCommand): Promise<WeixinQrLoginStatus | undefined> {
+    const result = await runCommand(
+      python.command,
+      [...python.args, "-c", "import importlib.util, json; print(json.dumps({'aiohttp': bool(importlib.util.find_spec('aiohttp')), 'cryptography': bool(importlib.util.find_spec('cryptography'))}))"],
+      {
+        cwd: root,
+        timeoutMs: 10000,
+        env: { ...PYTHON_ENV, PYTHONPATH: root },
+      },
+    );
+    if (result.exitCode !== 0) {
+      return {
+        running: false,
+        phase: "failed",
+        completedAt: new Date().toISOString(),
+        success: false,
+        message: "无法检查微信扫码运行环境，请确认 Hermes Python 可正常执行。",
+        failureCode: "python_preflight_failed",
+        runtimePythonLabel: python.label,
+        failureKind: "manual_fix",
+        recommendedFix: "请先在设置里确认 Hermes Python 命令可执行，再重新尝试扫码。",
+      };
+    }
+    const payload = JSON.parse(result.stdout.trim() || "{}") as { aiohttp?: boolean; cryptography?: boolean };
+    if (!payload.aiohttp) {
+      return decorateWeixinFailure("missing_aiohttp", "缺少 aiohttp，微信扫码运行环境不完整。", python.label);
+    }
+    if (!payload.cryptography) {
+      return decorateWeixinFailure("missing_crypto", "缺少 cryptography，微信扫码环境还不完整。", python.label);
+    }
+    return undefined;
   }
 
   private async completeWeixinQrLogin(credentials: Extract<WeixinQrEvent, { type: "confirmed" }>) {
@@ -599,6 +857,7 @@ export class HermesConnectorService {
           cdnBaseUrl: "https://novac2c.cdn.weixin.qq.com/c2c",
           dmPolicy: "pairing",
           allowAllUsers: false,
+          ...(credentials.userId ? { allowedUsers: credentials.userId } : {}),
           groupPolicy: "disabled",
           ...(credentials.userId ? { homeChannel: credentials.userId } : {}),
         },
@@ -621,6 +880,7 @@ export class HermesConnectorService {
         accountId: credentials.accountId,
         userId: credentials.userId,
         gatewayStarted,
+        lastHeartbeatAt: new Date().toISOString(),
         message: gatewayStarted
           ? "微信扫码成功，凭据已保存并同步，Gateway 已启动。"
           : `微信扫码成功，凭据已保存并同步，但 Gateway 启动状态需要确认：${gatewayResult.message}`,
@@ -632,6 +892,8 @@ export class HermesConnectorService {
         phase: "failed",
         completedAt: new Date().toISOString(),
         success: false,
+        failureCode: "complete_failed",
+        lastHeartbeatAt: new Date().toISOString(),
         message: error instanceof Error ? error.message : "微信扫码登录结果处理失败。",
       };
     }
@@ -673,10 +935,12 @@ export class HermesConnectorService {
 
     const missingRequired = await this.missingRequired(platform, saved, envValues);
     const configured = missingRequired.length === 0;
-    const status = connectorStatus(enabled, configured, gateway);
+    const status = connectorStatus(enabled, configured);
+    const runtimeStatus = connectorRuntimeStatus(enabled, configured, gateway);
     return {
       platform,
       status,
+      runtimeStatus,
       enabled,
       configured,
       missingRequired,
@@ -685,7 +949,7 @@ export class HermesConnectorService {
       secretStatus,
       updatedAt: saved?.updatedAt,
       lastSyncedAt: saved?.lastSyncedAt,
-      message: statusMessage(status, missingRequired),
+      message: statusMessage(status, runtimeStatus, missingRequired),
     };
   }
 
@@ -748,6 +1012,8 @@ export class HermesConnectorService {
 
     addCandidate(configured);
     if (process.platform === "win32") {
+      addCandidate(path.join(process.env.USERPROFILE ?? "", "miniconda3", "python.exe"));
+      addCandidate(path.join(process.env.USERPROFILE ?? "", "anaconda3", "python.exe"));
       addCandidate(path.join(root, ".venv", "Scripts", "python.exe"));
       addCandidate(path.join(root, "venv", "Scripts", "python.exe"));
       addCandidate(path.join(root, "env", "Scripts", "python.exe"));
@@ -768,12 +1034,12 @@ export class HermesConnectorService {
         failures.push(`${candidate.label}: 文件不存在`);
         continue;
       }
-      const result = await runCommand(candidate.command, [...candidate.args, "--version"], {
+      const result = await runCommand(candidate.command, [...candidate.args, path.join(root, "hermes"), "--version"], {
         cwd: root,
         timeoutMs: 5000,
-        env: PYTHON_ENV,
+        env: { ...PYTHON_ENV, PYTHONPATH: root },
       });
-      if (result.exitCode === 0) {
+      if (result.exitCode === 0 && /Hermes Agent/i.test(`${result.stdout}\n${result.stderr}`)) {
         return candidate;
       }
       failures.push(`${candidate.label}: ${trimLog(result.stderr || result.stdout || `exit ${result.exitCode}`)}`);
@@ -801,8 +1067,30 @@ export class HermesConnectorService {
     };
   }
 
+  private async gatewayStateStatus(): Promise<GatewayStateSnapshot | undefined> {
+    const raw = await fs.readFile(path.join(this.hermesHomePath(), "gateway_state.json"), "utf8").catch(() => "");
+    if (!raw.trim()) return undefined;
+    return parseGatewayStateSnapshot(raw, isPidAlive);
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private envPath() {
     return path.join(os.homedir(), ".hermes", ".env");
+  }
+
+  private hermesHomePath() {
+    return path.dirname(this.envPath());
+  }
+
+  private async clearGatewayRuntimeMarkers() {
+    const home = this.hermesHomePath();
+    await Promise.all([
+      fs.rm(path.join(home, "gateway.pid"), { force: true }).catch(() => undefined),
+      fs.rm(path.join(home, "gateway_state.json"), { force: true }).catch(() => undefined),
+    ]);
   }
 
   private configPath() {
@@ -887,19 +1175,24 @@ function secretRef(platformId: HermesConnectorPlatformId, fieldKey: string) {
   return `connector.${platformId}.${fieldKey}`;
 }
 
-function connectorStatus(enabled: boolean, configured: boolean, gateway: HermesGatewayStatus): HermesConnectorStatus {
+function connectorStatus(enabled: boolean, configured: boolean): HermesConnectorStatus {
   if (!enabled) return "disabled";
   if (!configured) return "unconfigured";
-  if (gateway.running) return "running";
-  if (gateway.lastError && !gateway.running) return "error";
   return "configured";
 }
 
-function statusMessage(status: HermesConnectorStatus, missing: string[]) {
+function connectorRuntimeStatus(enabled: boolean, configured: boolean, gateway: HermesGatewayStatus): HermesConnectorConfig["runtimeStatus"] {
+  if (!enabled || !configured) return "stopped";
+  if (gateway.running) return "running";
+  if (gateway.healthStatus === "error" || Boolean(gateway.lastError)) return "error";
+  return "stopped";
+}
+
+function statusMessage(status: HermesConnectorStatus, runtimeStatus: HermesConnectorConfig["runtimeStatus"], missing: string[]) {
   if (status === "disabled") return "已禁用，不会同步到 Hermes .env。";
   if (status === "unconfigured") return `缺少必填配置：${missing.join("、")}`;
-  if (status === "running") return "已配置，Gateway 正在运行。";
-  if (status === "error") return "已配置，但 Gateway 最近报告错误。";
+  if (runtimeStatus === "running") return "已配置，Gateway 正在运行。";
+  if (runtimeStatus === "error") return "已配置，但 Gateway 最近报告错误。";
   return "已配置，等待同步或启动 Gateway。";
 }
 
@@ -919,12 +1212,108 @@ function unquoteEnv(value: string) {
   return value;
 }
 
+function buildGatewayEnv(baseEnv: NodeJS.ProcessEnv, hermesEnv: Record<string, string>): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    ...hermesEnv,
+    ...PYTHON_ENV,
+  };
+}
+
 export function removeManagedBlock(content: string) {
   const start = content.indexOf(MANAGED_START);
   if (start === -1) return content;
   const end = content.indexOf(MANAGED_END, start);
   if (end === -1) return content.slice(0, start).trimEnd();
   return `${content.slice(0, start)}${content.slice(end + MANAGED_END.length)}`.trimEnd();
+}
+
+function decorateWeixinFailure(code: string | undefined, message: string, runtimePythonLabel?: string): WeixinQrLoginStatus {
+  if (code === "missing_aiohttp") {
+    return {
+      running: false,
+      phase: "failed",
+      completedAt: new Date().toISOString(),
+      success: false,
+      message,
+      failureCode: code,
+      recoveryAction: "install_aiohttp",
+      recoveryCommand: runtimePythonLabel ? `${runtimePythonLabel} -m pip install aiohttp` : "python -m pip install aiohttp",
+      runtimePythonLabel,
+      failureKind: "recoverable",
+      recommendedFix: "点击“一键安装依赖”，系统会把 aiohttp 安装到 Hermes 正在使用的 Python 环境里，然后自动重试扫码。",
+    };
+  }
+  if (code === "missing_crypto") {
+    return {
+      running: false,
+      phase: "failed",
+      completedAt: new Date().toISOString(),
+      success: false,
+      message,
+      failureCode: code,
+      runtimePythonLabel,
+      failureKind: "manual_fix",
+      recommendedFix: "当前缺少 cryptography，建议先在 Hermes Python 环境里手动执行 pip install cryptography，再重新扫码。",
+    };
+  }
+  return {
+    running: false,
+    phase: code === "timeout" ? "timeout" : "failed",
+    completedAt: new Date().toISOString(),
+    success: false,
+    message,
+    failureCode: code ?? "unknown_error",
+    runtimePythonLabel,
+    failureKind: code === "fetch_qr_failed" ? "external_unreachable" : "manual_fix",
+  };
+}
+
+function classifyWeixinInstallFailure(output: string) {
+  const text = output.toLowerCase();
+  if (text.includes("temporary failure in name resolution") || text.includes("connection timed out") || text.includes("no matching distribution found")) {
+    return {
+      category: "network" as const,
+      message: "网络不可用，无法从 pip 源下载 aiohttp。",
+      recommendedFix: "请确认当前网络可访问 Python 包源，或切换到可用镜像后重试。",
+    };
+  }
+  if (text.includes("no module named pip") || text.includes("pip is not recognized")) {
+    return {
+      category: "pip_unavailable" as const,
+      message: "当前 Python 环境没有可用的 pip。",
+      recommendedFix: "请先为 Hermes 的 Python 环境安装 pip，再重新点击安装依赖。",
+    };
+  }
+  if (text.includes("permission denied") || text.includes("access is denied")) {
+    return {
+      category: "permission_denied" as const,
+      message: "当前环境没有安装依赖的权限。",
+      recommendedFix: "请确认 Hermes Python 环境可写，或用有权限的终端先完成 aiohttp 安装。",
+    };
+  }
+  if (text.includes("python") && text.includes("traceback")) {
+    return {
+      category: "interpreter_error" as const,
+      message: "Hermes Python 解释器执行异常。",
+      recommendedFix: "请先在设置里检查 Hermes Python 命令是否正确，再重新尝试。",
+    };
+  }
+  return {
+    category: "unknown" as const,
+    message: "依赖安装失败。",
+    recommendedFix: "请查看错误输出，确认 pip 和网络后再重试。",
+  };
+}
+
+function looksLikeGatewayRunning(stdout?: string, stderr?: string) {
+  const text = `${stdout ?? ""}\n${stderr ?? ""}`;
+  return /gateway is running|gateway.+running/i.test(text) && !/not running/i.test(text);
+}
+
+function looksLikeGatewayFailure(stdout?: string, stderr?: string) {
+  const text = `${stdout ?? ""}\n${stderr ?? ""}`;
+  return /traceback|module not found|error:|exception/i.test(text);
 }
 
 function trimLog(value: string) {
@@ -964,7 +1353,7 @@ function sanitizeSensitiveLog(value: string) {
 }
 
 function isWeixinQrTerminal(phase: WeixinQrLoginStatus["phase"]) {
-  return phase === "success" || phase === "failed" || phase === "cancelled";
+  return phase === "success" || phase === "timeout" || phase === "failed" || phase === "cancelled";
 }
 
 export function parseWeixinQrEvent(line: string): WeixinQrEvent | undefined {
@@ -1021,9 +1410,47 @@ function isWeixinQrPhase(value: string): value is WeixinQrLoginStatus["phase"] {
     "syncing",
     "starting_gateway",
     "success",
+    "timeout",
     "failed",
     "cancelled",
   ].includes(value);
+}
+
+function parseGatewayStateSnapshot(raw: string, pidAlive: (pid: number) => boolean): GatewayStateSnapshot | undefined {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as Record<string, unknown>;
+  if (record.gateway_state !== "running") return undefined;
+  const pid = typeof record.pid === "number" && Number.isInteger(record.pid) && record.pid > 0 ? record.pid : undefined;
+  if (pid && !pidAlive(pid)) return undefined;
+  const platforms = record.platforms && typeof record.platforms === "object"
+    ? Object.entries(record.platforms as Record<string, Record<string, unknown>>)
+      .filter(([, value]) => value?.state === "connected")
+      .map(([key]) => key)
+    : [];
+  const message = platforms.length > 0
+    ? `Gateway 状态文件显示正在运行，已连接：${platforms.join(", ")}。`
+    : "Gateway 状态文件显示正在运行。";
+  return {
+    running: true,
+    pid,
+    updatedAt: typeof record.updated_at === "string" ? record.updated_at : undefined,
+    message,
+  };
+}
+
+function isPidAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function killProcessTree(pid: number) {
@@ -1043,7 +1470,11 @@ async function killProcessTree(pid: number) {
 
 export const testOnly = {
   PLATFORM_REGISTRY,
+  classifyWeixinInstallFailure,
+  decorateWeixinFailure,
+  parseGatewayStateSnapshot,
   parseCommandLine,
   parseWeixinQrEvent,
+  buildGatewayEnv,
   removeManagedBlock,
 };

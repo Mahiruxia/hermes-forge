@@ -10,9 +10,11 @@ import type { RuntimeEnvResolver } from "./runtime-env-resolver";
 import type { SessionLog } from "./session-log";
 import type { WorkSessionService } from "./work-session-service";
 import type { HermesConnectorService } from "./hermes-connector-service";
+import type { HermesModelSyncService } from "./hermes-model-sync";
 import type { HermesWebUiService } from "./hermes-webui-service";
 import type { HermesWindowsBridgeTestService } from "./hermes-windows-bridge-test-service";
 import type { WindowsControlBridge } from "./windows-control-bridge";
+import type { ApprovalService } from "./approval-service";
 import type { EngineAdapter } from "../adapters/engine-adapter";
 import type { SecretVault } from "../auth/secret-vault";
 import type { DiagnosticsService } from "../diagnostics/diagnostics-service";
@@ -22,6 +24,7 @@ import type { TaskRunner } from "../process/task-runner";
 import type { WorkspaceLock } from "../process/workspace-lock";
 import type { EngineProbeService } from "../probes/engine-probe-service";
 import type { SetupService } from "../setup/setup-service";
+import type { ClientAutoUpdateService } from "../updater/client-auto-update-service";
 import type { UpdateService } from "../updater/update-service";
 import { IpcChannels } from "../shared/ipc";
 import {
@@ -33,13 +36,22 @@ import {
   startTaskInputSchema,
   workspacePathInputSchema,
 } from "../shared/schemas";
-import type { ClientInfo, HermesStatusSummary, ModelConnectionTestResult, SessionAttachment } from "../shared/types";
+import type {
+  ClientInfo,
+  HermesStatusSummary,
+  LocalModelDiscoveryResult,
+  ModelConnectionTestResult,
+  ModelProfile,
+  RuntimeConfig,
+  SessionAttachment,
+} from "../shared/types";
 import { normalizeOpenAiCompatibleBaseUrl } from "../shared/model-config";
 
 const quickTextFileInputSchema = z.object({
   fileName: z.string().trim().max(120).optional(),
   content: z.string().max(20000).optional(),
 });
+const attachmentSourcePathsSchema = z.array(workspacePathInputSchema).max(12);
 
 const connectorPlatformIdSchema = z.enum([
   "telegram",
@@ -67,6 +79,15 @@ const connectorSaveInputSchema = z.object({
   values: z.record(z.string(), z.union([z.string().max(20000), z.boolean(), z.undefined()])),
 });
 
+const modelConnectionDraftSchema = z.object({
+  sourceType: z.enum(["local_openai", "openrouter", "openai", "custom_gateway", "legacy"]),
+  profileId: z.string().max(120).optional(),
+  provider: z.enum(["openai", "anthropic", "openrouter", "local", "custom"]).optional(),
+  baseUrl: z.string().trim().max(2000).optional(),
+  model: z.string().trim().max(200).optional(),
+  secretRef: z.string().trim().max(200).optional(),
+});
+
 export type IpcServices = {
   appPaths: AppPaths;
   taskRunner: TaskRunner;
@@ -77,6 +98,7 @@ export type IpcServices = {
   workSessionService: WorkSessionService;
   hermes: EngineAdapter;
   updateService: UpdateService;
+  clientAutoUpdateService: ClientAutoUpdateService;
   engineProbeService: EngineProbeService;
   configStore: RuntimeConfigStore;
   runtimeEnvResolver: RuntimeEnvResolver;
@@ -85,12 +107,26 @@ export type IpcServices = {
   diagnosticsService: DiagnosticsService;
   hermesWebUiService: HermesWebUiService;
   hermesConnectorService: HermesConnectorService;
+  hermesModelSyncService: HermesModelSyncService;
   windowsControlBridge: WindowsControlBridge;
   hermesWindowsBridgeTestService: HermesWindowsBridgeTestService;
+  approvalService: ApprovalService;
   clientInfo: () => ClientInfo;
 };
 
 export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcServices) {
+  async function writeRuntimeConfigWithModelSync(nextConfig: RuntimeConfig, forceModelSync = false) {
+    const previous = await services.configStore.read();
+    const saved = await services.configStore.write(nextConfig);
+    if (forceModelSync || modelRuntimeChanged(previous, saved)) {
+      const sync = await services.hermesModelSyncService.syncRuntimeConfig(saved);
+      if (sync.synced) {
+        await restartGatewayIfRunning(services);
+      }
+    }
+    return saved;
+  }
+
   ipcMain.handle(IpcChannels.restartApp, () => {
     app.relaunch();
     app.exit(0);
@@ -116,32 +152,13 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       ],
     });
     if (result.canceled || result.filePaths.length === 0) return [];
-    const attachmentsDir = path.join(targetSessionPath, "attachments");
-    await fs.mkdir(attachmentsDir, { recursive: true });
-    const attachments: SessionAttachment[] = [];
-    for (const sourcePath of result.filePaths.slice(0, 12)) {
-      const stat = await fs.stat(sourcePath).catch(() => undefined);
-      if (!stat?.isFile()) continue;
-      if (stat.size > 200 * 1024 * 1024) {
-        throw new Error(`附件过大：${path.basename(sourcePath)}。单个文件上限为 200MB。`);
-      }
-      const id = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-      const safeName = sanitizeAttachmentName(path.basename(sourcePath));
-      const targetPath = await uniqueFilePath(attachmentsDir, `${id}-${safeName}`);
-      await fs.copyFile(sourcePath, targetPath);
-      const mimeType = inferMimeType(targetPath);
-      attachments.push({
-        id,
-        name: safeName,
-        path: targetPath,
-        originalPath: sourcePath,
-        kind: mimeType.startsWith("image/") ? "image" : "file",
-        mimeType,
-        size: stat.size,
-        createdAt: new Date().toISOString(),
-      });
-    }
-    return attachments;
+    return importSessionAttachments(targetSessionPath, result.filePaths);
+  });
+
+  ipcMain.handle(IpcChannels.importSessionAttachments, async (_event, sessionFilesPath: string, filePaths: string[]): Promise<SessionAttachment[]> => {
+    const targetSessionPath = workspacePathInputSchema.parse(sessionFilesPath);
+    const sourcePaths = attachmentSourcePathsSchema.parse(filePaths);
+    return importSessionAttachments(targetSessionPath, sourcePaths);
   });
 
   ipcMain.handle(IpcChannels.createQuickTextFile, async (_event, input) => {
@@ -266,6 +283,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.startWeixinQrLogin, () => services.hermesConnectorService.startWeixinQrLogin());
   ipcMain.handle(IpcChannels.getWeixinQrLoginStatus, () => services.hermesConnectorService.getWeixinQrStatus());
   ipcMain.handle(IpcChannels.cancelWeixinQrLogin, () => services.hermesConnectorService.cancelWeixinQrLogin());
+  ipcMain.handle(IpcChannels.installWeixinDependency, () => services.hermesConnectorService.installWeixinDependency());
   ipcMain.handle(IpcChannels.listProjects, () => services.hermesWebUiService.listProjects());
   ipcMain.handle(IpcChannels.saveProject, (_event, input) => services.hermesWebUiService.saveProject(input ?? {}));
   ipcMain.handle(IpcChannels.deleteProject, (_event, id: string) => services.hermesWebUiService.deleteProject(sessionIdSchema.parse(id)));
@@ -304,10 +322,10 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.respondApproval, (_event, input) => {
     const parsed = z.object({
       id: z.string().trim().min(1).max(160),
-      approved: z.boolean(),
+      choice: z.enum(["once", "session", "always", "deny"]),
       editedCommand: z.string().trim().max(4000).optional(),
     }).parse(input ?? {});
-    return { ok: true, ...parsed, message: parsed.approved ? "已批准，等待 Hermes 后续结构化接入。" : "已拒绝该操作。" };
+    return services.approvalService.respond(parsed);
   });
 
   ipcMain.handle(IpcChannels.getHermesStatus, async (_event, workspacePath?: string): Promise<HermesStatusSummary> => {
@@ -344,8 +362,14 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     return services.updateService.checkAll(config);
   });
 
+  ipcMain.handle(IpcChannels.checkClientUpdate, () => services.clientAutoUpdateService.checkForUpdates(true));
+
   ipcMain.handle(IpcChannels.updateHermes, () => services.setupService.updateHermes());
-  ipcMain.handle(IpcChannels.installHermes, () => services.setupService.installHermes());
+  ipcMain.handle(IpcChannels.installHermes, (event) =>
+    services.setupService.installHermes((payload) => {
+      event.sender.send(IpcChannels.installHermesEvent, payload);
+    }),
+  );
   ipcMain.handle(IpcChannels.getRuntimeConfig, () => services.configStore.read());
   ipcMain.handle(IpcChannels.testHermesWindowsBridge, () => services.hermesWindowsBridgeTestService.test());
   ipcMain.handle(IpcChannels.getConfigOverview, async (_event, workspacePath?: string) => {
@@ -364,6 +388,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     })));
     const hermesPath = await services.configStore.getEnginePath("hermes");
     const health = await services.setupService.getSummary(workspacePath);
+    const modelSummary = summarizeModelSource(runtimeConfig);
     return {
       runtimeConfig,
       hermes: {
@@ -384,6 +409,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
         defaultProfileId: runtimeConfig.defaultModelProfileId,
         providerProfiles: runtimeConfig.providerProfiles ?? [],
         modelProfiles: runtimeConfig.modelProfiles,
+        summary: modelSummary,
       },
       secrets,
       health,
@@ -439,46 +465,41 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       providerProfiles: z.array(z.any()).optional(),
     }).parse(input);
     const config = await services.configStore.read();
-    return services.configStore.write({
+    return writeRuntimeConfigWithModelSync({
       ...config,
       defaultModelProfileId: parsed.defaultProfileId ?? config.defaultModelProfileId,
       modelProfiles: parsed.modelProfiles ?? config.modelProfiles,
       providerProfiles: parsed.providerProfiles ?? config.providerProfiles,
-    });
+    }, true);
   });
-  ipcMain.handle(IpcChannels.saveRuntimeConfig, (_event, config) => services.configStore.write(runtimeConfigSchema.parse(config)));
+  ipcMain.handle(IpcChannels.saveRuntimeConfig, (_event, config) =>
+    writeRuntimeConfigWithModelSync(runtimeConfigSchema.parse(config)),
+  );
+  ipcMain.handle(IpcChannels.discoverLocalModelSources, async (): Promise<LocalModelDiscoveryResult> => {
+    return discoverLocalModelSources();
+  });
 
-  ipcMain.handle(IpcChannels.testModelConnection, async (_event, profileId?: string): Promise<ModelConnectionTestResult> => {
+  ipcMain.handle(IpcChannels.testModelConnection, async (_event, input?: string | Record<string, unknown>): Promise<ModelConnectionTestResult> => {
     const config = await services.configStore.read();
-    const profile =
-      config.modelProfiles.find((item) => item.id === profileId) ??
-      config.modelProfiles.find((item) => item.id === config.defaultModelProfileId) ??
-      config.modelProfiles[0];
+    const draft = typeof input === "string" || typeof input === "undefined" ? undefined : modelConnectionDraftSchema.parse(input);
+    const profile = draft
+      ? draftToModelProfile(draft)
+      : config.modelProfiles.find((item) => item.id === input) ??
+        config.modelProfiles.find((item) => item.id === config.defaultModelProfileId) ??
+        config.modelProfiles[0];
 
-    if (!profile) return { ok: false, message: "尚未配置模型。请先添加一个模型配置。" };
-    if (!profile.model.trim()) return { ok: false, profileId: profile.id, message: "模型名称为空，请填写 model。" };
-    if (profile.provider === "local") return { ok: true, profileId: profile.id, message: `本地模型配置可用：${profile.model}` };
-    if (profile.provider === "custom") {
-      if (!profile.baseUrl?.trim()) {
-        return { ok: false, profileId: profile.id, message: "本地/自定义模型缺少 Base URL。" };
-      }
-      let normalizedBaseUrl: string;
-      try {
-        normalizedBaseUrl = normalizeOpenAiCompatibleBaseUrl(profile.baseUrl) ?? "";
-      } catch {
-        return { ok: false, profileId: profile.id, message: "本地/自定义模型的 Base URL 格式不正确。" };
-      }
-      if (profile.secretRef && !(await services.secretVault.hasSecret(profile.secretRef))) {
-        return { ok: false, profileId: profile.id, message: "当前配置填写了密钥引用，但对应密钥尚未保存或已失效。" };
-      }
-      const secret = profile.secretRef ? await services.secretVault.readSecret(profile.secretRef) : undefined;
-      return testOpenAiCompatibleModel(profile.id, normalizedBaseUrl, profile.model, secret);
+    if (!profile) return { ok: false, message: "尚未配置模型。请先选择来源并完成测试。" };
+    if (!profile.model.trim()) {
+      return {
+        ok: false,
+        profileId: profile.id,
+        sourceType: sourceTypeFromProfile(profile),
+        message: "模型名还没填，请先选择或输入模型。",
+        failureCategory: "model_not_found",
+        recommendedFix: "先完成模型名填写，再点击测试连接。",
+      };
     }
-    if (!profile.secretRef) return { ok: false, profileId: profile.id, message: `${profile.provider} 配置缺少 API Key 引用。` };
-    if (!(await services.secretVault.hasSecret(profile.secretRef))) {
-      return { ok: false, profileId: profile.id, message: `${profile.provider} API Key 尚未保存或已失效。` };
-    }
-    return { ok: true, profileId: profile.id, message: `${profile.provider}/${profile.model} 已具备运行所需配置与密钥。` };
+    return validateModelProfile(profile, services.secretVault);
   });
 
   ipcMain.handle(IpcChannels.getSetupSummary, (_event, workspacePath?: string) => services.setupService.getSummary(workspacePath));
@@ -495,49 +516,294 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.exportDiagnostics, (_event, workspacePath?: string) => services.diagnosticsService.export(workspacePath));
 }
 
-async function testOpenAiCompatibleModel(profileId: string, baseUrl: string, model: string, apiKey?: string): Promise<ModelConnectionTestResult> {
+async function restartGatewayIfRunning(services: IpcServices) {
+  const status = await services.hermesConnectorService.status().catch(() => undefined);
+  if (!status?.running) {
+    return;
+  }
+  const restart = await services.hermesConnectorService.restart();
+  if (!restart.ok) {
+    throw new Error(`模型已同步，但 Gateway 重启失败：${restart.message}`);
+  }
+}
+
+function modelRuntimeChanged(previous: RuntimeConfig, next: RuntimeConfig) {
+  return JSON.stringify(modelRuntimeSnapshot(previous)) !== JSON.stringify(modelRuntimeSnapshot(next));
+}
+
+function modelRuntimeSnapshot(config: RuntimeConfig) {
+  return {
+    defaultModelProfileId: config.defaultModelProfileId,
+    modelProfiles: config.modelProfiles,
+    providerProfiles: config.providerProfiles,
+  };
+}
+
+async function testOpenAiCompatibleModel(
+  profileId: string,
+  baseUrl: string,
+  model: string,
+  apiKey: string | undefined,
+  sourceType: ModelConnectionTestResult["sourceType"],
+): Promise<ModelConnectionTestResult> {
   const modelsUrl = `${baseUrl.replace(/\/$/, "")}/models`;
   try {
-    console.info("[Model Test] Testing connection to:", modelsUrl);
     const response = await fetch(modelsUrl, {
       method: "GET",
-      headers: { authorization: `Bearer ${apiKey || "lm-studio"}` },
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : { authorization: "Bearer lm-studio" },
       signal: AbortSignal.timeout(15000),
     });
-    console.info("[Model Test] Response status:", response.status);
     if (!response.ok) {
-      const statusText = response.statusText || "未知状态";
-      return { ok: false, profileId, message: `本地模型服务可访问，但 /models 返回 HTTP ${response.status} (${statusText})。请确认 Base URL 是否正确：${baseUrl}。` };
+      return buildHttpFailure(profileId, sourceType, baseUrl, response.status, response.statusText);
     }
     const payload = await response.json().catch(() => undefined) as { data?: Array<{ id?: string }> } | undefined;
-    console.info("[Model Test] Available models:", payload?.data?.map((item) => item.id));
     const availableModels = payload?.data?.map((item) => item.id).filter((item): item is string => Boolean(item)) ?? [];
     const hasModel = availableModels.length === 0 || availableModels.includes(model);
     if (!hasModel) {
       return {
         ok: false,
         profileId,
-        message: `已连上本地模型服务，但没有找到模型 ${model}。可用模型：${availableModels.length > 0 ? availableModels.slice(0, 8).join("、") : "未返回模型列表"}`,
+        sourceType,
+        normalizedBaseUrl: baseUrl,
+        availableModels,
+        failureCategory: "model_not_found",
+        recommendedFix: "请从可用模型列表里重新选择，或确认服务端是否已经加载了目标模型。",
+        message: `已经连上模型服务，但没有找到模型“${model}”。${availableModels.length > 0 ? `可用模型有：${availableModels.slice(0, 8).join("、")}` : "服务端这次没有返回模型列表。"}`
       };
     }
-    return { ok: true, profileId, message: `已连上本地模型服务：${baseUrl}，模型 ${model} 可用。` };
+    return {
+      ok: true,
+      profileId,
+      sourceType,
+      normalizedBaseUrl: baseUrl,
+      availableModels,
+      message: `连接成功，当前来源可用，模型“${model}”已通过测试。`,
+    };
   } catch (error) {
-    console.error("[Model Test] Connection failed:", error);
     const errorMessage = error instanceof Error ? error.message : "未知错误";
-    let hint = "";
-    if (errorMessage.includes("fetch failed") || errorMessage.includes("ECONNREFUSED")) {
-      hint = "\n提示：请确保 llama.cpp 服务已启动，并且 Base URL 指向实际监听端口，例如 http://127.0.0.1:8081/v1。";
-    } else if (errorMessage.includes("timeout")) {
-      hint = "\n提示：连接超时，请检查网络或增加超时时间。";
-    } else if (errorMessage.includes("CORS") || errorMessage.includes("CORB")) {
-      hint = "\n提示：检测到 CORS 问题，请确保 llama.cpp 服务允许跨域请求。";
-    }
+    const failureCategory = errorMessage.includes("Invalid URL") ? "invalid_url" : "network_unreachable";
     return {
       ok: false,
       profileId,
-      message: `无法连接本地模型服务 ${modelsUrl}：${errorMessage}${hint}`,
+      sourceType,
+      normalizedBaseUrl: baseUrl,
+      failureCategory,
+      recommendedFix:
+        failureCategory === "invalid_url"
+          ? "请检查 Base URL 格式，建议填写到 /v1，例如 http://127.0.0.1:1234/v1。"
+          : "请确认服务已经启动，而且 Base URL 指向实际监听端口和 /v1 接口。",
+      message:
+        failureCategory === "invalid_url"
+          ? `地址格式不对，当前无法测试：${baseUrl}`
+          : `连不上模型服务 ${modelsUrl}。请确认服务已经启动，地址和端口也填对了。`,
     };
   }
+}
+
+async function validateModelProfile(profile: ModelProfile, secretVault: SecretVault): Promise<ModelConnectionTestResult> {
+  const sourceType = sourceTypeFromProfile(profile);
+  if (profile.provider === "local") {
+    return {
+      ok: true,
+      profileId: profile.id,
+      sourceType,
+      message: `当前使用本地占位模型 ${profile.model}。如果要接真实接口，建议改用本地 OpenAI 兼容来源。`,
+    };
+  }
+  if (profile.provider === "custom") {
+    if (!profile.baseUrl?.trim()) {
+      return {
+        ok: false,
+        profileId: profile.id,
+        sourceType,
+        failureCategory: "invalid_url",
+        recommendedFix: "请先填写 Base URL，例如 http://127.0.0.1:1234/v1。",
+        message: "还没有填写模型服务地址。",
+      };
+    }
+    let normalizedBaseUrl: string;
+    try {
+      normalizedBaseUrl = normalizeOpenAiCompatibleBaseUrl(profile.baseUrl) ?? "";
+    } catch {
+      return {
+        ok: false,
+        profileId: profile.id,
+        sourceType,
+        failureCategory: "invalid_url",
+        recommendedFix: "请检查地址格式，建议填写到 /v1。",
+        message: "模型服务地址格式不正确。",
+      };
+    }
+    if (profile.secretRef && !(await secretVault.hasSecret(profile.secretRef))) {
+      return {
+        ok: false,
+        profileId: profile.id,
+        sourceType,
+        failureCategory: "auth_missing",
+        recommendedFix: "请先保存 API Key，或者清空这个可选密钥引用后再测试。",
+        message: "配置里引用了 API Key，但这个密钥现在并不存在。",
+      };
+    }
+    const secret = profile.secretRef ? await secretVault.readSecret(profile.secretRef) : undefined;
+    return testOpenAiCompatibleModel(profile.id, normalizedBaseUrl, profile.model, secret, sourceType);
+  }
+
+  if (!profile.secretRef) {
+    return {
+      ok: false,
+      profileId: profile.id,
+      sourceType,
+      failureCategory: "auth_missing",
+      recommendedFix: "请先保存 API Key，再回来测试连接。",
+      message: "这个来源需要 API Key，但当前还没有配置。",
+    };
+  }
+  if (!(await secretVault.hasSecret(profile.secretRef))) {
+    return {
+      ok: false,
+      profileId: profile.id,
+      sourceType,
+      failureCategory: "auth_missing",
+      recommendedFix: "请重新保存对应 API Key，然后再次测试。",
+      message: "API Key 引用存在，但密钥内容已经失效或还没保存。",
+    };
+  }
+  const apiKey = await secretVault.readSecret(profile.secretRef);
+  const baseUrl = normalizeProviderBaseUrl(profile.provider, profile.baseUrl);
+  return testOpenAiCompatibleModel(profile.id, baseUrl, profile.model, apiKey, sourceType);
+}
+
+function normalizeProviderBaseUrl(provider: ModelProfile["provider"], baseUrl?: string) {
+  if (baseUrl?.trim()) return normalizeOpenAiCompatibleBaseUrl(baseUrl) ?? baseUrl;
+  if (provider === "openrouter") return "https://openrouter.ai/api/v1";
+  if (provider === "openai") return "https://api.openai.com/v1";
+  if (provider === "anthropic") return "https://api.anthropic.com/v1";
+  return "http://127.0.0.1:1234/v1";
+}
+
+function sourceTypeFromProfile(profile: Pick<ModelProfile, "provider" | "baseUrl">): ModelConnectionTestResult["sourceType"] {
+  if (profile.provider === "custom") {
+    const baseUrl = profile.baseUrl?.toLowerCase() ?? "";
+    return baseUrl.includes("127.0.0.1") || baseUrl.includes("localhost") ? "local_openai" : "custom_gateway";
+  }
+  if (profile.provider === "openrouter") return "openrouter";
+  if (profile.provider === "openai") return "openai";
+  return "legacy";
+}
+
+function draftToModelProfile(draft: z.infer<typeof modelConnectionDraftSchema>): ModelProfile {
+  const provider =
+    draft.sourceType === "local_openai" || draft.sourceType === "custom_gateway"
+      ? "custom"
+      : draft.sourceType === "openrouter"
+        ? "openrouter"
+        : draft.sourceType === "openai"
+          ? "openai"
+          : draft.provider ?? "custom";
+  return {
+    id: draft.profileId ?? `draft-${draft.sourceType}`,
+    provider,
+    model: draft.model?.trim() ?? "",
+    baseUrl: draft.baseUrl?.trim(),
+    secretRef: draft.secretRef?.trim(),
+  };
+}
+
+async function discoverLocalModelSources(): Promise<LocalModelDiscoveryResult> {
+  const candidates = ["http://127.0.0.1:1234/v1", "http://127.0.0.1:8080/v1", "http://127.0.0.1:8081/v1"];
+  const results = await Promise.all(
+    candidates.map(async (baseUrl) => {
+      const test = await testOpenAiCompatibleModel("discovery", baseUrl, "__discovery__", undefined, "local_openai");
+      return {
+        baseUrl,
+        ok: test.ok || test.failureCategory === "model_not_found",
+        availableModels: test.availableModels ?? [],
+        message: test.message,
+        failureCategory: test.failureCategory,
+      };
+    }),
+  );
+  const firstOk = results.find((item) => item.ok);
+  return {
+    ok: Boolean(firstOk),
+    candidates: results,
+    recommendedBaseUrl: firstOk?.baseUrl,
+    recommendedModel: firstOk?.availableModels[0],
+    message: firstOk ? `已发现可用本地模型接口：${firstOk.baseUrl}` : "没有发现可直接使用的本地模型接口，请手动填写地址。",
+  };
+}
+
+function summarizeModelSource(config: { defaultModelProfileId?: string; modelProfiles: ModelProfile[] }) {
+  const profile = config.modelProfiles.find((item) => item.id === config.defaultModelProfileId) ?? config.modelProfiles[0];
+  if (!profile) {
+    return {
+      sourceType: undefined,
+      currentModel: undefined,
+      baseUrl: undefined,
+      secretStatus: "missing",
+      message: "还没有默认模型来源，请先选择一个来源并完成测试。",
+      recommendedFix: "进入模型向导，先选来源，再测试并保存。",
+    };
+  }
+  return {
+    sourceType: sourceTypeFromProfile(profile),
+    currentModel: profile.model,
+    baseUrl: profile.baseUrl ? normalizeProviderBaseUrl(profile.provider, profile.baseUrl) : normalizeProviderBaseUrl(profile.provider),
+    secretStatus: profile.secretRef ? "configured" : profile.provider === "custom" ? "optional" : "missing",
+    message: `当前默认来源是 ${profile.provider}，模型是 ${profile.model}。`,
+    recommendedFix: profile.provider === "custom" ? "建议先做一次连接测试，确认地址和模型名都正确。" : "如果最近连不上，请先检查 API Key 和来源选择。",
+  };
+}
+
+function buildHttpFailure(
+  profileId: string,
+  sourceType: ModelConnectionTestResult["sourceType"],
+  baseUrl: string,
+  status: number,
+  statusText?: string,
+): ModelConnectionTestResult {
+  if (status === 401 || status === 403) {
+    return {
+      ok: false,
+      profileId,
+      sourceType,
+      normalizedBaseUrl: baseUrl,
+      failureCategory: "auth_invalid",
+      recommendedFix: "API Key 可能无效，或者当前来源不接受这个密钥。请重新保存后再试。",
+      message: `已经连到服务，但鉴权失败了（HTTP ${status}${statusText ? ` ${statusText}` : ""}）。`,
+    };
+  }
+  if (status === 404) {
+    return {
+      ok: false,
+      profileId,
+      sourceType,
+      normalizedBaseUrl: baseUrl,
+      failureCategory: "path_invalid",
+      recommendedFix: "请确认地址是否指向兼容 OpenAI 的 /v1 接口。",
+      message: `已经连到服务器，但接口路径不对（HTTP 404）。请检查 Base URL：${baseUrl}`,
+    };
+  }
+  if (status >= 500) {
+    return {
+      ok: false,
+      profileId,
+      sourceType,
+      normalizedBaseUrl: baseUrl,
+      failureCategory: "server_error",
+      recommendedFix: "服务端当前异常，建议先确认模型服务是否已经完整启动。",
+      message: `模型服务返回了服务器错误（HTTP ${status}）。`,
+    };
+  }
+  return {
+    ok: false,
+    profileId,
+    sourceType,
+    normalizedBaseUrl: baseUrl,
+    failureCategory: "unknown",
+    recommendedFix: "请重新检查来源配置，确认地址、模型名和鉴权方式都正确。",
+    message: `模型服务返回 HTTP ${status}${statusText ? ` ${statusText}` : ""}。`,
+  };
 }
 
 function normalizeTextFileName(fileName?: string) {
@@ -555,6 +821,35 @@ function sanitizeAttachmentName(fileName: string) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120) || "attachment";
+}
+
+async function importSessionAttachments(targetSessionPath: string, sourcePaths: string[]) {
+  const attachmentsDir = path.join(targetSessionPath, "attachments");
+  await fs.mkdir(attachmentsDir, { recursive: true });
+  const attachments: SessionAttachment[] = [];
+  for (const sourcePath of sourcePaths.slice(0, 12)) {
+    const stat = await fs.stat(sourcePath).catch(() => undefined);
+    if (!stat?.isFile()) continue;
+    if (stat.size > 200 * 1024 * 1024) {
+      throw new Error(`附件过大：${path.basename(sourcePath)}。单个文件上限为 200MB。`);
+    }
+    const id = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    const safeName = sanitizeAttachmentName(path.basename(sourcePath));
+    const targetPath = await uniqueFilePath(attachmentsDir, `${id}-${safeName}`);
+    await fs.copyFile(sourcePath, targetPath);
+    const mimeType = inferMimeType(targetPath);
+    attachments.push({
+      id,
+      name: safeName,
+      path: targetPath,
+      originalPath: sourcePath,
+      kind: mimeType.startsWith("image/") ? "image" : "file",
+      mimeType,
+      size: stat.size,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return attachments;
 }
 
 function inferMimeType(filePath: string) {

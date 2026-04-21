@@ -1,6 +1,6 @@
 import { AtSign, FileText, Mic, MicOff, Paperclip, Send, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { DragEvent, ReactNode } from "react";
 import { useAppStore } from "../store";
 import { cn } from "./DashboardPrimitives";
 
@@ -22,6 +22,8 @@ export function ChatInput(props: {
   const [isListening, setIsListening] = useState(false);
   const [listenError, setListenError] = useState<string | undefined>();
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [isDraggingAttachment, setIsDraggingAttachment] = useState(false);
+  const [isImportingAttachment, setIsImportingAttachment] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const selectedFilesLabel = `${store.selectedFiles.length} files`;
   const attachmentsLabel = `${store.attachments.length} attachments`;
@@ -30,6 +32,9 @@ export function ChatInput(props: {
   const permissionsLabel = permissions
     ? `读${permissions.workspaceRead === false ? "关" : "开"} 写${permissions.fileWrite === false ? "关" : "开"} 命令${permissions.commandRun === false ? "关" : "开"}`
     : "权限默认开启";
+  const currentModelProfile = store.runtimeConfig?.modelProfiles.find((profile) => profile.id === store.runtimeConfig?.defaultModelProfileId)
+    ?? store.runtimeConfig?.modelProfiles[0];
+  const currentModelLabel = currentModelProfile?.model || currentModelProfile?.name || currentModelProfile?.id || "未配置模型";
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -195,7 +200,7 @@ export function ChatInput(props: {
       store.warning("附件不可用", "客户端未就绪，无法选择附件");
       return;
     }
-    const sessionPath = store.sessionFilesPath || store.activeSessionId || "default";
+    const sessionPath = currentSessionPath(store.sessionFilesPath, store.activeSessionId);
     const attachments = await window.workbenchClient.pickSessionAttachments(sessionPath).catch((error: unknown) => {
       store.pushEvent({
         taskRunId: "attachment",
@@ -212,6 +217,70 @@ export function ChatInput(props: {
       return [];
     });
     if (attachments.length) store.addAttachments(attachments);
+  }
+
+  async function importDroppedAttachments(filePaths: string[]) {
+    if (!window.workbenchClient || typeof window.workbenchClient.importSessionAttachments !== "function") {
+      store.warning("拖拽上传不可用", "客户端未就绪，无法导入附件");
+      return;
+    }
+    if (store.runningTaskRunId) {
+      store.warning("任务运行中", "请等待当前 Hermes 任务结束后再添加附件");
+      return;
+    }
+    const uniquePaths = Array.from(new Set(filePaths.filter(Boolean))).slice(0, 12);
+    if (!uniquePaths.length) {
+      store.warning("没有可用文件路径", "请从资源管理器拖入本机文件或图片");
+      return;
+    }
+    setIsImportingAttachment(true);
+    try {
+      const attachments = await window.workbenchClient.importSessionAttachments(
+        currentSessionPath(store.sessionFilesPath, store.activeSessionId),
+        uniquePaths,
+      );
+      if (attachments.length) {
+        store.addAttachments(attachments);
+        store.success("附件已添加", `已导入 ${attachments.length} 个文件，可直接发送给 Hermes`);
+      } else {
+        store.warning("未导入附件", "拖入的内容不是可读取的文件，文件夹暂不作为附件上传");
+      }
+    } catch (error) {
+      store.error("附件导入失败", error instanceof Error ? error.message : "拖拽上传失败");
+    } finally {
+      setIsImportingAttachment(false);
+    }
+  }
+
+  function handleAttachmentDragEnter(event: DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDraggingAttachment(true);
+  }
+
+  function handleAttachmentDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = store.runningTaskRunId ? "none" : "copy";
+    setIsDraggingAttachment(true);
+  }
+
+  function handleAttachmentDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setIsDraggingAttachment(false);
+  }
+
+  function handleAttachmentDrop(event: DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDraggingAttachment(false);
+    const filePaths = Array.from(event.dataTransfer.files)
+      .map((file) => file.path)
+      .filter((filePath): filePath is string => Boolean(filePath));
+    void importDroppedAttachments(filePaths);
   }
 
   const commandQuery = store.userInput.startsWith("/") ? store.userInput.trim().toLowerCase() : "";
@@ -322,7 +391,24 @@ export function ChatInput(props: {
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-5">
-      <div className="relative flex flex-col overflow-hidden rounded-2xl bg-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] ring-1 ring-slate-100/70">
+      <div
+        className={cn(
+          "relative flex flex-col overflow-hidden rounded-2xl bg-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] ring-1 ring-slate-100/70",
+          isDraggingAttachment && "ring-2 ring-indigo-300",
+        )}
+        onDragEnter={handleAttachmentDragEnter}
+        onDragOver={handleAttachmentDragOver}
+        onDragLeave={handleAttachmentDragLeave}
+        onDrop={handleAttachmentDrop}
+      >
+        {isDraggingAttachment ? (
+          <div className="pointer-events-none absolute inset-0 z-40 grid place-items-center bg-indigo-50/85 backdrop-blur-[1px]">
+            <div className="rounded-2xl border border-dashed border-indigo-300 bg-white/90 px-5 py-3 text-center shadow-sm">
+              <p className="text-sm font-semibold text-indigo-700">{store.runningTaskRunId ? "当前任务运行中" : "松开即可添加附件"}</p>
+              <p className="mt-1 text-xs text-slate-500">{store.runningTaskRunId ? "请等 Hermes 完成后再上传文件" : "支持图片和常见文档，最多一次 12 个"}</p>
+            </div>
+          </div>
+        ) : null}
         {commands.length ? (
           <div className="absolute bottom-[calc(100%+8px)] left-0 z-20 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
             {commands.map((command, index) => (
@@ -422,14 +508,14 @@ export function ChatInput(props: {
                 </div>
               ) : null}
             </div>
-            <IconAction title="上传文件或图片" onClick={() => void pickAttachments()} disabled={Boolean(store.runningTaskRunId)}>
+            <IconAction title={isImportingAttachment ? "正在导入附件" : "上传文件或图片"} onClick={() => void pickAttachments()} disabled={Boolean(store.runningTaskRunId) || isImportingAttachment}>
               <Paperclip size={15} strokeWidth={1.75} />
             </IconAction>
             <IconAction title={isListening ? "停止录音" : "语音输入"} onClick={toggleVoiceInput} tone={isListening ? "danger" : "normal"}>
               {isListening ? <MicOff size={14} strokeWidth={1.75} /> : <Mic size={14} strokeWidth={1.75} />}
             </IconAction>
             <span className="ml-2 hidden truncate text-[10px] text-slate-400 sm:inline">
-              {store.runtimeConfig?.defaultModelProfileId ?? "GPT-5.4"} · {store.workspacePath ? shortPath(store.workspacePath) : "没有工作区"} · {selectedFilesLabel} · {attachmentsLabel} · {permissionsLabel}{lockLabel !== "文件锁空闲" ? ` · ${lockLabel}` : ""}
+              {currentModelLabel} · {store.workspacePath ? shortPath(store.workspacePath) : "没有工作区"} · {selectedFilesLabel} · {attachmentsLabel} · {permissionsLabel}{lockLabel !== "文件锁空闲" ? ` · ${lockLabel}` : ""}
             </span>
           </div>
           <div className="flex shrink-0 items-center">
@@ -480,6 +566,10 @@ function formatBytes(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function currentSessionPath(sessionFilesPath: string, activeSessionId?: string) {
+  return sessionFilesPath || activeSessionId || "default";
 }
 
 function shortPath(value: string) {

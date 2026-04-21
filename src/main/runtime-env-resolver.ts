@@ -1,12 +1,14 @@
 import type { SecretVault } from "../auth/secret-vault";
 import type { RuntimeConfigStore } from "./runtime-config";
-import type { EngineRuntimeEnv, ModelProfile } from "../shared/types";
+import type { EngineRuntimeEnv, ModelProfile, RuntimeConfig } from "../shared/types";
 import { normalizeOpenAiCompatibleBaseUrl } from "../shared/model-config";
+import type { ModelRuntimeProxyService } from "./model-runtime-proxy";
 
 export class RuntimeEnvResolver {
   constructor(
     private readonly configStore: RuntimeConfigStore,
     private readonly secretVault: SecretVault,
+    private readonly modelRuntimeProxy?: Pick<ModelRuntimeProxyService, "resolve">,
   ) {}
 
   readConfig() {
@@ -15,6 +17,10 @@ export class RuntimeEnvResolver {
 
   async resolve(modelProfileId?: string): Promise<EngineRuntimeEnv> {
     const config = await this.configStore.read();
+    return this.resolveFromConfig(config, modelProfileId);
+  }
+
+  async resolveFromConfig(config: RuntimeConfig, modelProfileId?: string): Promise<EngineRuntimeEnv> {
     const profile =
       config.modelProfiles.find((item) => item.id === (modelProfileId ?? config.defaultModelProfileId)) ??
       config.modelProfiles[0];
@@ -25,14 +31,16 @@ export class RuntimeEnvResolver {
 
     const secret = profile.secretRef ? await this.secretVault.readSecret(profile.secretRef) : undefined;
     const providerProfile = config.providerProfiles?.find((item) => item.provider === profile.provider || item.id === profile.id);
-    return {
+    const baseUrl = normalizeOpenAiCompatibleBaseUrl(profile.baseUrl ?? providerProfile?.baseUrl);
+    const runtime = {
       profileId: profile.id,
       provider: profile.provider,
       model: profile.model,
-      baseUrl: normalizeOpenAiCompatibleBaseUrl(profile.baseUrl ?? providerProfile?.baseUrl),
+      baseUrl,
       providerProfileId: providerProfile?.id,
-      env: this.toEnv({ ...profile, baseUrl: normalizeOpenAiCompatibleBaseUrl(profile.baseUrl ?? providerProfile?.baseUrl) }, secret),
+      env: this.toEnv({ ...profile, baseUrl }, secret),
     };
+    return this.modelRuntimeProxy?.resolve(runtime) ?? runtime;
   }
 
   private toEnv(profile: ModelProfile, secret?: string): Record<string, string> {

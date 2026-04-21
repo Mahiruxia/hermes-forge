@@ -37,9 +37,15 @@ type FormValues = Record<string, string | boolean | undefined>;
 const statusLabels: Record<HermesConnectorConfig["status"], string> = {
   unconfigured: "未配置",
   configured: "已配置",
-  running: "运行中",
-  error: "异常",
+  running: "已配置",
+  error: "已配置",
   disabled: "已禁用",
+};
+
+const runtimeStatusLabels: Record<HermesConnectorConfig["runtimeStatus"], string> = {
+  stopped: "未运行",
+  running: "运行中",
+  error: "运行异常",
 };
 
 const qrSteps: Array<{ phase: WeixinQrLoginPhase; label: string }> = [
@@ -50,6 +56,7 @@ const qrSteps: Array<{ phase: WeixinQrLoginPhase; label: string }> = [
   { phase: "syncing", label: "同步 .env" },
   { phase: "starting_gateway", label: "启动 Gateway" },
   { phase: "success", label: "完成" },
+  { phase: "timeout", label: "超时" },
 ];
 
 export function ConnectorsPanel() {
@@ -196,6 +203,17 @@ export function ConnectorsPanel() {
     });
   }
 
+  async function installWeixinDependency() {
+    await runAction("weixin-qr-install", async () => {
+      const result = await window.workbenchClient.installWeixinDependency();
+      if (result.status) setWeixinQr(result.status);
+      setMessage(result.message);
+      if (!result.ok && result.recommendedFix) {
+        setError(`${result.message} ${result.recommendedFix}`);
+      }
+    });
+  }
+
   async function runAction(name: string, action: () => Promise<void>) {
     setBusy(name);
     setError("");
@@ -265,7 +283,11 @@ export function ConnectorsPanel() {
       <section className="rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
         <div className="grid gap-3 sm:grid-cols-3">
           <Metric label="已配置平台" value={`${configuredCount}/${data?.connectors.length ?? 0}`} />
-          <Metric label="Gateway" value={gateway?.running ? "运行中" : "未运行"} tone={gateway?.running ? "green" : "slate"} />
+          <Metric
+            label="Gateway"
+            value={gateway?.healthStatus === "running" ? "运行中" : gateway?.healthStatus === "error" ? "异常" : "未运行"}
+            tone={gateway?.healthStatus === "running" ? "green" : gateway?.healthStatus === "error" ? "rose" : "slate"}
+          />
           <Metric label=".env 路径" value={data?.envPath ?? "加载中..."} compact />
         </div>
         {gateway?.lastError ? (
@@ -360,6 +382,7 @@ export function ConnectorsPanel() {
         status={weixinQr}
         onCancel={cancelWeixinQr}
         onClose={() => setWeixinWizardOpen(false)}
+        onInstallDependency={installWeixinDependency}
         onRefresh={refreshWeixinQr}
         onStart={() => void openWeixinWizard(true)}
       />
@@ -436,13 +459,13 @@ function GatewayButton(props: {
   );
 }
 
-function Metric(props: { label: string; value: string; tone?: "green" | "slate"; compact?: boolean }) {
+function Metric(props: { label: string; value: string; tone?: "green" | "slate" | "rose"; compact?: boolean }) {
   return (
     <div>
       <div className="text-xs font-medium uppercase text-slate-400">{props.label}</div>
       <div className={cn(
         "mt-1 truncate text-sm font-semibold",
-        props.tone === "green" ? "text-emerald-600" : "text-slate-900",
+        props.tone === "green" ? "text-emerald-600" : props.tone === "rose" ? "text-rose-600" : "text-slate-900",
         props.compact && "font-mono text-xs",
       )}>
         {props.value}
@@ -470,6 +493,11 @@ function ConnectorCard(props: {
     error: "bg-rose-50 text-rose-700",
     disabled: "bg-slate-100 text-slate-400",
   }[connector.status];
+  const runtimeStatusClass = {
+    stopped: "bg-slate-100 text-slate-600",
+    running: "bg-emerald-50 text-emerald-700",
+    error: "bg-rose-50 text-rose-700",
+  }[connector.runtimeStatus];
   const primary = primaryAction(props);
 
   return (
@@ -485,15 +513,18 @@ function ConnectorCard(props: {
         <div className="flex min-w-0 items-start gap-3">
           <div className={cn(
             "grid h-10 w-10 shrink-0 place-items-center rounded-xl",
-            connector.status === "running" ? "bg-emerald-50 text-emerald-600" : "bg-indigo-50 text-indigo-600",
+            connector.runtimeStatus === "running" ? "bg-emerald-50 text-emerald-600" : "bg-indigo-50 text-indigo-600",
           )}>
-            {isWeixin ? <QrCode size={20} /> : connector.status === "running" ? <Wifi size={20} /> : connector.status === "unconfigured" ? <WifiOff size={20} /> : <ExternalLink size={20} />}
+            {isWeixin ? <QrCode size={20} /> : connector.runtimeStatus === "running" ? <Wifi size={20} /> : connector.status === "unconfigured" ? <WifiOff size={20} /> : <ExternalLink size={20} />}
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-sm font-semibold text-slate-900">{connector.platform.label}</h3>
               <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", statusClass)}>
                 {statusLabels[connector.status]}
+              </span>
+              <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", runtimeStatusClass)}>
+                {runtimeStatusLabels[connector.runtimeStatus]}
               </span>
               {connector.platform.category === "advanced" ? (
                 <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">高级</span>
@@ -615,6 +646,7 @@ function WeixinQrWizard(props: {
   onStart(): void;
   onRefresh(): Promise<void>;
   onCancel(): Promise<void>;
+  onInstallDependency(): Promise<void>;
   onClose(): void;
 }) {
   const [qrDataUrl, setQrDataUrl] = useState("");
@@ -623,6 +655,7 @@ function WeixinQrWizard(props: {
   const stepIndex = stepIndexFor(status.phase);
   const canCancel = status.running || ["fetching_qr", "waiting_scan", "waiting_confirm"].includes(status.phase);
   const canRetry = isTerminalQrPhase(status.phase) && status.phase !== "success";
+  const canAutoRepair = status.recoveryAction === "install_aiohttp";
 
   useEffect(() => {
     let cancelled = false;
@@ -707,11 +740,15 @@ function WeixinQrWizard(props: {
                     <p className="mt-2 max-w-sm text-sm text-slate-500">{status.message}</p>
                     {status.accountId ? <p className="mt-3 font-mono text-xs text-slate-400">Account ID: {status.accountId}</p> : null}
                   </div>
-                ) : status.phase === "failed" || status.phase === "cancelled" ? (
+                ) : status.phase === "failed" || status.phase === "timeout" || status.phase === "cancelled" ? (
                   <div className="text-center">
                     <WifiOff size={54} className="mx-auto text-rose-500" />
-                    <h4 className="mt-4 text-base font-semibold text-slate-950">{status.phase === "cancelled" ? "已取消扫码" : "扫码未完成"}</h4>
+                    <h4 className="mt-4 text-base font-semibold text-slate-950">
+                      {status.phase === "cancelled" ? "已取消扫码" : status.phase === "timeout" ? "扫码超时" : canAutoRepair ? "扫码环境可修复" : "扫码未完成"}
+                    </h4>
                     <p className="mt-2 max-w-sm text-sm text-slate-500">{status.message}</p>
+                    {status.failureCode ? <p className="mt-1 text-xs text-slate-400">错误码：{status.failureCode}</p> : null}
+                    {status.recommendedFix ? <p className="mt-2 max-w-sm text-xs text-slate-400">{status.recommendedFix}</p> : null}
                   </div>
                 ) : qrDataUrl ? (
                   <img alt="微信扫码登录二维码" className="h-80 w-80 rounded-lg border border-slate-100 p-3 shadow-sm" src={qrDataUrl} />
@@ -751,6 +788,32 @@ function WeixinQrWizard(props: {
               {phaseLabel(status.phase)}
             </div>
 
+            {canAutoRepair ? (
+              <div className="mt-4 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 shadow-sm">
+                <div>
+                  <p className="font-medium">当前问题</p>
+                  <p className="mt-1">缺少 `aiohttp`，微信扫码运行环境不完整。</p>
+                </div>
+                <div>
+                  <p className="font-medium">修复动作</p>
+                  <button
+                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-3 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-60"
+                    disabled={props.busy === "weixin-qr-install"}
+                    onClick={() => void props.onInstallDependency()}
+                    type="button"
+                  >
+                    {props.busy === "weixin-qr-install" ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    一键安装依赖
+                  </button>
+                </div>
+                <div>
+                  <p className="font-medium">备用信息</p>
+                  {status.runtimePythonLabel ? <p className="mt-1 font-mono text-[11px] text-amber-800">{status.runtimePythonLabel}</p> : null}
+                  {status.recoveryCommand ? <p className="mt-1 break-all font-mono text-[11px] text-amber-800">{status.recoveryCommand}</p> : null}
+                </div>
+              </div>
+            ) : null}
+
             {props.connector ? (
               <div className="mt-4 space-y-2 rounded-lg bg-white p-3 text-xs text-slate-500 shadow-sm">
                 <div className="flex justify-between gap-3">
@@ -766,6 +829,10 @@ function WeixinQrWizard(props: {
                 <div className="flex justify-between gap-3">
                   <span>同步</span>
                   <span className="font-medium text-slate-800">{props.connector.lastSyncedAt ? "已同步" : "未同步"}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>运行环境</span>
+                  <span className="font-medium text-slate-800">{status.runtimePythonLabel || "等待检测"}</span>
                 </div>
               </div>
             ) : null}
@@ -857,12 +924,12 @@ function FieldEditor(props: {
 }
 
 function stepIndexFor(phase: WeixinQrLoginPhase) {
-  if (phase === "failed" || phase === "cancelled" || phase === "idle") return 0;
+  if (phase === "failed" || phase === "timeout" || phase === "cancelled" || phase === "idle") return 0;
   return Math.max(0, qrSteps.findIndex((step) => step.phase === phase));
 }
 
 function isTerminalQrPhase(phase: WeixinQrLoginPhase) {
-  return phase === "success" || phase === "failed" || phase === "cancelled";
+  return phase === "success" || phase === "failed" || phase === "timeout" || phase === "cancelled";
 }
 
 function phaseLabel(phase: WeixinQrLoginPhase) {
@@ -875,6 +942,7 @@ function phaseLabel(phase: WeixinQrLoginPhase) {
     syncing: "正在同步 Hermes .env",
     starting_gateway: "正在启动 Gateway",
     success: "接入成功",
+    timeout: "扫码超时",
     failed: "接入失败",
     cancelled: "已取消",
   };

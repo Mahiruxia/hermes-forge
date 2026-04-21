@@ -13,6 +13,7 @@ import type {
   HermesWebUiSettings,
   HermesStatusSummary,
   ModelConnectionTestResult,
+  LocalModelDiscoveryResult,
   QuickTextFileInput,
   QuickTextFileResult,
   RuntimeConfig,
@@ -38,6 +39,8 @@ import type {
   HermesConnectorSaveInput,
   HermesGatewayActionResult,
   HermesGatewayStatus,
+  HermesInstallEvent,
+  ClientUpdateEvent,
   HermesWindowsBridgeTestResult,
   HermesInstallResult,
   HermesProfile,
@@ -45,12 +48,15 @@ import type {
   FileBreadcrumbItem,
   WeixinQrLoginResult,
   WeixinQrLoginStatus,
+  WeixinDependencyInstallResult,
 } from "../shared/types";
 
 const api = {
   pickWorkspaceFolder: () => ipcRenderer.invoke(IpcChannels.pickWorkspaceFolder) as Promise<string | null>,
   pickSessionAttachments: (sessionFilesPath: string) =>
     ipcRenderer.invoke(IpcChannels.pickSessionAttachments, sessionFilesPath) as Promise<SessionAttachment[]>,
+  importSessionAttachments: (sessionFilesPath: string, filePaths: string[]) =>
+    ipcRenderer.invoke(IpcChannels.importSessionAttachments, sessionFilesPath, filePaths) as Promise<SessionAttachment[]>,
   createQuickTextFile: (input: QuickTextFileInput) =>
     ipcRenderer.invoke(IpcChannels.createQuickTextFile, input) as Promise<QuickTextFileResult>,
   openPath: (targetPath: string) => ipcRenderer.invoke(IpcChannels.openPath, targetPath) as Promise<{ ok: boolean; message: string }>,
@@ -119,6 +125,8 @@ const api = {
   startWeixinQrLogin: () => ipcRenderer.invoke(IpcChannels.startWeixinQrLogin) as Promise<WeixinQrLoginResult>,
   getWeixinQrLoginStatus: () => ipcRenderer.invoke(IpcChannels.getWeixinQrLoginStatus) as Promise<WeixinQrLoginStatus>,
   cancelWeixinQrLogin: () => ipcRenderer.invoke(IpcChannels.cancelWeixinQrLogin) as Promise<WeixinQrLoginResult>,
+  installWeixinDependency: () =>
+    ipcRenderer.invoke(IpcChannels.installWeixinDependency) as Promise<WeixinDependencyInstallResult>,
   listProjects: () => ipcRenderer.invoke(IpcChannels.listProjects) as Promise<ProjectGroup[]>,
   saveProject: (input: Partial<ProjectGroup>) => ipcRenderer.invoke(IpcChannels.saveProject, input) as Promise<ProjectGroup>,
   deleteProject: (id: string) => ipcRenderer.invoke(IpcChannels.deleteProject, id) as Promise<{ ok: boolean; id: string }>,
@@ -148,7 +156,7 @@ const api = {
   getFileBreadcrumb: (filePath: string) => ipcRenderer.invoke(IpcChannels.getFileBreadcrumb, filePath) as Promise<FileBreadcrumbItem[]>,
   getGitInfo: (workspacePath: string) =>
     ipcRenderer.invoke(IpcChannels.getGitInfo, workspacePath) as Promise<{ available: boolean; branch: string; dirtyCount: number; dirtyFiles?: string[] }>,
-  respondApproval: (input: { id: string; approved: boolean; editedCommand?: string }) =>
+  respondApproval: (input: { id: string; choice: "once" | "session" | "always" | "deny"; editedCommand?: string }) =>
     ipcRenderer.invoke(IpcChannels.respondApproval, input) as Promise<{ ok: boolean; id: string; approved: boolean; message: string }>,
   getHermesStatus: (workspacePath?: string) =>
     ipcRenderer.invoke(IpcChannels.getHermesStatus, workspacePath) as Promise<HermesStatusSummary>,
@@ -158,8 +166,19 @@ const api = {
   probeHermes: (workspacePath?: string) =>
     ipcRenderer.invoke(IpcChannels.probeHermes, workspacePath) as Promise<EngineWarmupResult>,
   checkUpdates: () => ipcRenderer.invoke(IpcChannels.checkUpdates) as Promise<EngineUpdateStatus[]>,
+  checkClientUpdate: () => ipcRenderer.invoke(IpcChannels.checkClientUpdate) as Promise<ClientUpdateEvent>,
+  onClientUpdateEvent: (callback: (event: ClientUpdateEvent) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: ClientUpdateEvent) => callback(payload);
+    ipcRenderer.on(IpcChannels.clientUpdateEvent, wrapped);
+    return () => ipcRenderer.removeListener(IpcChannels.clientUpdateEvent, wrapped);
+  },
   updateHermes: () => ipcRenderer.invoke(IpcChannels.updateHermes) as Promise<EngineMaintenanceResult>,
   installHermes: () => ipcRenderer.invoke(IpcChannels.installHermes) as Promise<HermesInstallResult>,
+  onInstallHermesEvent: (callback: (event: HermesInstallEvent) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: HermesInstallEvent) => callback(payload);
+    ipcRenderer.on(IpcChannels.installHermesEvent, wrapped);
+    return () => ipcRenderer.removeListener(IpcChannels.installHermesEvent, wrapped);
+  },
   getRuntimeConfig: () => ipcRenderer.invoke(IpcChannels.getRuntimeConfig) as Promise<RuntimeConfig>,
   getConfigOverview: (workspacePath?: string) => ipcRenderer.invoke(IpcChannels.getConfigOverview, workspacePath) as Promise<any>,
   testHermesWindowsBridge: () =>
@@ -168,8 +187,10 @@ const api = {
   updateModelConfig: (input: unknown) => ipcRenderer.invoke(IpcChannels.updateModelConfig, input) as Promise<RuntimeConfig>,
   saveRuntimeConfig: (config: RuntimeConfig) =>
     ipcRenderer.invoke(IpcChannels.saveRuntimeConfig, config) as Promise<RuntimeConfig>,
-  testModelConnection: (profileId?: string) =>
-    ipcRenderer.invoke(IpcChannels.testModelConnection, profileId) as Promise<ModelConnectionTestResult>,
+  testModelConnection: (input?: string | Record<string, unknown>) =>
+    ipcRenderer.invoke(IpcChannels.testModelConnection, input) as Promise<ModelConnectionTestResult>,
+  discoverLocalModelSources: () =>
+    ipcRenderer.invoke(IpcChannels.discoverLocalModelSources) as Promise<LocalModelDiscoveryResult>,
   getSetupSummary: (workspacePath?: string) =>
     ipcRenderer.invoke(IpcChannels.getSetupSummary, workspacePath) as Promise<SetupSummary>,
   getSecretStatus: () => ipcRenderer.invoke(IpcChannels.getSecretStatus) as Promise<SecretVaultStatus>,

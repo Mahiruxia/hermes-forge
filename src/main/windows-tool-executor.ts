@@ -6,6 +6,7 @@ import { runCommand, type CommandResult } from "../process/command-runner";
 import type {
   AutoHotkeyStatus,
   EnginePermissionPolicy,
+  EngineEvent,
   WindowsToolCall,
   WindowsToolExecutionResult,
   WindowsToolName,
@@ -48,13 +49,28 @@ export class WindowsToolExecutor {
     private readonly getPermissions: () => Promise<EnginePermissionPolicy>,
     private readonly autoHotkeyService: AutoHotkeyService,
     private readonly commandRunner = runCommand,
+    private readonly requestApproval?: (input: {
+      taskRunId: string;
+      title: string;
+      command?: string;
+      path?: string;
+      patternKey: string;
+      actionKind: "file_write" | "file_delete" | "command_run" | "window_control" | "keyboard_input" | "mouse_input" | "automation";
+      details?: string;
+      risk: "low" | "medium" | "high";
+      publish: (event: EngineEvent) => Promise<void>;
+    }) => Promise<{ approved: boolean; editedCommand?: string }>,
   ) {}
 
-  async execute(call: WindowsToolCall): Promise<WindowsToolExecutionResult> {
+  async execute(
+    call: WindowsToolCall,
+    context?: { taskRunId?: string; publish?: (event: EngineEvent) => Promise<void> },
+  ): Promise<WindowsToolExecutionResult> {
     const startedAt = Date.now();
     try {
       const permissions = await this.getPermissions();
       this.requireBridge(permissions);
+      await this.ensureApproved(call, permissions, context);
       const result = await this.route(call, permissions);
       return this.wrap(call.tool, true, result.message, startedAt, result.result);
     } catch (error) {
@@ -278,6 +294,31 @@ export class WindowsToolExecutor {
     if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_TIMEOUT_MS;
     return Math.max(1000, Math.min(MAX_TIMEOUT_MS, Math.floor(value)));
   }
+
+  private async ensureApproved(
+    call: WindowsToolCall,
+    permissions: EnginePermissionPolicy,
+    context?: { taskRunId?: string; publish?: (event: EngineEvent) => Promise<void> },
+  ) {
+    const approval = approvalForCall(call);
+    if (!approval || !context?.taskRunId || !context.publish || !this.requestApproval) return;
+    if ((approval.actionKind === "file_write" || approval.actionKind === "file_delete") && !permissions.fileWrite) return;
+    if ((approval.actionKind === "command_run" || approval.actionKind === "window_control" || approval.actionKind === "keyboard_input" || approval.actionKind === "mouse_input" || approval.actionKind === "automation") && !permissions.commandRun) return;
+    const decision = await this.requestApproval({
+      taskRunId: context.taskRunId,
+      title: approval.title,
+      command: approval.command,
+      path: approval.path,
+      patternKey: approval.patternKey,
+      actionKind: approval.actionKind,
+      details: approval.details,
+      risk: approval.risk,
+      publish: context.publish,
+    });
+    if (!decision.approved) {
+      throw new Error("用户拒绝批准此高风险 Windows 操作。");
+    }
+  }
 }
 
 function truncate(output: string) {
@@ -303,4 +344,80 @@ function quoteAhk(value: string) {
 
 function assertNeverTool(tool: never): never {
   throw new Error(`Unknown Windows tool: ${tool}`);
+}
+
+function approvalForCall(call: WindowsToolCall) {
+  const input = call.input ?? {};
+  switch (call.tool) {
+    case "windows.files.writeText":
+      return {
+        title: "允许写入 Windows 文件",
+        command: typeof input.path === "string" ? input.path : undefined,
+        path: typeof input.path === "string" ? input.path : undefined,
+        patternKey: `tool:${call.tool}:${typeof input.path === "string" ? input.path.toLowerCase() : "*"}`,
+        actionKind: "file_write" as const,
+        details: "该操作会在 Windows 上创建或覆盖文件。",
+        risk: "high" as const,
+      };
+    case "windows.files.delete":
+      return {
+        title: "允许删除 Windows 路径",
+        command: typeof input.path === "string" ? input.path : undefined,
+        path: typeof input.path === "string" ? input.path : undefined,
+        patternKey: `tool:${call.tool}:${typeof input.path === "string" ? input.path.toLowerCase() : "*"}`,
+        actionKind: "file_delete" as const,
+        details: "该操作会删除文件或目录。",
+        risk: "high" as const,
+      };
+    case "windows.powershell.run":
+      return {
+        title: "允许执行 PowerShell",
+        command: typeof input.script === "string" ? input.script : undefined,
+        patternKey: `tool:${call.tool}`,
+        actionKind: "command_run" as const,
+        details: "该操作会在宿主 Windows 上运行 PowerShell 脚本。",
+        risk: "high" as const,
+      };
+    case "windows.windows.focus":
+    case "windows.windows.close":
+      return {
+        title: "允许控制 Windows 窗口",
+        command: typeof input.title === "string" ? input.title : undefined,
+        patternKey: `tool:${call.tool}`,
+        actionKind: "window_control" as const,
+        details: "该操作会激活或关闭桌面窗口。",
+        risk: "medium" as const,
+      };
+    case "windows.keyboard.type":
+    case "windows.keyboard.pressHotkey":
+      return {
+        title: "允许发送键盘输入",
+        command: typeof input.text === "string" ? input.text : typeof input.hotkey === "string" ? input.hotkey : undefined,
+        patternKey: `tool:${call.tool}`,
+        actionKind: "keyboard_input" as const,
+        details: "该操作会向当前活动窗口发送键盘输入。",
+        risk: "high" as const,
+      };
+    case "windows.mouse.click":
+    case "windows.mouse.move":
+      return {
+        title: "允许控制鼠标",
+        command: JSON.stringify(input),
+        patternKey: `tool:${call.tool}`,
+        actionKind: "mouse_input" as const,
+        details: "该操作会移动或点击宿主鼠标。",
+        risk: "medium" as const,
+      };
+    case "windows.ahk.runScript":
+      return {
+        title: "允许执行 AutoHotkey 脚本",
+        command: typeof input.script === "string" ? input.script : undefined,
+        patternKey: `tool:${call.tool}`,
+        actionKind: "automation" as const,
+        details: "该操作会执行宿主 AutoHotkey 自动化脚本。",
+        risk: "high" as const,
+      };
+    default:
+      return undefined;
+  }
 }

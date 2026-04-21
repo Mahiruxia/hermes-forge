@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Dirent } from "node:fs";
+import { runCommand, type CommandResult } from "../process/command-runner";
 import type { EngineEvent, EngineRunRequest } from "../shared/types";
 
 const now = () => new Date().toISOString();
@@ -14,23 +15,44 @@ export type WindowsNativeIntentResult = {
 export class WindowsNativeIntentService {
   constructor(
     private readonly getDesktopPaths: () => string[] = defaultDesktopPaths,
+    private readonly requestApproval?: (input: {
+      taskRunId: string;
+      title: string;
+      command?: string;
+      path?: string;
+      patternKey: string;
+      actionKind: "file_write";
+      details?: string;
+      risk: "low" | "medium" | "high";
+      publish: (event: EngineEvent) => Promise<void>;
+    }) => Promise<{ approved: boolean }>,
+    private readonly commandRunner: typeof runCommand = runCommand,
   ) {}
 
-  async tryHandle(request: EngineRunRequest): Promise<WindowsNativeIntentResult | undefined> {
+  async tryHandle(
+    request: EngineRunRequest,
+    publish?: (event: EngineEvent) => Promise<void>,
+  ): Promise<WindowsNativeIntentResult | undefined> {
     const text = normalizeText(request.userInput);
     if (!this.isWindowsDesktopIntent(text)) {
       return undefined;
     }
     if (this.isCreateTextFileIntent(text)) {
-      return this.createDesktopTextFile(request);
+      return this.createDesktopTextFile(request, publish);
     }
     if (this.isCountDesktopItemsIntent(text)) {
       return this.countDesktopItems(request);
     }
+    if (this.isOpenDesktopEdgeIntent(text)) {
+      return this.openDesktopEdge(request);
+    }
     return undefined;
   }
 
-  private async createDesktopTextFile(request: EngineRunRequest): Promise<WindowsNativeIntentResult> {
+  private async createDesktopTextFile(
+    request: EngineRunRequest,
+    publish?: (event: EngineEvent) => Promise<void>,
+  ): Promise<WindowsNativeIntentResult> {
     const blocked = this.permissionBlocked(request, "fileWrite");
     if (blocked) {
       return resultOnly(false, "Windows 原生操作被权限关闭", blocked);
@@ -40,6 +62,23 @@ export class WindowsNativeIntentService {
     const fileName = sanitizeTextFileName(extractRequestedFileName(request.userInput) ?? "新建文本文档.txt");
     const targetPath = await uniqueFilePath(path.join(desktopPath, fileName));
     const content = extractRequestedContent(request.userInput) ?? "";
+
+    if (publish && this.requestApproval) {
+      const decision = await this.requestApproval({
+        taskRunId: request.sessionId,
+        title: "允许在 Windows 桌面创建文本文件",
+        command: targetPath,
+        path: targetPath,
+        patternKey: `native:file_write:${targetPath.toLowerCase()}`,
+        actionKind: "file_write",
+        details: "该操作会绕过模型推理，直接在 Windows 桌面写入文件。",
+        risk: "high",
+        publish,
+      });
+      if (!decision.approved) {
+        return resultOnly(false, "用户拒绝批准", "用户拒绝批准该 Windows 原生文件写入操作。");
+      }
+    }
 
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, content, "utf8");
@@ -114,6 +153,46 @@ export class WindowsNativeIntentService {
     };
   }
 
+  private async openDesktopEdge(request: EngineRunRequest): Promise<WindowsNativeIntentResult> {
+    const blocked = this.permissionBlocked(request, "commandRun");
+    if (blocked) {
+      return resultOnly(false, "Windows 原生操作被权限关闭", blocked);
+    }
+
+    const desktopPaths = this.getDesktopPaths();
+    const shortcut = await findDesktopEntry(desktopPaths, /(?:^|[^a-z])(?:microsoft\s*)?edge(?:\.lnk)?$/i);
+    const target = shortcut ?? "microsoft-edge:";
+    const result = await this.commandRunner("cmd.exe", ["/c", "start", "", target], {
+      cwd: process.cwd(),
+      timeoutMs: 10_000,
+    });
+    const ok = result.exitCode === 0 || result.exitCode === null;
+
+    return {
+      handled: true,
+      events: [
+        {
+          type: "tool_call",
+          toolName: "windows.shell.openPath",
+          argsPreview: target,
+          at: now(),
+        },
+        {
+          type: "result",
+          success: ok,
+          title: ok ? "已打开 Microsoft Edge" : "打开 Microsoft Edge 失败",
+          detail: ok
+            ? shortcut
+              ? `已通过桌面快捷方式打开：${shortcut}`
+              : "未在桌面找到 Edge 快捷方式，已改用 microsoft-edge: 协议启动。"
+            : `Windows shell 启动失败：${trimCommandFailure(result)}`,
+          at: now(),
+        },
+      ],
+    };
+  }
+
+
   private isWindowsDesktopIntent(text: string) {
     return text.includes("桌面") || /desktop/i.test(text);
   }
@@ -126,7 +205,11 @@ export class WindowsNativeIntentService {
     return /(几个|多少|数量|count|how many).*(图标|文件|项目|快捷方式|应用|app)|(?:图标|文件|项目|快捷方式|应用|app).*(几个|多少|数量|count|how many)/i.test(text);
   }
 
-  private permissionBlocked(request: EngineRunRequest, operation: "fileWrite" | "workspaceRead") {
+  private isOpenDesktopEdgeIntent(text: string) {
+    return /(打开|启动|运行|open|launch).*(edge|microsoft edge|浏览器)|(?:edge|microsoft edge|浏览器).*(打开|启动|运行|open|launch)/i.test(text);
+  }
+
+  private permissionBlocked(request: EngineRunRequest, operation: "fileWrite" | "workspaceRead" | "commandRun") {
     if (request.permissions?.contextBridge === false) {
       return "contextBridge=false，Windows 原生执行层被权限关闭。请到高级设置中开启 Hermes 的桥接上下文权限。";
     }
@@ -135,6 +218,9 @@ export class WindowsNativeIntentService {
     }
     if (operation === "workspaceRead" && request.permissions?.workspaceRead === false) {
       return "workspaceRead=false，当前不允许读取 Windows 桌面目录。请到高级设置中开启 Hermes 的项目读取权限。";
+    }
+    if (operation === "commandRun" && request.permissions?.commandRun === false) {
+      return "commandRun=false，当前不允许启动 Windows 程序。请到高级设置中开启 Hermes 的命令运行权限。";
     }
     return undefined;
   }
@@ -203,4 +289,23 @@ async function exists(filePath: string) {
 
 function isVisibleDesktopEntry(entry: Dirent) {
   return !entry.name.startsWith(".") && entry.name !== "desktop.ini";
+}
+
+async function findDesktopEntry(desktopPaths: string[], pattern: RegExp) {
+  for (const desktopPath of desktopPaths) {
+    const entries = await fs.readdir(desktopPath, { withFileTypes: true }).catch(() => []);
+    const entry = entries.find((item) => isVisibleDesktopEntry(item) && item.isFile() && pattern.test(item.name));
+    if (entry) {
+      return path.join(desktopPath, entry.name);
+    }
+  }
+  return undefined;
+}
+
+function trimCommandFailure(result: CommandResult) {
+  return [result.stderr, result.stdout, `exit ${result.exitCode ?? "unknown"}`]
+    .filter(Boolean)
+    .join(" ")
+    .trim()
+    .slice(0, 500);
 }

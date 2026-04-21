@@ -107,9 +107,12 @@ function PendingNativeCards() {
         <div key={card.id} className="rounded-xl bg-slate-50/70 px-3 py-2">
           <p className="text-[13px] font-semibold text-slate-800">{card.title}</p>
           {card.command ? <code className="mt-2 block rounded-lg bg-slate-50 p-2 text-[12px] text-slate-600">{card.command}</code> : null}
+          {card.details ? <p className="mt-2 text-[12px] text-slate-500">{card.details}</p> : null}
           <div className="mt-3 flex gap-2">
-            <button className="rounded-md bg-indigo-100/70 px-3 py-1.5 text-[12px] font-semibold text-indigo-700" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, approved: true, editedCommand: card.command }).then(() => store.resolveApprovalCard(card.id, "approved"))} type="button">允许</button>
-            <button className="rounded-md px-3 py-1.5 text-[12px] font-semibold text-slate-600 hover:bg-slate-200/50" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, approved: false }).then(() => store.resolveApprovalCard(card.id, "denied"))} type="button">拒绝</button>
+            <button className="rounded-md bg-indigo-100/70 px-3 py-1.5 text-[12px] font-semibold text-indigo-700" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "once", editedCommand: card.command }).then(() => store.resolveApprovalCard(card.id, "approved"))} type="button">本次允许</button>
+            <button className="rounded-md px-3 py-1.5 text-[12px] font-semibold text-slate-600 hover:bg-slate-200/50" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "session", editedCommand: card.command }).then(() => store.resolveApprovalCard(card.id, "approved"))} type="button">本会话允许</button>
+            <button className="rounded-md px-3 py-1.5 text-[12px] font-semibold text-slate-600 hover:bg-slate-200/50" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "always", editedCommand: card.command }).then(() => store.resolveApprovalCard(card.id, "approved"))} type="button">始终允许</button>
+            <button className="rounded-md px-3 py-1.5 text-[12px] font-semibold text-slate-600 hover:bg-slate-200/50" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "deny" }).then(() => store.resolveApprovalCard(card.id, "denied"))} type="button">拒绝</button>
           </div>
         </div>
       ))}
@@ -275,6 +278,12 @@ function failureGuidance(status: TaskRunProjection["status"], content: string) {
   }
   if (status === "interrupted") {
     return { hint: "回复在过程中断，建议先看过程详情确认卡在哪一步。", action: "检查过程后重新发起任务" };
+  }
+  if (/NoConsoleScreenBufferError|No Windows console found|prompt_toolkit\.output\.win32|控制台初始化失败/i.test(text)) {
+    return {
+      hint: "当前更像是 Windows 下 Hermes CLI 拿不到可用控制台，不是模型或密钥配置错误。",
+      action: "先检查 Hermes 运行模式和 Python 环境，必要时切到 WSL 模式后重试",
+    };
   }
   if (/锁释放后重试|工作区正在被占用|WORKSPACE_LOCKED/i.test(text)) {
     return { hint: "当前更像是工作区锁冲突，并不是 Hermes 本身不可用。", action: "等待当前任务结束后重试" };

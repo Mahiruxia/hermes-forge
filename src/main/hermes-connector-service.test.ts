@@ -77,6 +77,28 @@ describe("HermesConnectorService helpers", () => {
     expect(testOnly.parseWeixinQrEvent("████ terminal qr art ████")).toBeUndefined();
   });
 
+  it("uses gateway state snapshots as a Windows-safe running fallback", () => {
+    const snapshot = testOnly.parseGatewayStateSnapshot(JSON.stringify({
+      pid: 12345,
+      gateway_state: "running",
+      platforms: {
+        weixin: { state: "connected" },
+      },
+      updated_at: "2026-04-21T04:01:04.129897+00:00",
+    }), (pid) => pid === 12345);
+
+    expect(snapshot).toMatchObject({
+      running: true,
+      pid: 12345,
+      updatedAt: "2026-04-21T04:01:04.129897+00:00",
+    });
+    expect(snapshot?.message).toContain("weixin");
+    expect(testOnly.parseGatewayStateSnapshot(JSON.stringify({
+      pid: 12345,
+      gateway_state: "running",
+    }), () => false)).toBeUndefined();
+  });
+
   it("keeps confirmed Weixin token inside the main-process event boundary", () => {
     const publicFixtureValue = "public-fixture-value";
     const event = testOnly.parseWeixinQrEvent(JSON.stringify({
@@ -94,5 +116,40 @@ describe("HermesConnectorService helpers", () => {
 
     const rendererStatusKeys = ["running", "phase", "message", "accountId", "userId", "gatewayStarted"];
     expect(rendererStatusKeys).not.toContain("token");
+  });
+
+  it("marks missing aiohttp as recoverable and provides install command", () => {
+    const decorated = testOnly.decorateWeixinFailure("missing_aiohttp", "缺少 aiohttp", "py -3");
+    expect(decorated.failureKind).toBe("recoverable");
+    expect(decorated.recoveryAction).toBe("install_aiohttp");
+    expect(decorated.recoveryCommand).toContain("pip install aiohttp");
+  });
+
+  it("classifies pip/network install failures for Weixin dependency repair", () => {
+    expect(testOnly.classifyWeixinInstallFailure("No module named pip")).toMatchObject({
+      category: "pip_unavailable",
+    });
+    expect(testOnly.classifyWeixinInstallFailure("Temporary failure in name resolution")).toMatchObject({
+      category: "network",
+    });
+  });
+
+  it("lets Hermes .env override stale parent model credentials for Gateway", () => {
+    const env = testOnly.buildGatewayEnv(
+      {
+        OPENAI_API_KEY: "lm-studio",
+        OPENAI_BASE_URL: "http://127.0.0.1:8081/v1",
+      },
+      {
+        OPENAI_API_KEY: "pwd",
+        OPENAI_BASE_URL: "http://127.0.0.1:8080/v1",
+        OPENAI_MODEL: "gpt-5.4",
+      },
+    );
+
+    expect(env.OPENAI_API_KEY).toBe("pwd");
+    expect(env.OPENAI_BASE_URL).toBe("http://127.0.0.1:8080/v1");
+    expect(env.OPENAI_MODEL).toBe("gpt-5.4");
+    expect(env.PYTHONUTF8).toBe("1");
   });
 });
