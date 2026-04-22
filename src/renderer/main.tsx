@@ -25,6 +25,7 @@ import { ConfigCenterLayout, type ConfigSectionId } from "./dashboard/components
 import { ToggleSwitch } from "./dashboard/components/settings/ToggleSwitch";
 import { useAppStore, type RecentWorkspace } from "./store";
 import { safePromiseWithFallback } from "./utils/safePromise";
+import { hasInlineLocalFilePath } from "../shared/local-file-paths";
 import "./styles.css";
 
 const RECENT_WORKSPACES_KEY = "zhenghebao.hermes.recentWorkspaces";
@@ -64,7 +65,7 @@ type ConfigOverview = {
   health?: SetupSummary;
 };
 
-type FixTarget = "model" | "hermes" | "health" | "diagnostics";
+type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 
 function SettingsView(props: { overview?: ConfigOverview; initialSection?: ConfigSectionId; onBack: () => void; onRefresh: () => Promise<void>; onExportDiagnostics?: () => void }) {
   const overview = props.overview;
@@ -630,7 +631,6 @@ function App() {
       const events = pendingEvents;
       pendingEvents = [];
       for (const event of events) {
-        store.pushEvent(event);
         store.applyTaskEvent(event);
         handleAuxiliaryEvent(event);
         if (event.event.type === "result") {
@@ -672,11 +672,9 @@ function App() {
         const events = pendingEvents;
         pendingEvents = [];
         for (const e of events) {
-          store.pushEvent(e);
           store.applyTaskEvent(e);
           handleAuxiliaryEvent(e);
         }
-        store.pushEvent(event);
         store.applyTaskEvent(event);
         handleAuxiliaryEvent(event);
         if (event.event.type === "result") {
@@ -849,6 +847,7 @@ function App() {
     store.setActiveSession(session.id);
     store.setSessionFilesPath(session.sessionFilesPath);
     store.setWorkspacePath(session.workspacePath ?? "");
+    store.clearSelectedFiles();
     store.clearAttachments();
     store.setSessionAgentInsight(undefined);
     
@@ -1102,6 +1101,12 @@ function App() {
       openFixTarget(fixTargetForFailure(message, useAppStore.getState().setupSummary?.blocking[0]?.fixAction));
       return;
     }
+
+    if (!current.workspacePath.trim() && promptNeedsWorkspace(prompt, current.selectedFiles)) {
+      store.warning("请先选择项目目录", "这类请求需要真实工作区，Forge 才能像原版 CLI 一样读取项目文件。");
+      store.setWorkspaceDrawerOpen(true);
+      return;
+    }
     store.clearAttachments();
     if (result.taskRunId !== clientTaskId) store.rebindTaskRunId(clientTaskId, result.taskRunId);
     const resultProjection = useAppStore.getState().taskRunProjectionsById[result.taskRunId];
@@ -1272,6 +1277,12 @@ function App() {
   }
 
   function openFixTarget(target: FixTarget) {
+    if (target === "workspace") {
+      store.setView("home");
+      store.setActivePanel("chat");
+      store.setWorkspaceDrawerOpen(true);
+      return;
+    }
     if (target === "diagnostics") {
       void exportDiagnostics();
       return;
@@ -1353,6 +1364,17 @@ function activityTypeFromTask(taskType: TaskType): ActivityLog["type"] {
 
 function sessionTitleFromPrompt(prompt: string) {
   return prompt.trim().replace(/\s+/g, " ").slice(0, 32) || "新的会话";
+}
+
+function promptNeedsWorkspace(input: string, selectedFiles: string[]) {
+  if (hasInlineLocalFilePath(input)) return false;
+  if (selectedFiles.length > 0) return true;
+  const text = input.trim().toLowerCase();
+  if (!text) return false;
+  return (
+    /读取|读一下|查看|分析|检查|搜索|打开|遍历|修复|修改|编辑|重构|定位|查找/.test(text) &&
+    /文件|代码|项目|目录|仓库|源码|模块|package\.json|readme|tsconfig|src\b|文件夹|工作区/.test(text)
+  );
 }
 
 function buildConversationHistory(state: ReturnType<typeof useAppStore.getState>, workSessionId: string): ConversationHistoryEntry[] {

@@ -14,6 +14,7 @@ import type { HermesConnectorService } from "./hermes-connector-service";
 import type { HermesModelSyncService } from "./hermes-model-sync";
 import type { HermesWebUiService } from "./hermes-webui-service";
 import type { HermesWindowsBridgeTestService } from "./hermes-windows-bridge-test-service";
+import type { HermesSystemAuditService } from "./hermes-system-audit-service";
 import type { WindowsControlBridge } from "./windows-control-bridge";
 import type { ApprovalService } from "./approval-service";
 import type { EngineAdapter } from "../adapters/engine-adapter";
@@ -27,6 +28,7 @@ import type { EngineProbeService } from "../probes/engine-probe-service";
 import type { SetupService } from "../setup/setup-service";
 import type { ClientAutoUpdateService } from "../updater/client-auto-update-service";
 import type { UpdateService } from "../updater/update-service";
+import { importExistingHermesConfig } from "./hermes-existing-config-import";
 import { IpcChannels } from "../shared/ipc";
 import {
   runtimeConfigSchema,
@@ -124,6 +126,7 @@ export type IpcServices = {
   hermesModelSyncService: HermesModelSyncService;
   windowsControlBridge: WindowsControlBridge;
   hermesWindowsBridgeTestService: HermesWindowsBridgeTestService;
+  hermesSystemAuditService: HermesSystemAuditService;
   approvalService: ApprovalService;
   clientInfo: () => ClientInfo;
 };
@@ -422,7 +425,15 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     services.setupService.repairDependency(setupDependencyRepairIdSchema.parse(id)),
   );
   ipcMain.handle(IpcChannels.getRuntimeConfig, () => services.configStore.read());
+  ipcMain.handle(IpcChannels.importExistingHermesConfig, () =>
+    importExistingHermesConfig({
+      configStore: services.configStore,
+      secretVault: services.secretVault,
+      hermesConnectorService: services.hermesConnectorService,
+    }),
+  );
   ipcMain.handle(IpcChannels.testHermesWindowsBridge, () => services.hermesWindowsBridgeTestService.test());
+  ipcMain.handle(IpcChannels.testHermesSystemAudit, () => services.hermesSystemAuditService.test());
   ipcMain.handle(IpcChannels.getConfigOverview, async (_event, workspacePath?: string) => {
     const runtimeConfig = await services.configStore.read();
     const secretRefs = new Set<string>();

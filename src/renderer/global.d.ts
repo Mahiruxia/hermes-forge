@@ -13,10 +13,12 @@ import type {
   HermesConnectorListResult,
   HermesConnectorPlatformId,
   HermesConnectorSaveInput,
+  HermesExistingConfigImportResult,
   HermesGatewayActionResult,
   HermesGatewayStatus,
   HermesInstallEvent,
   HermesInstallResult,
+  HermesSystemAuditResult,
   ClientUpdateEvent,
   HermesWindowsBridgeTestResult,
   HermesMemoryFile,
@@ -186,7 +188,9 @@ declare global {
       onInstallHermesEvent(callback: (event: HermesInstallEvent) => void): () => void;
       getRuntimeConfig(): Promise<RuntimeConfig>;
       getConfigOverview(workspacePath?: string): Promise<any>;
+      importExistingHermesConfig(): Promise<HermesExistingConfigImportResult>;
       testHermesWindowsBridge(): Promise<HermesWindowsBridgeTestResult>;
+      testHermesSystemAudit(): Promise<HermesSystemAuditResult>;
       updateHermesConfig(input: unknown): Promise<RuntimeConfig>;
       updateModelConfig(input: unknown): Promise<RuntimeConfig>;
       saveRuntimeConfig(config: RuntimeConfig): Promise<RuntimeConfig>;

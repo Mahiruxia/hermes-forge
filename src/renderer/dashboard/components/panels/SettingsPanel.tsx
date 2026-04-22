@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Folder, MinusCircle, Network, RefreshCw, RotateCcw, Settings, FileCode, Save, Server, Sparkles, XCircle } from "lucide-react";
 import { useAppStore } from "../../../store";
-import type { BridgeTestStep, HermesInstallEvent, HermesRuntimeConfig, HermesWindowsBridgeTestResult, WindowsAgentMode, WindowsBridgeStatus } from "../../../../shared/types";
+import type { BridgeTestStep, HermesInstallEvent, HermesRuntimeConfig, HermesSystemAuditResult, HermesWindowsBridgeTestResult, WindowsAgentMode, WindowsBridgeStatus } from "../../../../shared/types";
 
 export function SettingsPanel(props: {
   onRefresh: () => Promise<unknown>;
@@ -18,7 +18,10 @@ export function SettingsPanel(props: {
   const [bridge, setBridge] = useState<WindowsBridgeStatus | undefined>();
   const [testingBridge, setTestingBridge] = useState(false);
   const [bridgeTest, setBridgeTest] = useState<HermesWindowsBridgeTestResult | undefined>();
+  const [testingSystemAudit, setTestingSystemAudit] = useState(false);
+  const [systemAudit, setSystemAudit] = useState<HermesSystemAuditResult | undefined>();
   const [installingHermes, setInstallingHermes] = useState(false);
+  const [importingHermesConfig, setImportingHermesConfig] = useState(false);
   const [installEvent, setInstallEvent] = useState<HermesInstallEvent | undefined>();
   const clientInfo = store.clientInfo;
 
@@ -82,6 +85,18 @@ export function SettingsPanel(props: {
     }
   }
 
+  async function testSystemAudit() {
+    setTestingSystemAudit(true);
+    try {
+      const result = await window.workbenchClient.testHermesSystemAudit();
+      setSystemAudit(result);
+      if (result.ok) store.success("Hermes 系统审计通过", result.message);
+      else store.warning("Hermes 系统审计未通过", result.message);
+    } finally {
+      setTestingSystemAudit(false);
+    }
+  }
+
   async function chooseHermesRoot() {
     const selected = await window.workbenchClient.pickHermesInstallFolder();
     if (selected) setRootPath(selected);
@@ -112,6 +127,30 @@ export function SettingsPanel(props: {
       else store.error("Hermes 安装失败", result.message);
     } finally {
       setInstallingHermes(false);
+    }
+  }
+
+  async function importHermesConfig() {
+    if (importingHermesConfig) return;
+    setImportingHermesConfig(true);
+    try {
+      const result = await window.workbenchClient.importExistingHermesConfig();
+      const overview = await window.workbenchClient.getConfigOverview();
+      setRuntime(overview?.hermes?.runtime ?? { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" });
+      setRootPath(overview?.hermes?.rootPath ?? rootPath);
+      setBridge(overview?.hermes?.bridge);
+      store.setRuntimeConfig(overview?.runtimeConfig);
+      await props.onRefresh();
+      if (result.ok) {
+        const detail = result.warnings.length ? `${result.message}；${result.warnings.join("；")}` : result.message;
+        store.success("已导入 Hermes 配置", detail);
+      } else {
+        store.warning("没有发现可导入配置", result.warnings.join("；") || result.message);
+      }
+    } catch (error) {
+      store.error("导入 Hermes 配置失败", error instanceof Error ? error.message : "未知错误");
+    } finally {
+      setImportingHermesConfig(false);
     }
   }
 
@@ -172,6 +211,7 @@ export function SettingsPanel(props: {
             <ActionButton icon={Folder} label="打开 Hermes 路径" onClick={openHermesRoot} />
             <ActionButton icon={Sparkles} label="安装到此路径" onClick={installHermes} loading={installingHermes} />
           </div>
+          <ActionButton icon={RotateCcw} label="导入现有 Hermes 配置" onClick={importHermesConfig} loading={importingHermesConfig} />
           {installEvent ? <InstallProgressView event={installEvent} /> : null}
           {runtime.mode === "wsl" ? (
             <div className="grid gap-4 sm:grid-cols-2">
@@ -247,11 +287,18 @@ export function SettingsPanel(props: {
         <h3 className="mb-4 text-sm font-semibold text-slate-900">诊断</h3>
         <div className="space-y-2">
           <ActionButton
+            icon={Network}
+            label="运行 Hermes 系统能力审计"
+            onClick={testSystemAudit}
+            loading={testingSystemAudit}
+          />
+          <ActionButton
             icon={FileCode}
             label="导出诊断信息"
             onClick={props.onExportDiagnostics}
           />
         </div>
+        {systemAudit ? <SystemAuditResultView result={systemAudit} /> : null}
       </section>
     </div>
   );
@@ -336,6 +383,64 @@ function BridgeTestStepRow(props: { step: BridgeTestStep }) {
             </pre>
           ) : null}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SystemAuditResultView(props: { result: HermesSystemAuditResult }) {
+  return (
+    <div className={cn(
+      "mt-4 rounded-lg border px-4 py-3",
+      props.result.ok ? "border-emerald-100 bg-emerald-50" : "border-rose-100 bg-rose-50",
+    )}>
+      <div className="mb-3 flex items-start gap-2">
+        {props.result.ok ? (
+          <CheckCircle2 size={17} className="mt-0.5 text-emerald-600" />
+        ) : (
+          <XCircle size={17} className="mt-0.5 text-rose-600" />
+        )}
+        <div className="min-w-0">
+          <p className={cn("text-sm font-medium", props.result.ok ? "text-emerald-800" : "text-rose-800")}>
+            {props.result.message}
+          </p>
+          <p className="mt-1 break-all text-xs text-slate-500">
+            workspace={props.result.workspacePath}
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-2">
+        {props.result.steps.map((step) => (
+          <div key={step.id} className="rounded-lg bg-white/80 px-3 py-2">
+            <div className="flex items-start gap-2">
+              {step.status === "passed" ? (
+                <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-600" />
+              ) : step.status === "failed" ? (
+                <XCircle size={15} className="mt-0.5 shrink-0 text-rose-600" />
+              ) : (
+                <MinusCircle size={15} className="mt-0.5 shrink-0 text-slate-400" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-slate-800">{step.label}</span>
+                  <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", stepBadge(step.status))}>
+                    {stepLabel(step.status)}
+                  </span>
+                  {typeof step.durationMs === "number" ? (
+                    <span className="text-[11px] text-slate-400">{step.durationMs}ms</span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs leading-5 text-slate-600">{step.message}</p>
+                {step.artifactPath ? <p className="mt-1 break-all font-mono text-[11px] text-slate-400">{step.artifactPath}</p> : null}
+                {step.detail ? (
+                  <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950/90 p-2 text-[11px] leading-4 text-slate-100">
+                    {step.detail}
+                  </pre>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

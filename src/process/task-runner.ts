@@ -14,6 +14,7 @@ import type { SnapshotManager } from "./snapshot-manager";
 import type { TaskPreflightService } from "./task-preflight-service";
 import type { WorkspaceLock } from "./workspace-lock";
 import { IpcChannels } from "../shared/ipc";
+import { extractInlineLocalFilePaths, normalizeLocalFilePathKey } from "../shared/local-file-paths";
 import { resolveEnginePermissions } from "../shared/types";
 import { deriveTaskEvents } from "./task-derived-event-parser";
 import { createTaskUsageState, trackTaskUsage, type TaskUsageState } from "./task-usage-meter";
@@ -32,9 +33,9 @@ import type {
 } from "../shared/types";
 
 const now = () => new Date().toISOString();
-const INLINE_IMAGE_PATH_PATTERN =
-  /(?:"([^"\r\n]+\.(?:png|jpe?g|webp|gif|bmp))"|'([^'\r\n]+\.(?:png|jpe?g|webp|gif|bmp))'|([a-zA-Z]:\\[^\r\n"'<>|]+?\.(?:png|jpe?g|webp|gif|bmp)))/gi;
-const MAX_INLINE_IMAGE_BYTES = 50 * 1024 * 1024;
+const MAX_INLINE_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const FULL_SNAPSHOT_MAX_FILES = 1200;
+const FULL_SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024;
 const HERMES_WAIT_NOTICES = [
   { afterMs: 3_500, message: "Hermes 已启动，正在等待首段输出。" },
   { afterMs: 10_000, message: "Hermes 仍在运行，但暂时还没有返回可显示正文。" },
@@ -72,7 +73,7 @@ export class TaskRunner {
     const workSessionId = input.sessionId?.trim() || input.sessionFilesPath;
     const taskRunId = input.clientTaskId?.trim() || crypto.randomUUID();
     const actualEngine = "hermes" as const;
-    const attachments = await resolveInlineImageAttachments(input.userInput, input.attachments ?? []);
+    const attachments = await resolveInlineFileAttachments(input.userInput, input.attachments ?? []);
     this.metrics.set(taskRunId, { startedAt: startAt });
 
     await this.publishStage(workspaceId, workSessionId, taskRunId, actualEngine, "preflight", "正在执行 Hermes 运行前检查。");
@@ -154,6 +155,10 @@ export class TaskRunner {
         markLatest: snapshotMode !== "manifest",
         manifestOnly: snapshotMode === "manifest",
         scopedPaths: input.selectedFiles,
+        ...(snapshotMode === "full" ? {
+          maxFiles: FULL_SNAPSHOT_MAX_FILES,
+          maxBytes: FULL_SNAPSHOT_MAX_BYTES,
+        } : {}),
       });
       await this.publishStep(
         workspaceId,
@@ -164,7 +169,7 @@ export class TaskRunner {
         true,
         snapshotMode === "manifest"
           ? `已记录 Hermes 快照清单，未复制工作区文件，耗时 ${Date.now() - snapshotAt}ms。`
-          : `Hermes 任务前快照已建立，复制 ${snapshot.copiedFiles} 个文件，耗时 ${Date.now() - snapshotAt}ms。`,
+          : `${this.snapshotCompleteMessage(snapshot)}，耗时 ${Date.now() - snapshotAt}ms。`,
       );
     } catch (error) {
       this.workspaceLock.release(workspaceId, sessionId);
@@ -538,6 +543,21 @@ export class TaskRunner {
     return "manifest";
   }
 
+  private snapshotCompleteMessage(snapshot: Awaited<ReturnType<SnapshotManager["createSnapshot"]>>) {
+    const copiedBytes = snapshot.copiedBytes ? `，约 ${this.formatBytes(snapshot.copiedBytes)}` : "";
+    if (snapshot.truncated) {
+      return `Hermes 任务前快照已按预算建立，复制 ${snapshot.copiedFiles} 个文件${copiedBytes}，跳过 ${snapshot.skippedFiles} 项；${snapshot.limitReason ?? "已停止继续复制大工作区"}`;
+    }
+    return `Hermes 任务前快照已建立，复制 ${snapshot.copiedFiles} 个文件${copiedBytes}`;
+  }
+
+  private formatBytes(bytes: number) {
+    if (bytes < 1024) return `${bytes}B`;
+    const kib = bytes / 1024;
+    if (kib < 1024) return `${Math.round(kib)}KB`;
+    return `${Math.round(kib / 1024)}MB`;
+  }
+
   private async consumeRun(request: EngineRunRequest, controller: AbortController, workSessionId?: string) {
     const adapterStartedAt = Date.now();
     const actualEngine = "hermes" as const;
@@ -848,43 +868,30 @@ export class TaskRunner {
 }
 
 export function extractInlineImagePaths(text: string): string[] {
-  const paths: string[] = [];
-  const seen = new Set<string>();
-  for (const match of text.matchAll(INLINE_IMAGE_PATH_PATTERN)) {
-    const candidate = (match[1] ?? match[2] ?? match[3] ?? "").trim();
-    if (!candidate || !isSupportedImagePath(candidate)) {
-      continue;
-    }
-    const key = normalizeAttachmentPathKey(candidate);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    paths.push(candidate);
-  }
-  return paths;
+  return extractInlineLocalFilePaths(text).filter(isSupportedImagePath);
 }
 
-export async function resolveInlineImageAttachments(text: string, existing: SessionAttachment[]): Promise<SessionAttachment[]> {
+export async function resolveInlineFileAttachments(text: string, existing: SessionAttachment[]): Promise<SessionAttachment[]> {
   const result = [...existing];
-  const seen = new Set(existing.flatMap((item) => [item.path, item.originalPath]).filter(Boolean).map(normalizeAttachmentPathKey));
-  for (const imagePath of extractInlineImagePaths(text)) {
-    const key = normalizeAttachmentPathKey(imagePath);
+  const seen = new Set(existing.flatMap((item) => [item.path, item.originalPath]).filter(Boolean).map(normalizeLocalFilePathKey));
+  for (const filePath of extractInlineLocalFilePaths(text)) {
+    const key = normalizeLocalFilePathKey(filePath);
     if (seen.has(key)) {
       continue;
     }
     try {
-      const stat = await fs.stat(imagePath);
-      if (!stat.isFile() || stat.size > MAX_INLINE_IMAGE_BYTES) {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile() || stat.size > MAX_INLINE_ATTACHMENT_BYTES) {
         continue;
       }
+      const mimeType = mimeTypeForImagePath(filePath);
       result.push({
-        id: `inline-image-${crypto.randomUUID()}`,
-        name: path.basename(imagePath),
-        path: imagePath,
-        originalPath: imagePath,
-        kind: "image",
-        mimeType: mimeTypeForImagePath(imagePath),
+        id: `inline-file-${crypto.randomUUID()}`,
+        name: path.basename(filePath),
+        path: filePath,
+        originalPath: filePath,
+        kind: mimeType ? "image" : "file",
+        mimeType,
         size: stat.size,
         createdAt: now(),
       });
@@ -894,6 +901,10 @@ export async function resolveInlineImageAttachments(text: string, existing: Sess
     }
   }
   return result;
+}
+
+export async function resolveInlineImageAttachments(text: string, existing: SessionAttachment[]): Promise<SessionAttachment[]> {
+  return (await resolveInlineFileAttachments(text, existing)).filter((attachment) => attachment.kind === "image");
 }
 
 export function mimeTypeForImagePath(imagePath: string): string | undefined {
@@ -907,9 +918,5 @@ export function mimeTypeForImagePath(imagePath: string): string | undefined {
 }
 
 function isSupportedImagePath(imagePath: string) {
-  return /^[a-zA-Z]:\\/.test(imagePath) && mimeTypeForImagePath(imagePath) !== undefined;
-}
-
-function normalizeAttachmentPathKey(imagePath: string) {
-  return process.platform === "win32" ? imagePath.toLowerCase() : imagePath;
+  return mimeTypeForImagePath(imagePath) !== undefined;
 }

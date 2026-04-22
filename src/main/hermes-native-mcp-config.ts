@@ -13,14 +13,16 @@ type BridgeAccess = {
 type SyncInput = {
   runtime: HermesRuntimeConfig;
   bridge?: BridgeAccess;
+  hermesHome?: string;
 };
 
 const SERVER_NAME = "windows_control_bridge";
 const DEFAULT_CONFIG = "model:\n  provider: \"auto\"\n";
 
 export async function syncHermesWindowsMcpConfig(input: SyncInput) {
-  const configPath = path.join(os.homedir(), ".hermes", "config.yaml");
-  const envPath = path.join(os.homedir(), ".hermes", ".env");
+  const hermesHome = input.hermesHome?.trim() || path.join(os.homedir(), ".hermes");
+  const configPath = path.join(hermesHome, "config.yaml");
+  const envPath = path.join(hermesHome, ".env");
   const existing = await fs.readFile(configPath, "utf8").catch(() => DEFAULT_CONFIG);
   const withoutServer = removeManagedServer(existing);
   const bridge = input.runtime.windowsAgentMode !== "disabled" ? input.bridge : undefined;

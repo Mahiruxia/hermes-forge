@@ -8,9 +8,9 @@ import { RuntimeEnvResolver } from "./runtime-env-resolver";
 import { SessionLog } from "./session-log";
 import { ApprovalService } from "./approval-service";
 import { HermesWindowsBridgeTestService } from "./hermes-windows-bridge-test-service";
+import { HermesSystemAuditService } from "./hermes-system-audit-service";
 import { SessionAgentInsightService } from "./session-agent-insight-service";
 import { WindowsControlBridge } from "./windows-control-bridge";
-import { WindowsNativeIntentService } from "./windows-native-intent-service";
 import { WindowsToolExecutor } from "./windows-tool-executor";
 import { WorkSessionService } from "./work-session-service";
 import { HermesCliAdapter } from "../adapters/hermes/hermes-cli-adapter";
@@ -38,6 +38,7 @@ import { resolveEnginePermissions } from "../shared/types";
 const portableRoot = process.env.PORTABLE_EXECUTABLE_DIR;
 const isPortable = Boolean(portableRoot);
 const isDevMode = Boolean(process.env.VITE_DEV_SERVER_URL);
+const isSystemAuditMode = process.argv.includes("--system-audit") || process.env.HERMES_FORGE_SYSTEM_AUDIT === "1";
 
 let mainWindow: BrowserWindow | undefined;
 let windowsControlBridge: WindowsControlBridge | undefined;
@@ -110,7 +111,7 @@ async function runStartupGateway(input: {
 app.whenReady().then(async () => {
   app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
   
-  const singleInstanceLock = app.requestSingleInstanceLock();
+  const singleInstanceLock = isSystemAuditMode || app.requestSingleInstanceLock();
   if (!singleInstanceLock) {
     app.quit();
     return;
@@ -198,6 +199,12 @@ app.whenReady().then(async () => {
   await hermesModelSyncService.syncRuntimeConfig(await configStore.read()).catch((error) => {
     console.warn("[Hermes Forge] Model sync during startup failed:", error);
   });
+  const hermesSystemAuditService = new HermesSystemAuditService(
+    appPaths,
+    hermes,
+    runtimeEnvResolver,
+    () => configStore.read(),
+  );
   const engineProbeService = new EngineProbeService(appPaths, hermes, configStore);
   const setupService = new SetupService(appPaths, hermes, configStore, secretVault);
   const diagnosticsService = new DiagnosticsService(
@@ -223,19 +230,6 @@ app.whenReady().then(async () => {
     () => configStore.getEnginePath("hermes"),
     async () => (await configStore.read()).hermesRuntime?.pythonCommand,
   );
-  const windowsNativeIntentService = new WindowsNativeIntentService(
-    undefined,
-    async (input) => approvalService.request({
-      taskRunId: input.taskRunId,
-      title: input.title,
-      command: input.command,
-      path: input.path,
-      patternKey: input.patternKey,
-      actionKind: input.actionKind,
-      details: input.details,
-      risk: input.risk,
-    }, input.publish),
-  );
   const hermesToolLoopRunner = new HermesToolLoopRunner(hermes, windowsToolExecutor);
   const preflightService = new TaskPreflightService(
     appPaths,
@@ -244,6 +238,23 @@ app.whenReady().then(async () => {
     configStore,
     secretVault,
   );
+
+  if (isSystemAuditMode) {
+    const result = await hermesSystemAuditService.test();
+    if (process.env.HERMES_FORGE_SYSTEM_AUDIT_OUTPUT) {
+      const fs = await import("node:fs/promises");
+      await fs.writeFile(process.env.HERMES_FORGE_SYSTEM_AUDIT_OUTPUT, JSON.stringify(result, null, 2), "utf8");
+    }
+    console.log("__HERMES_FORGE_SYSTEM_AUDIT_START__");
+    console.log(JSON.stringify(result, null, 2));
+    console.log("__HERMES_FORGE_SYSTEM_AUDIT_END__");
+    await windowsControlBridge?.stop();
+    await hermes.stop("system-audit");
+    await hermesConnectorService.shutdown();
+    await modelRuntimeProxyService.shutdown();
+    app.quit();
+    return;
+  }
 
   function createWindow() {
     mainWindow = new BrowserWindow({
@@ -305,7 +316,6 @@ app.whenReady().then(async () => {
     sessionAgentInsightService,
     () => mainWindow,
     hermesToolLoopRunner,
-    windowsNativeIntentService,
   );
 
   registerIpcHandlers(mainWindow, {
@@ -331,6 +341,7 @@ app.whenReady().then(async () => {
     hermesModelSyncService,
     windowsControlBridge,
     hermesWindowsBridgeTestService,
+    hermesSystemAuditService,
     approvalService,
     clientInfo: () => ({
       appVersion: app.getVersion(),

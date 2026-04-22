@@ -3,6 +3,7 @@ import type { ContextBundle, EngineEvent, SessionMessage, StreamEvent, TaskEvent
 
 const MAX_EVENT_LOGS = 240;
 const MAX_CONVERSATION_MESSAGES = 160;
+const MAX_TASK_EVENTS_PER_RUN = 800;
 
 export interface TaskState {
   runningSessionId?: string;
@@ -430,7 +431,7 @@ export const taskSlice = combine<TaskState, TaskActions>(
           events: newEvents,
           taskEventsByRunId: {
             ...state.taskEventsByRunId,
-            [event.taskRunId]: [event, ...(state.taskEventsByRunId[event.taskRunId] || [])],
+            [event.taskRunId]: [event, ...(state.taskEventsByRunId[event.taskRunId] || [])].slice(0, MAX_TASK_EVENTS_PER_RUN),
           },
           taskRunProjectionsById: {
             ...state.taskRunProjectionsById,

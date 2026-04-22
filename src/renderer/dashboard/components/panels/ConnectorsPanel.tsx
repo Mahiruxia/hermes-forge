@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
   CheckCircle2,
@@ -33,6 +33,54 @@ import { NoticeCard } from "../NoticeCard";
 import { cn } from "../../DashboardPrimitives";
 
 type FormValues = Record<string, string | boolean | undefined>;
+type EmailProviderPresetKey = "gmail" | "outlook" | "qq" | "163" | "icloud";
+type ConnectorQuickPreset = {
+  key: string;
+  label: string;
+  description: string;
+  apply(values: FormValues): FormValues;
+};
+type ConnectorEditorConfig = {
+  summary: string;
+  advancedFieldKeys: string[];
+  tips?: string[];
+  presets?: ConnectorQuickPreset[];
+  forceVisibleFieldKeys?: string[];
+  detectedPresetLabel?: string;
+};
+
+const EMAIL_PROVIDER_PRESETS: Record<EmailProviderPresetKey, { label: string; imapHost: string; smtpHost: string; match: RegExp }> = {
+  gmail: {
+    label: "Gmail",
+    imapHost: "imap.gmail.com",
+    smtpHost: "smtp.gmail.com",
+    match: /(?:^|\.)gmail\.com$/i,
+  },
+  outlook: {
+    label: "Outlook",
+    imapHost: "outlook.office365.com",
+    smtpHost: "smtp.office365.com",
+    match: /(?:^|\.)((outlook|hotmail|live)\.com|office365\.com)$/i,
+  },
+  qq: {
+    label: "QQ 邮箱",
+    imapHost: "imap.qq.com",
+    smtpHost: "smtp.qq.com",
+    match: /(?:^|\.)qq\.com$/i,
+  },
+  "163": {
+    label: "163 邮箱",
+    imapHost: "imap.163.com",
+    smtpHost: "smtp.163.com",
+    match: /(?:^|\.)163\.com$/i,
+  },
+  icloud: {
+    label: "iCloud",
+    imapHost: "imap.mail.me.com",
+    smtpHost: "smtp.mail.me.com",
+    match: /(?:^|\.)icloud\.com$/i,
+  },
+};
 
 const statusLabels: Record<HermesConnectorConfig["status"], string> = {
   unconfigured: "未配置",
@@ -64,12 +112,15 @@ export function ConnectorsPanel() {
   const [editingId, setEditingId] = useState<HermesConnectorPlatformId | undefined>();
   const [formValues, setFormValues] = useState<FormValues>({});
   const [formEnabled, setFormEnabled] = useState(true);
+  const [showAdvancedEditor, setShowAdvancedEditor] = useState(false);
+  const [editorJustOpened, setEditorJustOpened] = useState(false);
   const [busy, setBusy] = useState<string | undefined>();
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [weixinQr, setWeixinQr] = useState<WeixinQrLoginStatus | undefined>();
   const [weixinWizardOpen, setWeixinWizardOpen] = useState(false);
   const [highlightedId, setHighlightedId] = useState<HermesConnectorPlatformId | undefined>();
+  const editorRef = useRef<HTMLElement | null>(null);
 
   const editing = useMemo(
     () => data?.connectors.find((connector) => connector.platform.id === editingId),
@@ -77,6 +128,18 @@ export function ConnectorsPanel() {
   );
   const weixinConnector = data?.connectors.find((connector) => connector.platform.id === "weixin");
   const recommendation = getRecommendation(data);
+  const editorConfig = editing ? getConnectorEditorConfig(editing.platform.id, formValues) : undefined;
+  const visibleEditingFields = editing
+    ? editing.platform.fields.filter((field) => {
+      if (showAdvancedEditor) return true;
+      if (!editorConfig) return true;
+      if (editorConfig.forceVisibleFieldKeys?.includes(field.key)) return true;
+      return !editorConfig.advancedFieldKeys.includes(field.key);
+    })
+    : [];
+  const hiddenAdvancedFieldCount = editing && editorConfig
+    ? editing.platform.fields.filter((field) => !visibleEditingFields.some((item) => item.key === field.key)).length
+    : 0;
 
   useEffect(() => {
     void load();
@@ -97,6 +160,14 @@ export function ConnectorsPanel() {
     return () => window.clearInterval(timer);
   }, [weixinWizardOpen, weixinQr?.phase]);
 
+  useEffect(() => {
+    if (!editingId || !editorRef.current) return;
+    editorRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    setEditorJustOpened(true);
+    const timer = window.setTimeout(() => setEditorJustOpened(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [editingId]);
+
   async function load() {
     setBusy("refresh");
     setError("");
@@ -116,11 +187,27 @@ export function ConnectorsPanel() {
         ? ""
         : connector.values[field.key] ?? (field.type === "boolean" ? false : "");
     }
+    const nextValues = withConnectorDefaults(connector.platform.id, values);
     setEditingId(connector.platform.id);
     setFormEnabled(connector.enabled);
-    setFormValues(values);
+    setShowAdvancedEditor(false);
+    setFormValues(nextValues);
     setMessage("");
     setError("");
+  }
+
+  function updateEditingField(field: HermesConnectorField, value: string | boolean) {
+    if (!editing) return;
+    setFormValues((current) => withConnectorDefaults(editing.platform.id, {
+      ...current,
+      [field.key]: value,
+    }, field.key));
+  }
+
+  function applyQuickPreset(preset: ConnectorQuickPreset) {
+    if (!editing) return;
+    setFormValues((current) => withConnectorDefaults(editing.platform.id, preset.apply(current)));
+    setMessage(`已应用 ${preset.label} 预设。`);
   }
 
   async function saveEditing() {
@@ -298,7 +385,13 @@ export function ConnectorsPanel() {
       </section>
 
       {editing ? (
-        <section className="rounded-xl border border-indigo-100 bg-white p-4 shadow-sm">
+        <section
+          ref={editorRef}
+          className={cn(
+            "rounded-xl border bg-white p-4 shadow-sm transition-all",
+            editorJustOpened ? "border-emerald-300 ring-2 ring-emerald-100" : "border-indigo-100",
+          )}
+        >
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold text-slate-900">配置 {editing.platform.label}</h3>
@@ -319,17 +412,68 @@ export function ConnectorsPanel() {
             启用并允许同步到 Hermes .env
           </label>
 
+          {editorConfig ? (
+            <section className="mb-4 rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-emerald-900">快速配置</div>
+                  <p className="mt-1 text-xs text-emerald-700">{editorConfig.summary}</p>
+                  {editorConfig.detectedPresetLabel ? (
+                    <p className="mt-2 text-[11px] font-medium text-emerald-800">已自动识别：{editorConfig.detectedPresetLabel}</p>
+                  ) : null}
+                </div>
+                {editorConfig.advancedFieldKeys.length ? (
+                  <button
+                    className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
+                    onClick={() => setShowAdvancedEditor((current) => !current)}
+                    type="button"
+                  >
+                    <Settings size={14} />
+                    {showAdvancedEditor ? "收起高级项" : "显示高级项"}
+                  </button>
+                ) : null}
+              </div>
+              {editorConfig.presets?.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {editorConfig.presets.map((preset) => (
+                    <button
+                      key={preset.key}
+                      className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                      onClick={() => applyQuickPreset(preset)}
+                      title={preset.description}
+                      type="button"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {editorConfig.tips?.length ? (
+                <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-emerald-800">
+                  {editorConfig.tips.map((tip) => (
+                    <span key={tip} className="rounded-full bg-white/80 px-2.5 py-1">{tip}</span>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
           <div className="grid gap-3 md:grid-cols-2">
-            {editing.platform.fields.map((field) => (
+            {visibleEditingFields.map((field) => (
               <FieldEditor
                 key={field.key}
                 connector={editing}
                 field={field}
                 value={formValues[field.key]}
-                onChange={(value) => setFormValues((current) => ({ ...current, [field.key]: value }))}
+                onChange={(value) => updateEditingField(field, value)}
               />
             ))}
           </div>
+          {!showAdvancedEditor && hiddenAdvancedFieldCount ? (
+            <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              已隐藏 {hiddenAdvancedFieldCount} 个高级字段，常用配置先不用填；需要白名单、回调、Home Channel 等细项时再展开。
+            </div>
+          ) : null}
 
           <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
             {editing.platform.setupHelp.map((line) => <p key={line}>{line}</p>)}
@@ -630,7 +774,7 @@ function primaryAction(props: {
     };
   }
   return {
-    label: connector.configured ? "编辑" : "配置",
+    label: connector.configured ? "编辑" : "快速配置",
     tone: "indigo" as const,
     icon: <Settings size={14} />,
     disabled: false,
@@ -651,7 +795,7 @@ function WeixinQrWizard(props: {
 }) {
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [copied, setCopied] = useState(false);
-  const status = props.status ?? { running: false, phase: "idle" as const, message: "准备开始微信扫码接入。" };
+  const status = props.status ?? { running: false, phase: "idle" as const, message: "请点击开始扫码获取微信二维码。" };
   const stepIndex = stepIndexFor(status.phase);
   const canCancel = status.running || ["fetching_qr", "waiting_scan", "waiting_confirm"].includes(status.phase);
   const canRetry = isTerminalQrPhase(status.phase) && status.phase !== "success";
@@ -757,6 +901,12 @@ function WeixinQrWizard(props: {
                     <QrCode size={56} className="mx-auto text-slate-400" />
                     <p className="mt-3 text-sm text-slate-500">二维码图片生成失败，可复制链接后用微信扫码。</p>
                     <p className="mt-3 max-w-sm break-all font-mono text-xs text-slate-400">{status.qrUrl}</p>
+                  </div>
+                ) : status.phase === "idle" ? (
+                  <div className="text-center">
+                    <QrCode size={56} className="mx-auto text-slate-300" />
+                    <h4 className="mt-4 text-base font-semibold text-slate-950">请点击开始扫码</h4>
+                    <p className="mt-2 max-w-sm text-sm text-slate-500">二维码不会自动生成，点击右侧按钮后才会拉起本次微信扫码流程。</p>
                   </div>
                 ) : (
                   <div className="text-center">
@@ -921,6 +1071,191 @@ function FieldEditor(props: {
       <span className="mt-1 block truncate font-mono text-[11px] text-slate-400">{field.envVar}</span>
     </label>
   );
+}
+
+function withConnectorDefaults(platformId: HermesConnectorPlatformId, values: FormValues, changedKey?: string) {
+  const next = { ...values };
+  if (platformId === "signal" && !stringValue(next.httpUrl)) {
+    next.httpUrl = "http://127.0.0.1:8080";
+  }
+  if (platformId === "homeassistant" && !stringValue(next.url)) {
+    next.url = "http://homeassistant.local:8123";
+  }
+  if (platformId === "wecom_callback" && !stringValue(next.port)) {
+    next.port = "8645";
+  }
+  if (platformId === "matrix" && !stringValue(next.homeserver)) {
+    next.homeserver = "https://matrix.org";
+  }
+  if (platformId === "email") {
+    const address = stringValue(next.address);
+    const detected = detectEmailPreset(address);
+    if (detected && (changedKey === "address" || !stringValue(next.imapHost) || !stringValue(next.smtpHost))) {
+      next.imapHost = EMAIL_PROVIDER_PRESETS[detected].imapHost;
+      next.smtpHost = EMAIL_PROVIDER_PRESETS[detected].smtpHost;
+    }
+    if (address && !stringValue(next.homeAddress)) {
+      next.homeAddress = address;
+    }
+  }
+  return next;
+}
+
+function getConnectorEditorConfig(platformId: HermesConnectorPlatformId, values: FormValues): ConnectorEditorConfig {
+  const emailPreset = detectEmailPreset(stringValue(values.address));
+  switch (platformId) {
+    case "telegram":
+      return {
+        summary: "Telegram 最小可用只要 Bot Token，允许用户和 Home Channel 后面再补。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+        tips: ["先拿到 BotFather token", "建议接入成功后再限制允许用户"],
+      };
+    case "discord":
+      return {
+        summary: "Discord 先填 Bot Token 即可，频道白名单和 Home Channel 都可以后置。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+        tips: ["先在 Developer Portal 创建 Bot", "Message Content Intent 记得开启"],
+      };
+    case "slack":
+      return {
+        summary: "Slack 先填 Bot Token 和 App Token，频道限制先不填也能跑起来。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+        tips: ["仍需先在 Slack 后台创建应用", "Socket Mode 开启后体验最好"],
+      };
+    case "whatsapp":
+      return {
+        summary: "桌面侧先启用 WhatsApp 即可，白名单不是首次接入必填；后续配对建议单独做扫码流程。",
+        advancedFieldKeys: ["allowedUsers"],
+        tips: ["建议先启用，再补允许号码", "后续最适合做成和微信类似的扫码接入"],
+      };
+    case "signal":
+      return {
+        summary: "Signal 默认使用本机 `signal-cli` HTTP bridge，通常只需要账号和默认本地地址。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+        presets: [
+          {
+            key: "signal-localhost",
+            label: "本机默认地址",
+            description: "填入常见的本机 signal-cli bridge 地址。",
+            apply: (current) => ({ ...current, httpUrl: "http://127.0.0.1:8080" }),
+          },
+        ],
+        tips: ["先确认 signal-cli daemon 已启动", "允许用户和 Home Channel 可后置"],
+      };
+    case "email":
+      return {
+        summary: "邮箱接入优先只填邮箱和密码，常见服务商的 IMAP/SMTP 会自动补齐。",
+        advancedFieldKeys: ["imapHost", "smtpHost", "allowedUsers", "homeAddress"],
+        forceVisibleFieldKeys: emailPreset ? [] : ["imapHost", "smtpHost"],
+        detectedPresetLabel: emailPreset ? `${EMAIL_PROVIDER_PRESETS[emailPreset].label} 服务器地址已自动填入` : undefined,
+        presets: (Object.entries(EMAIL_PROVIDER_PRESETS) as Array<[EmailProviderPresetKey, typeof EMAIL_PROVIDER_PRESETS[EmailProviderPresetKey]]>).map(([key, preset]) => ({
+          key,
+          label: preset.label,
+          description: `自动填入 ${preset.imapHost} / ${preset.smtpHost}`,
+          apply: (current) => ({ ...current, imapHost: preset.imapHost, smtpHost: preset.smtpHost }),
+        })),
+        tips: emailPreset
+          ? ["邮箱地址已识别，服务器地址会自动填写", "发件人限制和 Home Address 可后置"]
+          : ["如果不是常见邮箱，请展开或直接填写自定义 IMAP/SMTP", "Gmail/Outlook 建议使用 App Password 或 OAuth"],
+      };
+    case "matrix":
+      return {
+        summary: "Matrix 建议先用 homeserver + access token 跑通，房间限制和密码登录放到高级项。",
+        advancedFieldKeys: ["userId", "password", "allowedUsers", "homeRoom"],
+        presets: [
+          {
+            key: "matrix-org",
+            label: "Matrix.org",
+            description: "填入官方 Matrix homeserver。",
+            apply: (current) => ({ ...current, homeserver: "https://matrix.org" }),
+          },
+        ],
+        tips: ["默认先走 access token 模式", "如需密码登录再展开高级项"],
+      };
+    case "mattermost":
+      return {
+        summary: "Mattermost 只要服务器地址和 Bot Token 就能完成最小配置。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+      };
+    case "dingtalk":
+      return {
+        summary: "钉钉最小可用只需要 AppKey 和 AppSecret，用户限制后置。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+      };
+    case "feishu":
+      return {
+        summary: "飞书先填 App ID 和 App Secret 即可，访问控制可以后补。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+      };
+    case "homeassistant":
+      return {
+        summary: "Home Assistant 先填地址和长期 Token，默认局域网地址可一键带入。",
+        advancedFieldKeys: [],
+        presets: [
+          {
+            key: "hass-local",
+            label: "默认局域网地址",
+            description: "填入常见的本地 Home Assistant 地址。",
+            apply: (current) => ({ ...current, url: "http://homeassistant.local:8123" }),
+          },
+        ],
+      };
+    case "wecom":
+      return {
+        summary: "企业微信 AI Bot 首次只需要 Bot ID 和 Secret，允许用户与 Home Channel 后置。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+      };
+    case "wecom_callback":
+      return {
+        summary: "企业微信回调模式先填 Corp ID / Secret 即可，回调 Token、AESKey 和端口按需展开。",
+        advancedFieldKeys: ["agentId", "token", "aesKey", "port", "allowedUsers"],
+        presets: [
+          {
+            key: "wecom-port",
+            label: "默认回调端口",
+            description: "填入推荐的回调端口 8645。",
+            apply: (current) => ({ ...current, port: "8645" }),
+          },
+        ],
+      };
+    case "weixin":
+      return {
+        summary: "微信优先走扫码接入；这里保留的是手动补充和微调配置，高级项平时不必改。",
+        advancedFieldKeys: ["baseUrl", "cdnBaseUrl", "dmPolicy", "allowAllUsers", "allowedUsers", "groupPolicy", "groupAllowedUsers", "homeChannel"],
+        tips: ["首次接入推荐继续使用扫码", "这里只适合已接入后的参数微调"],
+      };
+    case "bluebubbles":
+      return {
+        summary: "BlueBubbles 先填服务地址和密码，访问控制字段可以后置。",
+        advancedFieldKeys: ["allowedUsers", "homeChannel"],
+      };
+    case "sms":
+      return {
+        summary: "SMS 适配器依赖 Hermes 侧实现，常用情况下先不填限制字段。",
+        advancedFieldKeys: ["homeChannel", "allowedUsers"],
+      };
+    case "qqbot":
+      return {
+        summary: "QQ Bot 先跑通适配器，再按需补充允许用户和群聊限制。",
+        advancedFieldKeys: ["allowedUsers", "groupAllowedUsers", "homeChannel"],
+      };
+    default:
+      return {
+        summary: "先完成最小必填项，更多限制和高级参数可后置。",
+        advancedFieldKeys: [],
+      };
+  }
+}
+
+function detectEmailPreset(address: string): EmailProviderPresetKey | undefined {
+  const domain = address.split("@")[1]?.trim().toLowerCase();
+  if (!domain) return undefined;
+  return (Object.entries(EMAIL_PROVIDER_PRESETS) as Array<[EmailProviderPresetKey, typeof EMAIL_PROVIDER_PRESETS[EmailProviderPresetKey]]>)
+    .find(([, preset]) => preset.match.test(domain))?.[0];
+}
+
+function stringValue(value: string | boolean | undefined) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function stepIndexFor(phase: WeixinQrLoginPhase) {

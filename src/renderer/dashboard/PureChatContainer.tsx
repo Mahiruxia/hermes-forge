@@ -7,7 +7,7 @@ import { useAppStore } from "../store";
 import { ChatInput } from "./ChatInput";
 import { cn, formatShortDate } from "./DashboardPrimitives";
 
-type FixTarget = "model" | "hermes" | "health" | "diagnostics";
+type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 
 export function PureChatContainer(props: {
   runs: TaskRunProjection[];

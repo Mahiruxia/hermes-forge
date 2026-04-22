@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { testOnly } from "./hermes-native-mcp-config";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { syncHermesWindowsMcpConfig, testOnly } from "./hermes-native-mcp-config";
 
 describe("Hermes native MCP config helpers", () => {
   it("inserts the Windows bridge server under a new mcp_servers section", () => {
@@ -41,5 +44,27 @@ describe("Hermes native MCP config helpers", () => {
     expect(result).toContain("OPENAI_BASE_URL=http://127.0.0.1:8081/v1");
     expect(result).toContain("CUSTOM_KEEP=1");
     expect(result).not.toContain("HERMES_WINDOWS_BRIDGE_URL");
+  });
+
+  it("writes bridge config into the supplied Hermes home", async () => {
+    const hermesHome = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-home-"));
+    try {
+      const result = await syncHermesWindowsMcpConfig({
+        runtime: { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" },
+        hermesHome,
+        bridge: {
+          url: "http://127.0.0.1:12345",
+          token: "test-token",
+          capabilities: "tool,manifest",
+        },
+      });
+
+      expect(result.configPath).toBe(path.join(hermesHome, "config.yaml"));
+      expect(result.envPath).toBe(path.join(hermesHome, ".env"));
+      await expect(fs.readFile(path.join(hermesHome, "config.yaml"), "utf8")).resolves.toContain("windows_control_bridge:");
+      await expect(fs.readFile(path.join(hermesHome, ".env"), "utf8")).resolves.toContain("HERMES_WINDOWS_BRIDGE_URL");
+    } finally {
+      await fs.rm(hermesHome, { recursive: true, force: true });
+    }
   });
 });

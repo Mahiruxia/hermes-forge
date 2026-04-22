@@ -41,7 +41,7 @@ describe("DashboardView", () => {
     });
   });
 
-  function renderView(overrides?: { onOpenFix?: (target: "model" | "hermes" | "health" | "diagnostics") => void }) {
+  function renderView(overrides?: { onOpenFix?: (target: "model" | "hermes" | "health" | "diagnostics" | "workspace") => void }) {
     return render(
       <DashboardView
         onPickWorkspace={vi.fn()}
@@ -388,6 +388,49 @@ describe("DashboardView", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /未配置可用模型/ }));
     expect(onOpenFix).toHaveBeenCalledWith("model");
+  });
+
+  it("blocks file-oriented requests when no workspace is selected", () => {
+    const onOpenFix = vi.fn();
+    useAppStore.setState({
+      userInput: "请读取这个项目里的 package.json 并分析依赖",
+      workspacePath: "",
+    });
+
+    render(
+      <DashboardView
+        onPickWorkspace={vi.fn()}
+        onSelectWorkspace={vi.fn()}
+        onCreateSession={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenSessionFolder={vi.fn()}
+        onOpenSupport={vi.fn()}
+        onClearSession={vi.fn()}
+        onStartTask={vi.fn()}
+        onCancelTask={vi.fn()}
+        onRestoreSnapshot={vi.fn()}
+        onRefreshFileTree={vi.fn()}
+        onExportDiagnostics={vi.fn()}
+        onOpenFix={onOpenFix}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /这类请求需要先选择项目目录/ }));
+    expect(onOpenFix).toHaveBeenCalledWith("workspace");
+  });
+
+  it("allows direct absolute file path prompts without a workspace", () => {
+    useAppStore.setState({
+      userInput: '请帮我总结一下 "C:\\Users\\xia\\Desktop\\论文md\\论文正文格式规范.md"',
+      workspacePath: "",
+    });
+
+    renderView();
+
+    expect(screen.getByRole("button", { name: "发送" })).not.toBeDisabled();
   });
 
   it("fills the input from an empty chat suggestion", () => {
