@@ -22,6 +22,9 @@ const DEFAULT_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 type InstallPublisher = (event: HermesInstallEvent) => void;
 type PythonLauncher = { command: string; argsPrefix: string[]; label: string };
+export type HermesInstallOptions = {
+  rootPath?: string;
+};
 
 export class SetupService {
   private installInFlight?: Promise<HermesInstallResult>;
@@ -131,9 +134,9 @@ export class SetupService {
     return { ok, engineId: "hermes", message, log, logPath };
   }
 
-  async installHermes(publish?: InstallPublisher): Promise<HermesInstallResult> {
+  async installHermes(publish?: InstallPublisher, options: HermesInstallOptions = {}): Promise<HermesInstallResult> {
     if (!this.installInFlight) {
-      this.installInFlight = this.performInstallHermes(publish).finally(() => {
+      this.installInFlight = this.performInstallHermes(publish, options).finally(() => {
         this.installInFlight = undefined;
       });
     }
@@ -158,7 +161,7 @@ export class SetupService {
     }
   }
 
-  private async performInstallHermes(publish?: InstallPublisher): Promise<HermesInstallResult> {
+  private async performInstallHermes(publish?: InstallPublisher, options: HermesInstallOptions = {}): Promise<HermesInstallResult> {
     const log: string[] = [];
     const startedAt = new Date().toISOString();
     const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
@@ -205,7 +208,7 @@ export class SetupService {
       }
 
       const repoUrl = process.env.HERMES_INSTALL_REPO_URL?.trim() || DEFAULT_HERMES_REPO_URL;
-      const rootPath = process.env.HERMES_INSTALL_DIR?.trim() || this.defaultInstallRoot();
+      const rootPath = options.rootPath?.trim() || process.env.HERMES_INSTALL_DIR?.trim() || this.defaultInstallRoot();
       const parentDir = path.dirname(rootPath);
       const managedDefaultPath = this.samePath(rootPath, this.defaultInstallRoot());
       log.push(`Install target: ${rootPath}`);

@@ -31,7 +31,7 @@ Hermes Forge 主要解决三个问题：
 
 ## 当前状态
 
-当前公开版本为 **v0.1.4**，已经具备可安装、可演示、可继续开发的主链路：
+当前公开版本为 **v0.1.5**，已经具备可安装、可演示、可继续开发的主链路：
 
 - Windows 安装包已通过 GitHub Releases 发布。
 - GitHub Actions 可在 tag 发布时自动构建 Windows 和 macOS 资产。

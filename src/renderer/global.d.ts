@@ -50,6 +50,9 @@ import type {
   WeixinQrLoginResult,
   WeixinQrLoginStatus,
   WeixinDependencyInstallResult,
+  SponsorOverview,
+  SponsorSubmitInput,
+  SponsorSubmitResult,
 } from "../shared/types";
 
 declare global {
@@ -89,6 +92,7 @@ declare global {
   interface Window {
     workbenchClient: {
       pickWorkspaceFolder(): Promise<string | null>;
+      pickHermesInstallFolder(): Promise<string | null>;
       pickSessionAttachments(sessionFilesPath: string): Promise<SessionAttachment[]>;
       importSessionAttachments(sessionFilesPath: string, filePaths: string[]): Promise<SessionAttachment[]>;
       createQuickTextFile(input: QuickTextFileInput): Promise<QuickTextFileResult>;
@@ -96,6 +100,8 @@ declare global {
       openHelp(): Promise<{ ok: boolean; message: string }>;
       restart(): Promise<{ ok: boolean }>;
       getClientInfo(): Promise<ClientInfo>;
+      listSponsorEntries(): Promise<SponsorOverview>;
+      submitSponsorEntry(input: SponsorSubmitInput): Promise<SponsorSubmitResult>;
       startTask(input: StartTaskInput): Promise<TaskStartResult>;
       cancelTask(sessionId: string): Promise<boolean>;
       restoreLatestSnapshot(workspacePath: string): Promise<SnapshotRestoreResult>;
@@ -175,7 +181,7 @@ declare global {
       checkClientUpdate(): Promise<ClientUpdateEvent>;
       onClientUpdateEvent(callback: (event: ClientUpdateEvent) => void): () => void;
       updateHermes(): Promise<EngineMaintenanceResult>;
-      installHermes(): Promise<HermesInstallResult>;
+      installHermes(options?: { rootPath?: string }): Promise<HermesInstallResult>;
       repairSetupDependency(id: SetupDependencyRepairId): Promise<SetupDependencyRepairResult>;
       onInstallHermesEvent(callback: (event: HermesInstallEvent) => void): () => void;
       getRuntimeConfig(): Promise<RuntimeConfig>;

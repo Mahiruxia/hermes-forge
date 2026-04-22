@@ -51,6 +51,7 @@ describe("DashboardView", () => {
         onDeleteSession={vi.fn()}
         onRenameSession={vi.fn()}
         onOpenSessionFolder={vi.fn()}
+        onOpenSupport={vi.fn()}
         onClearSession={vi.fn()}
         onStartTask={vi.fn()}
         onCancelTask={vi.fn()}
@@ -202,6 +203,7 @@ describe("DashboardView", () => {
     fireEvent.click(header.getByRole("button", { name: "更多选项" }));
 
     expect(header.getByRole("button", { name: "官网" })).toBeTruthy();
+    expect(header.getByRole("button", { name: "赞助与反馈" })).toBeTruthy();
     expect(header.getByRole("button", { name: "打开会话文件夹" })).toBeTruthy();
     expect(header.queryByRole("button", { name: "打开文件树" })).toBeNull();
     expect(header.getByRole("button", { name: "打开搜索与检查器" })).toBeTruthy();
@@ -372,6 +374,7 @@ describe("DashboardView", () => {
         onDeleteSession={vi.fn()}
         onRenameSession={vi.fn()}
         onOpenSessionFolder={vi.fn()}
+        onOpenSupport={vi.fn()}
         onClearSession={vi.fn()}
         onStartTask={vi.fn()}
         onCancelTask={vi.fn()}

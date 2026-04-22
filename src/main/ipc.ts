@@ -45,6 +45,8 @@ import type {
   ModelProfile,
   RuntimeConfig,
   SessionAttachment,
+  SponsorEntry,
+  SponsorOverview,
 } from "../shared/types";
 import { normalizeOpenAiCompatibleBaseUrl } from "../shared/model-config";
 
@@ -54,6 +56,15 @@ const quickTextFileInputSchema = z.object({
 });
 const attachmentSourcePathsSchema = z.array(workspacePathInputSchema).max(12);
 const setupDependencyRepairIdSchema = z.enum(["git", "python", "weixin_aiohttp"]);
+const installHermesOptionsSchema = z.object({
+  rootPath: z.string().trim().min(1).max(1000).optional(),
+}).optional();
+const sponsorSubmitInputSchema = z.object({
+  supporterId: z.string().trim().min(1).max(48),
+  message: z.string().trim().max(1000).optional(),
+});
+const DEFAULT_FEEDBACK_SYNC_ENDPOINT = "https://xiaoxiahome.icu/api/hermes-forge/feedback";
+const DEFAULT_FEEDBACK_WALL_ENDPOINT = "https://xiaoxiahome.icu/api/hermes-forge/feedback/recent?kind=feedback&limit=50";
 
 const connectorPlatformIdSchema = z.enum([
   "telegram",
@@ -144,6 +155,14 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
+  ipcMain.handle(IpcChannels.pickHermesInstallFolder, async () => {
+    const result = await dialog.showOpenDialog({
+      title: "选择 Hermes 安装目录",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+
   ipcMain.handle(IpcChannels.pickSessionAttachments, async (_event, sessionFilesPath: string): Promise<SessionAttachment[]> => {
     const targetSessionPath = workspacePathInputSchema.parse(sessionFilesPath);
     const result = await dialog.showOpenDialog({
@@ -176,6 +195,28 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   });
 
   ipcMain.handle(IpcChannels.getClientInfo, () => services.clientInfo());
+
+  ipcMain.handle(IpcChannels.listSponsorEntries, () => readSponsorOverview(services.appPaths));
+
+  ipcMain.handle(IpcChannels.submitSponsorEntry, async (_event, input: unknown) => {
+    const parsed = sponsorSubmitInputSchema.parse(input ?? {});
+    const overview = await readSponsorOverview(services.appPaths);
+    const entry: SponsorEntry = {
+      id: crypto.randomUUID(),
+      supporterId: parsed.supporterId,
+      message: parsed.message || "支持 Hermes Forge 继续打磨。",
+      status: "self_reported",
+      createdAt: new Date().toISOString(),
+    };
+    const next = await writeSponsorEntries(services.appPaths, [entry, ...overview.entries]);
+    const sync = await syncHermesForgeFeedback(entry);
+    return {
+      ok: true,
+      entry,
+      message: sync.ok ? "已同步到小夏仪表盘，感谢支持和建议。" : `已保存到本机，远程同步失败：${sync.message}`,
+      overview: next,
+    };
+  });
 
   ipcMain.handle(IpcChannels.openPath, async (_event, targetPath: string) => {
     const stat = await fs.stat(targetPath).catch(() => undefined);
@@ -372,10 +413,10 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.checkClientUpdate, () => services.clientAutoUpdateService.checkForUpdates(true));
 
   ipcMain.handle(IpcChannels.updateHermes, () => services.setupService.updateHermes());
-  ipcMain.handle(IpcChannels.installHermes, (event) =>
+  ipcMain.handle(IpcChannels.installHermes, (event, input?: unknown) =>
     services.setupService.installHermes((payload) => {
       event.sender.send(IpcChannels.installHermesEvent, payload);
-    }),
+    }, installHermesOptionsSchema.parse(input ?? undefined)),
   );
   ipcMain.handle(IpcChannels.repairSetupDependency, (_event, id: unknown) =>
     services.setupService.repairDependency(setupDependencyRepairIdSchema.parse(id)),
@@ -524,6 +565,146 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     return { ref: parsed, exists: await services.secretVault.hasSecret(parsed) };
   });
   ipcMain.handle(IpcChannels.exportDiagnostics, (_event, workspacePath?: string) => services.diagnosticsService.export(workspacePath));
+}
+
+async function readSponsorOverview(appPaths: AppPaths): Promise<SponsorOverview> {
+  const entries = await fetchRemoteFeedbackWall().catch(() => undefined) ?? await readSponsorEntries(appPaths);
+  return {
+    entries,
+    totalCount: entries.length,
+    updatedAt: entries[0]?.createdAt,
+  };
+}
+
+async function fetchRemoteFeedbackWall(): Promise<SponsorEntry[]> {
+  const endpoint = process.env.HERMES_FORGE_FEEDBACK_WALL_ENDPOINT?.trim()
+    || process.env.SUPPORT_FEEDBACK_WALL_ENDPOINT?.trim()
+    || DEFAULT_FEEDBACK_WALL_ENDPOINT;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(endpoint, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json() as unknown;
+    if (!Array.isArray(payload)) throw new Error("Invalid feedback wall payload");
+    return payload
+      .filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        const record = item as Record<string, unknown>;
+        return record.public !== false && record.status !== "hidden";
+      })
+      .map((item) => normalizeSponsorEntry(item))
+      .filter((item): item is SponsorEntry => Boolean(item))
+      .slice(0, 50);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readSponsorEntries(appPaths: AppPaths): Promise<SponsorEntry[]> {
+  const raw = await fs.readFile(sponsorEntriesPath(appPaths), "utf8").catch(() => "");
+  if (!raw.trim()) return defaultSponsorEntries();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return defaultSponsorEntries();
+    return parsed
+      .map((item) => normalizeSponsorEntry(item))
+      .filter((item): item is SponsorEntry => Boolean(item))
+      .slice(0, 200);
+  } catch {
+    return defaultSponsorEntries();
+  }
+}
+
+async function writeSponsorEntries(appPaths: AppPaths, entries: SponsorEntry[]): Promise<SponsorOverview> {
+  const safeEntries = entries.slice(0, 200);
+  await fs.mkdir(path.dirname(sponsorEntriesPath(appPaths)), { recursive: true });
+  await fs.writeFile(sponsorEntriesPath(appPaths), JSON.stringify(safeEntries, null, 2), "utf8");
+  return {
+    entries: safeEntries,
+    totalCount: safeEntries.length,
+    updatedAt: safeEntries[0]?.createdAt,
+  };
+}
+
+function sponsorEntriesPath(appPaths: AppPaths) {
+  return path.join(appPaths.baseDir(), "support", "sponsors.json");
+}
+
+function normalizeSponsorEntry(value: unknown): SponsorEntry | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const supporterId = typeof record.supporterId === "string" ? record.supporterId.trim().slice(0, 48) : "";
+  if (!supporterId) return undefined;
+  return {
+    id: typeof record.id === "string" && record.id ? record.id : crypto.randomUUID(),
+    supporterId,
+    message: typeof record.message === "string" && record.message.trim()
+      ? record.message.trim().slice(0, 1000)
+      : "支持 Hermes Forge 继续打磨。",
+    reply: typeof record.reply === "string" ? record.reply.trim().slice(0, 1000) : undefined,
+    status: normalizeSponsorStatus(record.status),
+    createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : new Date().toISOString(),
+  };
+}
+
+function normalizeSponsorStatus(status: unknown): SponsorEntry["status"] {
+  if (
+    status === "verified"
+    || status === "new"
+    || status === "read"
+    || status === "planned"
+    || status === "done"
+    || status === "hidden"
+  ) {
+    return status;
+  }
+  return "self_reported";
+}
+
+function defaultSponsorEntries(): SponsorEntry[] {
+  return [
+    {
+      id: "seed-xia",
+      supporterId: "小夏",
+      message: "把 Hermes Forge 打磨成真正好用的本地 Agent 工作台。",
+      status: "verified",
+      createdAt: "2026-04-22T00:00:00.000Z",
+    },
+  ];
+}
+
+async function syncHermesForgeFeedback(entry: SponsorEntry): Promise<{ ok: boolean; message: string }> {
+  const endpoint = process.env.HERMES_FORGE_FEEDBACK_ENDPOINT?.trim()
+    || process.env.SUPPORT_FEEDBACK_ENDPOINT?.trim()
+    || DEFAULT_FEEDBACK_SYNC_ENDPOINT;
+  if (!endpoint) return { ok: false, message: "未配置同步接口" };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        supporterId: entry.supporterId,
+        message: entry.message,
+        appVersion: app.getVersion(),
+        platform: `${process.platform}/${process.arch}`,
+        source: "hermes-forge-desktop",
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => undefined) as { message?: string } | undefined;
+    if (!response.ok) {
+      return { ok: false, message: payload?.message ?? `HTTP ${response.status}` };
+    }
+    return { ok: true, message: payload?.message ?? "反馈已同步" };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "未知错误" };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function restartGatewayIfRunning(services: IpcServices) {

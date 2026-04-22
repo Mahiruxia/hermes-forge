@@ -4,6 +4,7 @@ import type {
   ActivityLog,
   ConversationHistoryEntry,
   EngineEvent,
+  HermesInstallEvent,
   RuntimeConfig,
   SecretVaultStatus,
   SetupCheck,
@@ -15,6 +16,7 @@ import type {
   WorkSession,
 } from "../shared/types";
 import { DashboardView } from "./dashboard/DashboardView";
+import { SupportView } from "./dashboard/SupportView";
 import { WelcomePage } from "./dashboard/WelcomePage";
 import { ToastContainer } from "./dashboard/ToastNotification";
 import { PageLoader } from "./dashboard/LoadingIndicator";
@@ -82,6 +84,7 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
   const [saveNotice, setSaveNotice] = useState<string>("");
   const [repairingDependency, setRepairingDependency] = useState<SetupDependencyRepairId | undefined>();
   const [setupActionRunning, setSetupActionRunning] = useState<string | undefined>();
+  const [installEvent, setInstallEvent] = useState<HermesInstallEvent | undefined>();
 
   function showSaveNotice(message: string) {
     setSaveNotice(message);
@@ -97,6 +100,16 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
   useEffect(() => {
     if (props.initialSection) setActiveSection(props.initialSection);
   }, [props.initialSection]);
+
+  useEffect(() => {
+    if (!window.workbenchClient || typeof window.workbenchClient.onInstallHermesEvent !== "function") return;
+    return window.workbenchClient.onInstallHermesEvent((event) => {
+      setInstallEvent(event);
+      if (event.stage === "completed" || event.stage === "failed") {
+        setSetupActionRunning(undefined);
+      }
+    });
+  }, []);
 
   async function saveSecretSettings() {
     if (!secretRef.trim() || !secretValue.trim()) return;
@@ -136,6 +149,36 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
     showSaveNotice("Hermes 设置已保存");
   }
 
+  async function chooseHermesRoot() {
+    const selected = await window.workbenchClient.pickHermesInstallFolder();
+    if (selected) setRootPath(selected);
+  }
+
+  async function openHermesRoot() {
+    if (!rootPath.trim()) {
+      showSaveNotice("请先填写 Hermes 根路径");
+      return;
+    }
+    const result = await window.workbenchClient.openPath(rootPath.trim());
+    showSaveNotice(result.message);
+  }
+
+  async function installHermesToCurrentPath() {
+    if (setupActionRunning) return;
+    setSetupActionRunning("hermes");
+    setInstallEvent(undefined);
+    try {
+      const result = await window.workbenchClient.installHermes(rootPath.trim() ? { rootPath: rootPath.trim() } : undefined);
+      if (result.rootPath) setRootPath(result.rootPath);
+      await props.onRefresh();
+      showSaveNotice(result.message);
+    } catch (error) {
+      showSaveNotice(error instanceof Error ? error.message : "Hermes 自动安装失败");
+    } finally {
+      setSetupActionRunning(undefined);
+    }
+  }
+
   async function handleSetupFix(check: SetupCheck) {
     if (repairingDependency || setupActionRunning) return;
 
@@ -155,8 +198,10 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
 
     if (check.fixAction === "install_hermes") {
       setSetupActionRunning(check.id);
+      setInstallEvent(undefined);
       try {
-        const result = await window.workbenchClient.installHermes();
+        const result = await window.workbenchClient.installHermes(rootPath.trim() ? { rootPath: rootPath.trim() } : undefined);
+        if (result.rootPath) setRootPath(result.rootPath);
         await props.onRefresh();
         showSaveNotice(result.message);
       } catch (error) {
@@ -212,6 +257,17 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
                   placeholder="输入 Hermes 根路径"
                 />
               </label>
+              <div className="flex flex-wrap gap-2">
+                <button className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void chooseHermesRoot()} type="button">
+                  选择目录
+                </button>
+                <button className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" disabled={!rootPath.trim()} onClick={() => void openHermesRoot()} type="button">
+                  打开目录
+                </button>
+                <button className="rounded-xl bg-slate-950 px-3 py-2 text-[12px] font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60" disabled={Boolean(setupActionRunning)} onClick={() => void installHermesToCurrentPath()} type="button">
+                  {setupActionRunning ? "正在安装" : "安装到此路径"}
+                </button>
+              </div>
 
               <label className="block text-[12px] font-medium text-slate-500">
                 <span className="mb-1.5 block">启动预热</span>
@@ -227,6 +283,23 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
               </label>
             </div>
           </SettingsPanelCard>
+
+          {installEvent ? (
+            <SettingsPanelCard title="Hermes 安装进度">
+              <div className="space-y-2">
+                <div className="flex items-start justify-between gap-3 text-[12px]">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-800">{installEvent.message}</p>
+                    {installEvent.detail ? <p className="mt-1 break-all text-slate-500">{installEvent.detail}</p> : null}
+                  </div>
+                  <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-600">{Math.round(installEvent.progress)}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full rounded-full bg-slate-950 transition-all duration-200" style={{ width: `${Math.max(0, Math.min(100, installEvent.progress))}%` }} />
+                </div>
+              </div>
+            </SettingsPanelCard>
+          ) : null}
 
           <SettingsPanelCard title="能力开关">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1215,7 +1288,9 @@ function App() {
   return (
     <>
       {store.isLoading("bootstrap") && <PageLoader />}
-      {store.view === "settings" ? (
+      {store.view === "support" ? (
+        <SupportView onBack={() => store.setView("home")} />
+      ) : store.view === "settings" ? (
         <SettingsView
           overview={configOverview}
           initialSection={settingsInitialSection}
@@ -1237,6 +1312,7 @@ function App() {
           onUpdateActiveSessionMeta={updateActiveSessionMeta}
           onUpdateSessionMeta={updateSessionMeta}
           onOpenSessionFolder={openActiveSessionFolder}
+          onOpenSupport={() => store.setView("support")}
           onClearSession={clearActiveSession}
           onStartTask={startTask}
           onCancelTask={cancelTask}

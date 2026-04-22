@@ -1,7 +1,7 @@
 import { combine } from "zustand/middleware";
 import type { ApprovalRequest, ClarifyRequest, TaskType } from "../../shared/types";
 
-export type ViewId = "home" | "engines" | "memory" | "admin" | "settings" | "logs";
+export type ViewId = "home" | "engines" | "memory" | "admin" | "settings" | "support" | "logs";
 
 export interface UiState {
   view: ViewId;

@@ -52,10 +52,14 @@ import type {
   WeixinQrLoginResult,
   WeixinQrLoginStatus,
   WeixinDependencyInstallResult,
+  SponsorOverview,
+  SponsorSubmitInput,
+  SponsorSubmitResult,
 } from "../shared/types";
 
 const api = {
   pickWorkspaceFolder: () => ipcRenderer.invoke(IpcChannels.pickWorkspaceFolder) as Promise<string | null>,
+  pickHermesInstallFolder: () => ipcRenderer.invoke(IpcChannels.pickHermesInstallFolder) as Promise<string | null>,
   pickSessionAttachments: (sessionFilesPath: string) =>
     ipcRenderer.invoke(IpcChannels.pickSessionAttachments, sessionFilesPath) as Promise<SessionAttachment[]>,
   importSessionAttachments: (sessionFilesPath: string, filePaths: string[]) =>
@@ -66,6 +70,9 @@ const api = {
   openHelp: () => ipcRenderer.invoke(IpcChannels.openHelp) as Promise<{ ok: boolean; message: string }>,
   restart: () => ipcRenderer.invoke(IpcChannels.restartApp) as Promise<{ ok: boolean }>,
   getClientInfo: () => ipcRenderer.invoke(IpcChannels.getClientInfo) as Promise<ClientInfo>,
+  listSponsorEntries: () => ipcRenderer.invoke(IpcChannels.listSponsorEntries) as Promise<SponsorOverview>,
+  submitSponsorEntry: (input: SponsorSubmitInput) =>
+    ipcRenderer.invoke(IpcChannels.submitSponsorEntry, input) as Promise<SponsorSubmitResult>,
   startTask: (input: StartTaskInput) => {
     console.info("[Hermes Trace]", {
       layer: "preload:startTask",
@@ -178,7 +185,7 @@ const api = {
     return () => ipcRenderer.removeListener(IpcChannels.clientUpdateEvent, wrapped);
   },
   updateHermes: () => ipcRenderer.invoke(IpcChannels.updateHermes) as Promise<EngineMaintenanceResult>,
-  installHermes: () => ipcRenderer.invoke(IpcChannels.installHermes) as Promise<HermesInstallResult>,
+  installHermes: (options?: { rootPath?: string }) => ipcRenderer.invoke(IpcChannels.installHermes, options) as Promise<HermesInstallResult>,
   repairSetupDependency: (id: SetupDependencyRepairId) =>
     ipcRenderer.invoke(IpcChannels.repairSetupDependency, id) as Promise<SetupDependencyRepairResult>,
   onInstallHermesEvent: (callback: (event: HermesInstallEvent) => void) => {

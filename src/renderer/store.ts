@@ -14,7 +14,7 @@ import type { DashboardActions, DashboardState } from "./store/dashboardSlice";
 import type { FeedbackActions, FeedbackState } from "./store/feedbackSlice";
 import type { SessionMessage, TaskRunProjection, TaskRunStatus } from "../shared/types";
 
-export type ViewId = "home" | "engines" | "memory" | "admin" | "settings" | "logs";
+export type ViewId = "home" | "engines" | "memory" | "admin" | "settings" | "support" | "logs";
 export type RecentWorkspace = {
   path: string;
   name: string;

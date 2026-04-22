@@ -633,6 +633,35 @@ export type ClientUpdateEvent = {
   at: string;
 };
 
+export type SponsorEntryStatus = "self_reported" | "verified" | "new" | "read" | "planned" | "done" | "hidden";
+
+export type SponsorEntry = {
+  id: string;
+  supporterId: string;
+  message: string;
+  reply?: string;
+  status: SponsorEntryStatus;
+  createdAt: string;
+};
+
+export type SponsorOverview = {
+  entries: SponsorEntry[];
+  totalCount: number;
+  updatedAt?: string;
+};
+
+export type SponsorSubmitInput = {
+  supporterId: string;
+  message?: string;
+};
+
+export type SponsorSubmitResult = {
+  ok: boolean;
+  entry: SponsorEntry;
+  message: string;
+  overview: SponsorOverview;
+};
+
 export type MemoryStatus = {
   engineId: EngineId;
   workspaceId: string;

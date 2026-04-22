@@ -26,6 +26,7 @@ export function DashboardView(props: {
   onUpdateActiveSessionMeta?: (patch: SessionMetaPatch) => void;
   onUpdateSessionMeta?: (sessionId: string, patch: SessionMetaPatch) => void;
   onOpenSessionFolder: () => void;
+  onOpenSupport: () => void;
   onClearSession: () => void;
   onStartTask: () => void;
   onCancelTask: () => void;
@@ -82,6 +83,7 @@ export function DashboardView(props: {
           onToggleAgentPanel={toggleAgentPanel}
           onUpdateActiveSessionMeta={props.onUpdateActiveSessionMeta ?? (() => undefined)}
           onOpenSessionFolder={props.onOpenSessionFolder}
+          onOpenSupport={props.onOpenSupport}
           inspectorOpen={store.inspectorOpen}
           agentPanelOpen={store.agentPanelOpen}
         />

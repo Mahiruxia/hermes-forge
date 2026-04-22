@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Folder, MinusCircle, Network, RefreshCw, RotateCcw, Settings, FileCode, Save, Server, XCircle } from "lucide-react";
+import { CheckCircle2, Folder, MinusCircle, Network, RefreshCw, RotateCcw, Settings, FileCode, Save, Server, Sparkles, XCircle } from "lucide-react";
 import { useAppStore } from "../../../store";
-import type { BridgeTestStep, HermesRuntimeConfig, HermesWindowsBridgeTestResult, WindowsAgentMode, WindowsBridgeStatus } from "../../../../shared/types";
+import type { BridgeTestStep, HermesInstallEvent, HermesRuntimeConfig, HermesWindowsBridgeTestResult, WindowsAgentMode, WindowsBridgeStatus } from "../../../../shared/types";
 
 export function SettingsPanel(props: {
   onRefresh: () => Promise<unknown>;
@@ -18,6 +18,8 @@ export function SettingsPanel(props: {
   const [bridge, setBridge] = useState<WindowsBridgeStatus | undefined>();
   const [testingBridge, setTestingBridge] = useState(false);
   const [bridgeTest, setBridgeTest] = useState<HermesWindowsBridgeTestResult | undefined>();
+  const [installingHermes, setInstallingHermes] = useState(false);
+  const [installEvent, setInstallEvent] = useState<HermesInstallEvent | undefined>();
   const clientInfo = store.clientInfo;
 
   useEffect(() => {
@@ -31,6 +33,14 @@ export function SettingsPanel(props: {
     return () => {
       alive = false;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!window.workbenchClient || typeof window.workbenchClient.onInstallHermesEvent !== "function") return;
+    return window.workbenchClient.onInstallHermesEvent((event) => {
+      setInstallEvent(event);
+      setInstallingHermes(event.stage !== "completed" && event.stage !== "failed");
+    });
   }, []);
 
   async function handleRestart() {
@@ -69,6 +79,39 @@ export function SettingsPanel(props: {
       setBridge(overview?.hermes?.bridge);
     } finally {
       setTestingBridge(false);
+    }
+  }
+
+  async function chooseHermesRoot() {
+    const selected = await window.workbenchClient.pickHermesInstallFolder();
+    if (selected) setRootPath(selected);
+  }
+
+  async function openHermesRoot() {
+    if (!rootPath.trim()) {
+      store.warning("请先填写 Hermes 根路径");
+      return;
+    }
+    const result = await window.workbenchClient.openPath(rootPath.trim());
+    if (result.ok) store.success("已打开 Hermes 路径", result.message);
+    else store.error("打开 Hermes 路径失败", result.message);
+  }
+
+  async function installHermes() {
+    if (installingHermes) return;
+    setInstallingHermes(true);
+    setInstallEvent(undefined);
+    try {
+      const result = await window.workbenchClient.installHermes(rootPath.trim() ? { rootPath: rootPath.trim() } : undefined);
+      if (result.rootPath) setRootPath(result.rootPath);
+      const overview = await window.workbenchClient.getConfigOverview();
+      setRootPath(overview?.hermes?.rootPath ?? result.rootPath ?? rootPath);
+      setBridge(overview?.hermes?.bridge);
+      await props.onRefresh();
+      if (result.ok) store.success("Hermes 安装完成", result.message);
+      else store.error("Hermes 安装失败", result.message);
+    } finally {
+      setInstallingHermes(false);
     }
   }
 
@@ -124,6 +167,12 @@ export function SettingsPanel(props: {
               placeholder={runtime.mode === "wsl" ? "~/Hermes Agent" : "%USERPROFILE%\\Hermes Agent"}
             />
           </label>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <ActionButton icon={Folder} label="选择 Hermes 路径" onClick={chooseHermesRoot} />
+            <ActionButton icon={Folder} label="打开 Hermes 路径" onClick={openHermesRoot} />
+            <ActionButton icon={Sparkles} label="安装到此路径" onClick={installHermes} loading={installingHermes} />
+          </div>
+          {installEvent ? <InstallProgressView event={installEvent} /> : null}
           {runtime.mode === "wsl" ? (
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="grid gap-1 text-sm">
@@ -213,6 +262,24 @@ function InfoCard(props: { label: string; value: string; monospace?: boolean }) 
     <div className="flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3">
       <span className="text-sm text-slate-500">{props.label}</span>
       <code className={cn("text-sm", props.monospace && "font-mono")}>{props.value}</code>
+    </div>
+  );
+}
+
+function InstallProgressView(props: { event: HermesInstallEvent }) {
+  const progress = Math.max(0, Math.min(100, props.event.progress));
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-800">{props.event.message}</p>
+          {props.event.detail ? <p className="mt-1 break-all text-xs text-slate-500">{props.event.detail}</p> : null}
+        </div>
+        <span className="shrink-0 rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-600">{Math.round(progress)}%</span>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
+        <div className="h-full rounded-full bg-slate-950 transition-all duration-200" style={{ width: `${progress}%` }} />
+      </div>
     </div>
   );
 }

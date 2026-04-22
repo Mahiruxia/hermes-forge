@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, FolderOpen, MoreHorizontal, PanelRightOpen, Search, Sparkles, Trash2 } from "lucide-react";
-import type { SessionMetaPatch } from "../../../shared/types";
+import { ExternalLink, FolderOpen, HeartHandshake, MoreHorizontal, PanelRightOpen, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
+import type { ClientUpdateEvent, SessionMetaPatch } from "../../../shared/types";
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
 import { StatusBar } from "./StatusBar";
@@ -13,6 +13,7 @@ export function HermesHeader(props: {
   onToggleAgentPanel: () => void;
   onUpdateActiveSessionMeta: (patch: SessionMetaPatch) => void;
   onOpenSessionFolder: () => void;
+  onOpenSupport: () => void;
   inspectorOpen?: boolean;
   agentPanelOpen?: boolean;
 }) {
@@ -20,6 +21,8 @@ export function HermesHeader(props: {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState("");
   const [showMenu, setShowMenu] = useState(false);
+  const [clientUpdate, setClientUpdate] = useState<ClientUpdateEvent | undefined>();
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const activeSession = store.sessions.find((session) => session.id === store.activeSessionId);
 
@@ -32,6 +35,22 @@ export function HermesHeader(props: {
 
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (!window.workbenchClient || typeof window.workbenchClient.onClientUpdateEvent !== "function") return;
+    return window.workbenchClient.onClientUpdateEvent((event) => {
+      setClientUpdate(event);
+      setCheckingUpdate(event.status === "checking" || event.status === "downloading");
+      const feedback = useAppStore.getState();
+      if (event.status === "downloaded") {
+        feedback.success("更新已下载", event.message);
+      } else if (event.status === "not-available" && event.manual) {
+        feedback.success("已是最新版本", event.message);
+      } else if (event.status === "error") {
+        feedback.error("检查更新失败", event.message);
+      }
+    });
   }, []);
 
   function startEditing() {
@@ -51,6 +70,34 @@ export function HermesHeader(props: {
     setEditingTitle(false);
     setTitleValue("");
   }
+
+  async function checkClientUpdate() {
+    if (checkingUpdate || !window.workbenchClient || typeof window.workbenchClient.checkClientUpdate !== "function") return;
+    setCheckingUpdate(true);
+    try {
+      const event = await window.workbenchClient.checkClientUpdate();
+      setClientUpdate(event);
+      const feedback = useAppStore.getState();
+      if (event.status === "not-available") {
+        feedback.success("已是最新版本", event.message);
+      } else if (event.status === "available" || event.status === "downloading") {
+        feedback.info("发现更新", event.message);
+      } else if (event.status === "downloaded") {
+        feedback.success("更新已下载", event.message);
+      } else if (event.status === "error") {
+        feedback.error("检查更新失败", event.message);
+      }
+    } catch (error) {
+      useAppStore.getState().error("检查更新失败", error instanceof Error ? error.message : "未知错误");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  const updateBusy = checkingUpdate || clientUpdate?.status === "checking" || clientUpdate?.status === "downloading";
+  const updatePercent = clientUpdate?.status === "downloading" && typeof clientUpdate.percent === "number"
+    ? Math.max(0, Math.min(100, Math.round(clientUpdate.percent)))
+    : undefined;
 
   const menuItems: Array<
     | { divider: true }
@@ -90,6 +137,15 @@ export function HermesHeader(props: {
         if (window.workbenchClient && typeof window.workbenchClient.openHelp === "function") {
           window.workbenchClient.openHelp();
         }
+        setShowMenu(false);
+      },
+    },
+    { divider: true },
+    {
+      icon: HeartHandshake,
+      label: "赞助与反馈",
+      action: () => {
+        props.onOpenSupport();
         setShowMenu(false);
       },
     },
@@ -154,6 +210,22 @@ export function HermesHeader(props: {
 
       <div className="flex items-center gap-2">
         <StatusBar />
+
+        <button
+          className={cn(headerActionClass(updateBusy), "relative")}
+          onClick={() => void checkClientUpdate()}
+          title={updatePercent !== undefined ? `正在下载更新：${updatePercent}%` : "检查更新"}
+          aria-label="检查更新"
+          disabled={updateBusy}
+          type="button"
+        >
+          <RefreshCw size={15} className={updateBusy ? "animate-spin" : undefined} />
+          {updatePercent !== undefined ? (
+            <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-950 px-1 text-[9px] font-semibold leading-4 text-white">
+              {updatePercent}
+            </span>
+          ) : null}
+        </button>
 
         <button
           className={headerActionClass(props.inspectorOpen)}
