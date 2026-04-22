@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { testOnly } from "./hermes-connector-service";
+import { HermesConnectorService, testOnly } from "./hermes-connector-service";
 
 describe("HermesConnectorService helpers", () => {
   it("keeps the connector registry aligned with Hermes messaging platforms", () => {
@@ -165,5 +165,31 @@ describe("HermesConnectorService helpers", () => {
     expect(env.OPENAI_BASE_URL).toBe("http://127.0.0.1:8080/v1");
     expect(env.OPENAI_MODEL).toBe("gpt-5.4");
     expect(env.PYTHONUTF8).toBe("1");
+  });
+
+  it("ignores stale Weixin QR close events after a refresh starts a new run", () => {
+    const service = new HermesConnectorService({} as never, {} as never, async () => "D:\\Hermes Agent");
+    const stateful = service as any;
+    stateful.weixinQrProcess = { killed: false } as never;
+    stateful.weixinQrLineBuffer = "pending-json";
+    stateful.weixinQrStatus = {
+      running: true,
+      phase: "waiting_scan",
+      message: "新二维码已经拉起。",
+      qrUrl: "https://ilinkai.weixin.qq.com/qrcode/new",
+    };
+    stateful.activeWeixinQrRunId = 2;
+
+    stateful.handleWeixinQrProcessClose(1, 1);
+
+    expect(stateful.weixinQrStatus).toMatchObject({
+      running: true,
+      phase: "waiting_scan",
+      message: "新二维码已经拉起。",
+      qrUrl: "https://ilinkai.weixin.qq.com/qrcode/new",
+    });
+    expect(stateful.weixinQrProcess).toMatchObject({ killed: false });
+    expect(stateful.weixinQrLineBuffer).toBe("pending-json");
+    expect(stateful.activeWeixinQrRunId).toBe(2);
   });
 });

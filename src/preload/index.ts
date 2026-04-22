@@ -45,8 +45,10 @@ import type {
   HermesInstallEvent,
   ClientUpdateEvent,
   HermesWindowsBridgeTestResult,
+  HermesSystemAuditResult,
   HermesInstallResult,
   HermesProfile,
+  HermesExistingConfigImportResult,
   FilePreviewResult,
   FileBreadcrumbItem,
   WeixinQrLoginResult,
@@ -195,8 +197,11 @@ const api = {
   },
   getRuntimeConfig: () => ipcRenderer.invoke(IpcChannels.getRuntimeConfig) as Promise<RuntimeConfig>,
   getConfigOverview: (workspacePath?: string) => ipcRenderer.invoke(IpcChannels.getConfigOverview, workspacePath) as Promise<any>,
+  importExistingHermesConfig: () => ipcRenderer.invoke(IpcChannels.importExistingHermesConfig) as Promise<HermesExistingConfigImportResult>,
   testHermesWindowsBridge: () =>
     ipcRenderer.invoke(IpcChannels.testHermesWindowsBridge) as Promise<HermesWindowsBridgeTestResult>,
+  testHermesSystemAudit: () =>
+    ipcRenderer.invoke(IpcChannels.testHermesSystemAudit) as Promise<HermesSystemAuditResult>,
   updateHermesConfig: (input: unknown) => ipcRenderer.invoke(IpcChannels.updateHermesConfig, input) as Promise<RuntimeConfig>,
   updateModelConfig: (input: unknown) => ipcRenderer.invoke(IpcChannels.updateModelConfig, input) as Promise<RuntimeConfig>,
   saveRuntimeConfig: (config: RuntimeConfig) =>

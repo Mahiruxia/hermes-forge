@@ -1,13 +1,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectorsPanel } from "./ConnectorsPanel";
-import type { HermesConnectorListResult, WeixinQrLoginStatus } from "../../../../shared/types";
+import type { HermesConnectorField, HermesConnectorListResult, WeixinQrLoginStatus } from "../../../../shared/types";
 
 const listConnectors = vi.fn<() => Promise<HermesConnectorListResult>>();
 const getWeixinQrLoginStatus = vi.fn<() => Promise<WeixinQrLoginStatus>>();
 const startWeixinQrLogin = vi.fn<() => Promise<{ ok: boolean; status: WeixinQrLoginStatus; message: string }>>();
 const cancelWeixinQrLogin = vi.fn<() => Promise<{ ok: boolean; status: WeixinQrLoginStatus; message: string }>>();
 const installWeixinDependency = vi.fn<() => Promise<{ ok: boolean; message: string; command: string; stdout: string; stderr: string; status?: WeixinQrLoginStatus }>>();
+const scrollIntoView = vi.fn();
 
 beforeEach(() => {
   listConnectors.mockReset();
@@ -15,6 +16,11 @@ beforeEach(() => {
   startWeixinQrLogin.mockReset();
   cancelWeixinQrLogin.mockReset();
   installWeixinDependency.mockReset();
+  scrollIntoView.mockReset();
+  Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: scrollIntoView,
+  });
   Object.assign(window, {
     workbenchClient: {
       listConnectors,
@@ -33,6 +39,72 @@ beforeEach(() => {
 });
 
 describe("ConnectorsPanel", () => {
+  it("uses quick setup mode for non-Weixin connectors and autofills common email providers", async () => {
+    listConnectors.mockResolvedValue(buildListResult({
+      connectors: [
+        buildConnector({
+          platformId: "email",
+          label: "Email",
+          status: "unconfigured",
+          runtimeStatus: "stopped",
+          configured: false,
+          message: "等待邮箱接入。",
+          fields: [
+            { key: "address", envVar: "EMAIL_ADDRESS", label: "邮箱地址", type: "text", required: true, placeholder: "hermes@example.com" },
+            { key: "password", envVar: "EMAIL_PASSWORD", label: "邮箱密码/App Password", type: "password", required: true, secret: true, placeholder: "app password" },
+            { key: "imapHost", envVar: "EMAIL_IMAP_HOST", label: "IMAP Host", type: "text", required: true, placeholder: "imap.gmail.com" },
+            { key: "smtpHost", envVar: "EMAIL_SMTP_HOST", label: "SMTP Host", type: "text", required: true, placeholder: "smtp.gmail.com" },
+            { key: "allowedUsers", envVar: "EMAIL_ALLOWED_USERS", label: "允许发件人", type: "text" },
+            { key: "homeAddress", envVar: "EMAIL_HOME_ADDRESS", label: "Home Address", type: "text" },
+          ],
+        }),
+      ],
+    }));
+
+    render(<ConnectorsPanel />);
+
+    expect(await screen.findByText("Email")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "快速配置" }));
+
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(screen.getByText("邮箱接入优先只填邮箱和密码，常见服务商的 IMAP/SMTP 会自动补齐。")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("hermes@example.com"), { target: { value: "bot@gmail.com" } });
+    expect(screen.getByText("已自动识别：Gmail 服务器地址已自动填入")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "显示高级项" }));
+    expect(screen.getByDisplayValue("imap.gmail.com")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("smtp.gmail.com")).toBeInTheDocument();
+  });
+
+  it("shows an explicit idle prompt before Weixin QR login starts", async () => {
+    listConnectors.mockResolvedValue(buildListResult({
+      connectors: [
+        buildConnector({
+          platformId: "weixin",
+          label: "微信",
+          status: "unconfigured",
+          runtimeStatus: "stopped",
+          configured: false,
+          message: "等待扫码接入。",
+        }),
+      ],
+    }));
+    getWeixinQrLoginStatus.mockResolvedValue({
+      running: false,
+      phase: "idle",
+      message: "请点击开始扫码获取微信二维码。",
+    });
+
+    render(<ConnectorsPanel />);
+
+    expect(await screen.findByText("微信")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "扫码接入" })[0]);
+
+    expect(await screen.findByText("请点击开始扫码")).toBeInTheDocument();
+    expect(screen.getByText("二维码不会自动生成，点击右侧按钮后才会拉起本次微信扫码流程。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始扫码" })).toBeInTheDocument();
+  });
+
   it("renders connector config status separately from runtime status", async () => {
     listConnectors.mockResolvedValue(buildListResult({
       connectors: [
@@ -80,7 +152,7 @@ describe("ConnectorsPanel", () => {
     getWeixinQrLoginStatus.mockResolvedValue({
       running: false,
       phase: "idle",
-      message: "准备开始微信扫码接入。",
+      message: "请点击开始扫码获取微信二维码。",
     });
     startWeixinQrLogin.mockResolvedValue({
       ok: false,
@@ -134,7 +206,7 @@ describe("ConnectorsPanel", () => {
     getWeixinQrLoginStatus.mockResolvedValue({
       running: false,
       phase: "idle",
-      message: "准备开始微信扫码接入。",
+      message: "请点击开始扫码获取微信二维码。",
     });
 
     render(<ConnectorsPanel />);
@@ -163,12 +235,13 @@ function buildListResult(overrides: Partial<HermesConnectorListResult> = {}): He
 }
 
 function buildConnector(overrides: {
-  platformId: "weixin" | "telegram";
+  platformId: "weixin" | "telegram" | "email";
   label: string;
   status: "unconfigured" | "configured" | "running" | "error" | "disabled";
   runtimeStatus: "stopped" | "running" | "error";
   configured: boolean;
   message: string;
+  fields?: HermesConnectorField[];
 }) {
   return {
     platform: {
@@ -176,7 +249,7 @@ function buildConnector(overrides: {
       label: overrides.label,
       category: "official" as const,
       description: `${overrides.label} connector`,
-      fields: [],
+      fields: overrides.fields ?? [],
       setupHelp: [],
     },
     status: overrides.status,

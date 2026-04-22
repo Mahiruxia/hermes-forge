@@ -59,6 +59,36 @@ describe("renderer store task projections", () => {
     expect(projection.actualEngine).toBe("hermes");
   });
 
+  it("keeps only a bounded per-run event history in renderer state", () => {
+    useAppStore.getState().beginTaskRun({
+      workSessionId: "session-1",
+      taskRunId: "task-noisy",
+      userInput: "输出很多日志",
+      createdAt: "2026-04-18T10:00:00.000Z",
+    });
+
+    for (let index = 0; index < 850; index += 1) {
+      useAppStore.getState().applyTaskEvent({
+        taskRunId: "task-noisy",
+        workSessionId: "session-1",
+        sessionId: "task-noisy",
+        engineId: "hermes",
+        event: {
+          type: "progress",
+          step: `step-${index}`,
+          done: false,
+          message: `event ${index}`,
+          at: `2026-04-18T10:00:${String(index % 60).padStart(2, "0")}.000Z`,
+        },
+      });
+    }
+
+    const state = useAppStore.getState();
+    expect(state.taskEventsByRunId["task-noisy"]).toHaveLength(800);
+    expect(state.taskEventsByRunId["task-noisy"][0].event).toMatchObject({ type: "progress", step: "step-849" });
+    expect(state.events).toHaveLength(240);
+  });
+
   it("clears only deleted session task runs and related logs", () => {
     useAppStore.setState({
       taskRunProjectionsById: {

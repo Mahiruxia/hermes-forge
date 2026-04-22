@@ -25,6 +25,8 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+
 export class HermesHeadlessWorker {
   private child?: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<string, PendingRequest>();
@@ -35,6 +37,7 @@ export class HermesHeadlessWorker {
 
   constructor(
     private readonly launcher: () => Promise<{ command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }>,
+    private readonly requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   ) {}
 
   run(request: Omit<WorkerRequest, "id">, signal?: AbortSignal): Promise<string> {
@@ -48,34 +51,65 @@ export class HermesHeadlessWorker {
     this.child = undefined;
     if (!child || child.killed) return;
     child.kill();
-    await new Promise<void>((resolve) => child.once("close", () => resolve()));
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 2000);
+      child.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   private async runInternal(request: Omit<WorkerRequest, "id">, signal?: AbortSignal) {
     const child = await this.ensureChild();
     const id = `worker-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     return await new Promise<string>((resolve, reject) => {
+      let settled = false;
+      let timeout: NodeJS.Timeout | undefined;
+      const cleanup = () => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        signal?.removeEventListener("abort", abort);
+      };
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        this.pending.delete(id);
+        cleanup();
+        callback();
+      };
       const pending: PendingRequest = {
         resolve: (value) => {
-          cleanup();
-          resolve(value);
+          finish(() => resolve(value));
         },
         reject: (error) => {
-          cleanup();
-          reject(error);
+          finish(() => reject(error));
         },
       };
       this.pending.set(id, pending);
 
       const abort = () => {
-        this.pending.delete(id);
         void this.stop();
-        reject(new Error("Hermes 后台任务已取消。"));
+        finish(() => reject(new Error("Hermes 后台任务已取消。")));
       };
-      const cleanup = () => signal?.removeEventListener("abort", abort);
+
+      timeout = setTimeout(() => {
+        void this.stop();
+        finish(() => reject(new Error(`Hermes 后台任务超过 ${Math.ceil(this.requestTimeoutMs / 1000)} 秒未完成，已自动中断。`)));
+      }, this.requestTimeoutMs);
+
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
       signal?.addEventListener("abort", abort, { once: true });
 
-      child.stdin.write(`${JSON.stringify({ ...request, id })}\n`, "utf8");
+      child.stdin.write(`${JSON.stringify({ ...request, id })}\n`, "utf8", (error?: Error | null) => {
+        if (error) {
+          finish(() => reject(new Error(`Hermes 后台 worker 写入失败：${error.message}`)));
+        }
+      });
     });
   }
 
@@ -98,8 +132,15 @@ export class HermesHeadlessWorker {
 
     child.stdout.on("data", (chunk: Buffer) => this.handleStdout(chunk));
     child.stderr.on("data", (chunk: Buffer) => this.handleStderr(chunk));
-    child.on("error", (error) => this.rejectAll(new Error(`Hermes 后台 worker 启动失败：${error.message}`)));
+    child.on("error", (error) => {
+      if (this.child === child) {
+        this.rejectAll(new Error(`Hermes 后台 worker 启动失败：${error.message}`));
+      }
+    });
     child.on("close", () => {
+      if (this.child !== child) {
+        return;
+      }
       this.flushStderr();
       this.rejectAll(new Error(this.stderrLines.at(-1) || "Hermes 后台 worker 已退出。"));
       this.child = undefined;

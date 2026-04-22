@@ -181,8 +181,10 @@ export class HermesConnectorService {
   private gatewayAutoStartState: HermesGatewayStatus["autoStartState"] = "idle";
   private gatewayAutoStartMessage = "等待自动启动。";
   private weixinQrProcess?: ChildProcessWithoutNullStreams;
-  private weixinQrStatus: WeixinQrLoginStatus = { running: false, phase: "idle", message: "微信扫码登录尚未启动。" };
+  private weixinQrStatus: WeixinQrLoginStatus = { running: false, phase: "idle", message: "请点击开始扫码获取微信二维码。" };
   private weixinQrLineBuffer = "";
+  private weixinQrRunCounter = 0;
+  private activeWeixinQrRunId?: number;
 
   constructor(
     private readonly appPaths: AppPaths,
@@ -587,6 +589,8 @@ export class HermesConnectorService {
       failureKind: undefined,
       recommendedFix: undefined,
     };
+    const runId = ++this.weixinQrRunCounter;
+    this.activeWeixinQrRunId = runId;
     const child = spawn(python.command, [...python.args, "-c", script], {
       cwd: root,
       env: { ...process.env, ...PYTHON_ENV, PYTHONPATH: root },
@@ -594,45 +598,15 @@ export class HermesConnectorService {
       shell: false,
     });
     this.weixinQrProcess = child;
-    child.stdout.on("data", (chunk: Buffer) => this.handleWeixinQrOutput(chunk.toString("utf8")));
-    child.stderr.on("data", (chunk: Buffer) => {
-      this.weixinQrStatus = {
-        ...this.weixinQrStatus,
-        lastHeartbeatAt: new Date().toISOString(),
-        output: trimLog(`${this.weixinQrStatus.output ?? ""}${sanitizeSensitiveLog(chunk.toString("utf8"))}`),
-      };
-    });
-    child.on("error", (error) => {
-      this.weixinQrStatus = {
-        ...this.weixinQrStatus,
-        running: false,
-        phase: "failed",
-        completedAt: new Date().toISOString(),
-        success: false,
-        failureCode: "spawn_failed",
-        lastHeartbeatAt: new Date().toISOString(),
-        message: `微信扫码登录启动失败：${error.message}`,
-      };
-    });
-    child.on("close", (exitCode) => {
-      this.weixinQrProcess = undefined;
-      this.weixinQrLineBuffer = "";
-      if (isWeixinQrTerminal(this.weixinQrStatus.phase) || ["saving", "syncing", "starting_gateway"].includes(this.weixinQrStatus.phase)) return;
-      this.weixinQrStatus = {
-        ...this.weixinQrStatus,
-        running: false,
-        phase: exitCode === 0 ? "failed" : "timeout",
-        completedAt: new Date().toISOString(),
-        success: false,
-        failureCode: exitCode === 0 ? "missing_credentials" : "timeout",
-        lastHeartbeatAt: new Date().toISOString(),
-        message: exitCode === 0 ? "微信扫码登录已结束，但未返回凭据。" : "微信扫码登录未完成或已超时。",
-      };
-    });
+    child.stdout.on("data", (chunk: Buffer) => this.handleWeixinQrOutput(runId, chunk.toString("utf8")));
+    child.stderr.on("data", (chunk: Buffer) => this.handleWeixinQrStderr(runId, chunk.toString("utf8")));
+    child.on("error", (error) => this.handleWeixinQrProcessError(runId, error));
+    child.on("close", (exitCode) => this.handleWeixinQrProcessClose(runId, exitCode));
     return { ok: true, status: this.getWeixinQrStatus(), message: "微信扫码登录已启动。" };
   }
 
   async cancelWeixinQrLogin(): Promise<WeixinQrLoginResult> {
+    this.activeWeixinQrRunId = undefined;
     if (this.weixinQrProcess?.pid) {
       await killProcessTree(this.weixinQrProcess.pid);
       this.weixinQrProcess = undefined;
@@ -730,7 +704,8 @@ export class HermesConnectorService {
     };
   }
 
-  private handleWeixinQrOutput(text: string) {
+  private handleWeixinQrOutput(runId: number, text: string) {
+    if (!this.isActiveWeixinQrRun(runId)) return;
     this.weixinQrLineBuffer += text;
     const lines = this.weixinQrLineBuffer.split(/\r?\n/);
     this.weixinQrLineBuffer = lines.pop() ?? "";
@@ -794,8 +769,50 @@ export class HermesConnectorService {
         };
         continue;
       }
-      void this.completeWeixinQrLogin(event);
+      void this.completeWeixinQrLogin(runId, event);
     }
+  }
+
+  private handleWeixinQrStderr(runId: number, text: string) {
+    if (!this.isActiveWeixinQrRun(runId)) return;
+    this.weixinQrStatus = {
+      ...this.weixinQrStatus,
+      lastHeartbeatAt: new Date().toISOString(),
+      output: trimLog(`${this.weixinQrStatus.output ?? ""}${sanitizeSensitiveLog(text)}`),
+    };
+  }
+
+  private handleWeixinQrProcessError(runId: number, error: Error) {
+    if (!this.isActiveWeixinQrRun(runId)) return;
+    this.activeWeixinQrRunId = undefined;
+    this.weixinQrStatus = {
+      ...this.weixinQrStatus,
+      running: false,
+      phase: "failed",
+      completedAt: new Date().toISOString(),
+      success: false,
+      failureCode: "spawn_failed",
+      lastHeartbeatAt: new Date().toISOString(),
+      message: `微信扫码登录启动失败：${error.message}`,
+    };
+  }
+
+  private handleWeixinQrProcessClose(runId: number, exitCode: number | null) {
+    if (!this.isActiveWeixinQrRun(runId)) return;
+    this.weixinQrProcess = undefined;
+    this.weixinQrLineBuffer = "";
+    if (isWeixinQrTerminal(this.weixinQrStatus.phase) || ["saving", "syncing", "starting_gateway"].includes(this.weixinQrStatus.phase)) return;
+    this.activeWeixinQrRunId = undefined;
+    this.weixinQrStatus = {
+      ...this.weixinQrStatus,
+      running: false,
+      phase: exitCode === 0 ? "failed" : "timeout",
+      completedAt: new Date().toISOString(),
+      success: false,
+      failureCode: exitCode === 0 ? "missing_credentials" : "timeout",
+      lastHeartbeatAt: new Date().toISOString(),
+      message: exitCode === 0 ? "微信扫码登录已结束，但未返回凭据。" : "微信扫码登录未完成或已超时。",
+    };
   }
 
   private async preflightWeixinDependencies(root: string, python: PythonCommand): Promise<WeixinQrLoginStatus | undefined> {
@@ -831,18 +848,21 @@ export class HermesConnectorService {
     return undefined;
   }
 
-  private async completeWeixinQrLogin(credentials: Extract<WeixinQrEvent, { type: "confirmed" }>) {
+  private async completeWeixinQrLogin(runId: number, credentials: Extract<WeixinQrEvent, { type: "confirmed" }>) {
+    if (!this.isActiveWeixinQrRun(runId)) return;
     const setPhase = (phase: WeixinQrLoginStatus["phase"], message: string) => {
+      if (!this.isActiveWeixinQrRun(runId)) return false;
       this.weixinQrStatus = {
         ...this.weixinQrStatus,
         running: true,
         phase,
         message,
       };
+      return true;
     };
     try {
       if (!credentials.accountId || !credentials.token) throw new Error("扫码结果缺少 accountId 或 token。");
-      setPhase("saving", "微信已确认，正在加密保存凭据...");
+      if (!setPhase("saving", "微信已确认，正在加密保存凭据...")) return;
       const stored = await this.readConfig();
       const current = stored.platforms?.weixin ?? {};
       const tokenRef = secretRef("weixin", "token");
@@ -866,11 +886,13 @@ export class HermesConnectorService {
         lastSyncedAt: current.lastSyncedAt,
       };
       await this.writeConfig(stored);
-      setPhase("syncing", "凭据已保存，正在同步 Hermes .env...");
+      if (!setPhase("syncing", "凭据已保存，正在同步 Hermes .env...")) return;
       await this.syncEnv();
-      setPhase("starting_gateway", "配置已同步，正在启动 Gateway...");
+      if (!setPhase("starting_gateway", "配置已同步，正在启动 Gateway...")) return;
       const gatewayResult = await this.start();
       const gatewayStarted = gatewayResult.ok && gatewayResult.status.running;
+      if (!this.isActiveWeixinQrRun(runId)) return;
+      this.activeWeixinQrRunId = undefined;
       this.weixinQrStatus = {
         ...this.weixinQrStatus,
         running: false,
@@ -886,6 +908,8 @@ export class HermesConnectorService {
           : `微信扫码成功，凭据已保存并同步，但 Gateway 启动状态需要确认：${gatewayResult.message}`,
       };
     } catch (error) {
+      if (!this.isActiveWeixinQrRun(runId)) return;
+      this.activeWeixinQrRunId = undefined;
       this.weixinQrStatus = {
         ...this.weixinQrStatus,
         running: false,
@@ -897,6 +921,10 @@ export class HermesConnectorService {
         message: error instanceof Error ? error.message : "微信扫码登录结果处理失败。",
       };
     }
+  }
+
+  private isActiveWeixinQrRun(runId: number) {
+    return this.activeWeixinQrRunId === runId;
   }
 
   private async toConnector(
@@ -950,6 +978,56 @@ export class HermesConnectorService {
       updatedAt: saved?.updatedAt,
       lastSyncedAt: saved?.lastSyncedAt,
       message: statusMessage(status, runtimeStatus, missingRequired),
+    };
+  }
+
+  async importFromEnvValues(envValues: Record<string, string>) {
+    const stored = await this.readConfig();
+    const importedPlatforms: HermesConnectorPlatformId[] = [];
+    const importedSecretRefs: string[] = [];
+    let changed = false;
+
+    for (const platform of PLATFORM_REGISTRY) {
+      const current = stored.platforms?.[platform.id] ?? {};
+      const values: Record<string, string | boolean> = { ...(current.values ?? {}) };
+      const secretRefs: Record<string, string> = { ...(current.secretRefs ?? {}) };
+      let importedForPlatform = false;
+
+      for (const field of platform.fields) {
+        const raw = envValues[field.envVar];
+        if (typeof raw === "undefined" || !String(raw).trim()) continue;
+        importedForPlatform = true;
+        changed = true;
+        if (field.secret) {
+          const ref = secretRef(platform.id, field.key);
+          await this.secretVault.saveSecret(ref, String(raw).trim());
+          secretRefs[field.key] = ref;
+          importedSecretRefs.push(ref);
+          continue;
+        }
+        values[field.key] = field.type === "boolean" ? parseBoolean(raw) : String(raw).trim();
+      }
+
+      if (!importedForPlatform) continue;
+      stored.platforms ??= {};
+      stored.platforms[platform.id] = {
+        ...current,
+        enabled: current.enabled ?? true,
+        values,
+        secretRefs,
+        updatedAt: new Date().toISOString(),
+        lastSyncedAt: current.lastSyncedAt,
+      };
+      importedPlatforms.push(platform.id);
+    }
+
+    if (changed) {
+      await this.writeConfig(stored);
+    }
+
+    return {
+      importedPlatforms,
+      importedSecretRefs: [...new Set(importedSecretRefs)],
     };
   }
 

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { extractInlineImagePaths, mimeTypeForImagePath, resolveInlineImageAttachments } from "./task-runner";
+import { extractInlineImagePaths, mimeTypeForImagePath, resolveInlineFileAttachments, resolveInlineImageAttachments } from "./task-runner";
 import type { SessionAttachment } from "../shared/types";
 
 const tempDirs: string[] = [];
@@ -66,6 +66,23 @@ describe("task-runner inline image paths", () => {
     const attachments = await resolveInlineImageAttachments("打开 C:\\Users\\xia\\Desktop\\notes.txt 和 C:\\missing\\ghost.png", []);
 
     expect(attachments).toEqual([]);
+  });
+
+  it("promotes an accessible local text path into a file attachment", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-forge-inline-file-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "论文正文格式规范.md");
+    await fs.writeFile(filePath, "# 标题\n\n正文", "utf8");
+
+    const attachments = await resolveInlineFileAttachments(`帮我总结一下 "${filePath}"`, []);
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      name: "论文正文格式规范.md",
+      path: filePath,
+      originalPath: filePath,
+      kind: "file",
+    });
   });
 
   it("maps common image extensions to MIME types", () => {

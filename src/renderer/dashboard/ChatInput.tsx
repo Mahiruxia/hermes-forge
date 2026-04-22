@@ -4,7 +4,7 @@ import type { DragEvent, ReactNode } from "react";
 import { useAppStore } from "../store";
 import { cn } from "./DashboardPrimitives";
 
-type FixTarget = "model" | "hermes" | "health" | "diagnostics";
+type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 
 export function ChatInput(props: {
   onStartTask: () => void;

@@ -21,7 +21,7 @@ import type { EngineEvent, ModelProfile, RuntimeConfig, SessionAgentInsightUsage
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
 
-type FixTarget = "model" | "hermes" | "health" | "diagnostics";
+type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 type ProgressTone = "complete" | "waiting" | "failed";
 
 export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onOpenFix?: (target: FixTarget) => void }) {

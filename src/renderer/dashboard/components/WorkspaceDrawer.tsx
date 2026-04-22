@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, File, Folder, FolderPlus, Plus, Search, X } from "lucide-react";
+import { Check, ChevronRight, Eye, File, Folder, FolderPlus, Plus, Search, X } from "lucide-react";
 import type { FileTreeEntry } from "../../../shared/types";
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
@@ -59,11 +59,19 @@ export function WorkspaceDrawer(props: {
             <FolderPlus size={12} /> 选择工作区
           </button>
         </div>
+        <p className="mt-2 text-[11px] leading-5 text-slate-400">
+          单击文件可加入本轮上下文，点击“预览”只查看内容，不会自动发送给 Hermes。
+        </p>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {store.workspacePath ? (
           <div className="p-2">
+            {store.selectedFiles.length ? (
+              <div className="mb-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] text-indigo-700">
+                已选 {store.selectedFiles.length} 个文件，将随本轮任务一起提供给 Hermes。
+              </div>
+            ) : null}
             <FileTree
               entries={visibleFiles ?? []}
               onPreview={handlePreview}
@@ -100,15 +108,20 @@ export function WorkspaceDrawer(props: {
 const primaryActionClass = "inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-medium text-white shadow-sm transition-colors hover:bg-indigo-700";
 
 function FileTree(props: { entries: FileTreeEntry[]; onPreview: (path: string) => void; previewPath?: string; selectedFiles: string[] }) {
+  const store = useAppStore();
   return (
     <div className="space-y-0.5">
       {props.entries.map((entry) => (
         <div key={entry.path}>
           <div
-            className={cn("flex items-center gap-1 rounded-md px-2 py-1 text-[12px] transition-colors", props.previewPath === entry.path && "bg-indigo-50 text-indigo-700")}
+            className={cn(
+              "flex items-center gap-1 rounded-md px-2 py-1 text-[12px] transition-colors",
+              props.previewPath === entry.path && "bg-indigo-50 text-indigo-700",
+              props.selectedFiles.includes(entry.path) && "bg-emerald-50 text-emerald-700",
+            )}
             onClick={() => {
               if (entry.type === "file") {
-                props.onPreview(entry.path);
+                store.toggleSelectedFile(entry.path);
               }
             }}
           >
@@ -124,7 +137,22 @@ function FileTree(props: { entries: FileTreeEntry[]; onPreview: (path: string) =
             )}
             <span className="truncate">{entry.name}</span>
             {props.selectedFiles.includes(entry.path) ? (
-              <Plus size={10} className="ml-auto text-indigo-500" />
+              <Check size={10} className="ml-auto text-emerald-600" />
+            ) : null}
+            {entry.type === "file" ? (
+              <button
+                className="ml-1 rounded px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-white hover:text-slate-600"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  props.onPreview(entry.path);
+                }}
+                type="button"
+              >
+                <span className="inline-flex items-center gap-1">
+                  <Eye size={10} />
+                  预览
+                </span>
+              </button>
             ) : null}
           </div>
           {entry.children?.length ? (

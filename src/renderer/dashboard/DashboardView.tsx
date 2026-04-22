@@ -10,9 +10,10 @@ import { HermesHeader } from "./components/HermesHeader";
 import { WorkspaceDrawer } from "./components/WorkspaceDrawer";
 import { ControlCenter } from "./components/ControlCenter";
 import { AgentRunPanel } from "./components/AgentRunPanel";
+import { hasInlineLocalFilePath } from "../../shared/local-file-paths";
 
 type PanelId = ReturnType<typeof useAppStore.getState>["activePanel"];
-type FixTarget = "model" | "hermes" | "health" | "diagnostics";
+type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 export function DashboardView(props: {
   onPickWorkspace: () => void;
   onSelectWorkspace: (workspacePath: string) => void;
@@ -184,6 +185,9 @@ export function DashboardView(props: {
 function computeSendBlock(store: ReturnType<typeof useAppStore.getState>): { message: string; target?: FixTarget } | undefined {
   if (store.runningTaskRunId) return { message: "当前任务运行中，完成或停止后再发送。" };
   if (!store.userInput.trim() && store.attachments.length === 0) return { message: "写一句需求或添加附件后就能发送。" };
+  if (!store.workspacePath.trim() && promptNeedsWorkspace(store.userInput, store.selectedFiles)) {
+    return { message: "这类请求需要先选择项目目录，否则 Forge 无法像原版 CLI 那样在真实工作区读取文件。", target: "workspace" };
+  }
 
   const defaultProfile = store.runtimeConfig?.modelProfiles.find((profile) => profile.id === store.runtimeConfig?.defaultModelProfileId)
     ?? store.runtimeConfig?.modelProfiles[0];
@@ -206,4 +210,15 @@ function computeSendBlock(store: ReturnType<typeof useAppStore.getState>): { mes
   }
 
   return undefined;
+}
+
+function promptNeedsWorkspace(input: string, selectedFiles: string[]) {
+  if (hasInlineLocalFilePath(input)) return false;
+  if (selectedFiles.length > 0) return true;
+  const text = input.trim().toLowerCase();
+  if (!text) return false;
+  return (
+    /读取|读一下|查看|分析|检查|搜索|打开|遍历|修复|修改|编辑|重构|定位|查找/.test(text) &&
+    /文件|代码|项目|目录|仓库|源码|模块|package\.json|readme|tsconfig|src\b|文件夹|工作区/.test(text)
+  );
 }

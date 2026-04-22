@@ -65,6 +65,29 @@ export type HermesWindowsBridgeTestResult = {
   message: string;
 };
 
+export type HermesSystemAuditStepId =
+  | "read-nasty-path"
+  | "write-outside-workspace"
+  | "read-large-file"
+  | "host-command";
+
+export type HermesSystemAuditStep = {
+  id: HermesSystemAuditStepId;
+  label: string;
+  status: BridgeTestStepStatus;
+  message: string;
+  durationMs?: number;
+  detail?: string;
+  artifactPath?: string;
+};
+
+export type HermesSystemAuditResult = {
+  ok: boolean;
+  workspacePath: string;
+  steps: HermesSystemAuditStep[];
+  message: string;
+};
+
 export type WindowsToolName =
   | "windows.files.listDir"
   | "windows.files.readText"
@@ -885,6 +908,11 @@ export type SnapshotRecord = {
   createdAt: string;
   copiedFiles: number;
   skippedFiles: number;
+  copiedBytes?: number;
+  truncated?: boolean;
+  limitReason?: string;
+  maxFiles?: number;
+  maxBytes?: number;
   mode?: "full" | "scoped" | "manifest";
   manifestOnly?: boolean;
   scopedPaths?: string[];
@@ -1017,6 +1045,17 @@ export type QuickTextFileResult = {
 export type DiagnosticExportResult = {
   ok: boolean;
   path: string;
+  message: string;
+};
+
+export type HermesExistingConfigImportResult = {
+  ok: boolean;
+  hermesHome: string;
+  importedModel: boolean;
+  modelProfileId?: string;
+  importedConnectors: HermesConnectorPlatformId[];
+  importedSecretRefs: string[];
+  warnings: string[];
   message: string;
 };
 

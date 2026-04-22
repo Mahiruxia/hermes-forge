@@ -18,6 +18,8 @@ type SnapshotOptions = {
   markLatest?: boolean;
   manifestOnly?: boolean;
   scopedPaths?: string[];
+  maxFiles?: number;
+  maxBytes?: number;
 };
 
 export class SnapshotManager {
@@ -33,6 +35,9 @@ export class SnapshotManager {
       createdAt: new Date().toISOString(),
       copiedFiles: 0,
       skippedFiles: 0,
+      copiedBytes: 0,
+      maxFiles: options.maxFiles,
+      maxBytes: options.maxBytes,
       mode: options.manifestOnly ? "manifest" : (options.scopedPaths?.length ? "scoped" : "full"),
       manifestOnly: Boolean(options.manifestOnly),
       scopedPaths: [],
@@ -44,9 +49,9 @@ export class SnapshotManager {
     if (options.manifestOnly) {
       manifest.skippedFiles += 1;
     } else if (scopedPaths.length > 0) {
-      await this.copySelected(workspacePath, snapshotDir, scopedPaths, manifest);
+      await this.copySelected(workspacePath, snapshotDir, scopedPaths, manifest, options);
     } else {
-      await this.copyTree(workspacePath, snapshotDir, manifest);
+      await this.copyTree(workspacePath, snapshotDir, manifest, undefined, options);
     }
     await fs.writeFile(path.join(snapshotDir, "snapshot.manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
     if (options.markLatest ?? true) {
@@ -70,6 +75,11 @@ export class SnapshotManager {
       ...manifest,
       copiedFiles: 0,
       skippedFiles: 0,
+      copiedBytes: 0,
+      truncated: false,
+      limitReason: undefined,
+      maxFiles: undefined,
+      maxBytes: undefined,
     }, new Set(["snapshot.manifest.json"]));
 
     return {
@@ -114,11 +124,15 @@ export class SnapshotManager {
     target: string,
     manifest: SnapshotManifest,
     excludedFiles = new Set<string>(),
+    options: SnapshotOptions = {},
   ) {
     await fs.mkdir(target, { recursive: true });
     const entries = await fs.readdir(source, { withFileTypes: true }).catch(() => []);
 
     for (const entry of entries) {
+      if (manifest.truncated) {
+        return;
+      }
       if (excludedFiles.has(entry.name) || EXCLUDED_DIRS.has(entry.name)) {
         manifest.skippedFiles += 1;
         continue;
@@ -128,7 +142,7 @@ export class SnapshotManager {
       const targetPath = path.join(target, entry.name);
 
       if (entry.isDirectory()) {
-        await this.copyTree(sourcePath, targetPath, manifest, excludedFiles);
+        await this.copyTree(sourcePath, targetPath, manifest, excludedFiles, options);
         continue;
       }
 
@@ -137,9 +151,20 @@ export class SnapshotManager {
         continue;
       }
 
+      const stat = await fs.stat(sourcePath).catch(() => undefined);
+      if (!stat?.isFile()) {
+        manifest.skippedFiles += 1;
+        continue;
+      }
+      if (this.wouldExceedBudget(manifest, stat.size, options)) {
+        manifest.skippedFiles += 1;
+        return;
+      }
+
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.copyFile(sourcePath, targetPath);
       manifest.copiedFiles += 1;
+      manifest.copiedBytes = (manifest.copiedBytes ?? 0) + stat.size;
     }
   }
 
@@ -148,8 +173,12 @@ export class SnapshotManager {
     snapshotDir: string,
     scopedPaths: string[],
     manifest: SnapshotManifest,
+    options: SnapshotOptions = {},
   ) {
     for (const scopedPath of scopedPaths) {
+      if (manifest.truncated) {
+        return;
+      }
       const relativePath = path.relative(workspacePath, scopedPath);
       if (!relativePath || relativePath.startsWith("..")) {
         manifest.skippedFiles += 1;
@@ -162,17 +191,42 @@ export class SnapshotManager {
         continue;
       }
       if (stat.isDirectory()) {
-        await this.copyTree(scopedPath, targetPath, manifest);
+        await this.copyTree(scopedPath, targetPath, manifest, undefined, options);
         continue;
       }
       if (!stat.isFile()) {
         manifest.skippedFiles += 1;
         continue;
       }
+      if (this.wouldExceedBudget(manifest, stat.size, options)) {
+        manifest.skippedFiles += 1;
+        return;
+      }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.copyFile(scopedPath, targetPath);
       manifest.copiedFiles += 1;
+      manifest.copiedBytes = (manifest.copiedBytes ?? 0) + stat.size;
     }
+  }
+
+  private wouldExceedBudget(manifest: SnapshotManifest, nextFileBytes: number, options: SnapshotOptions) {
+    const maxFiles = options.maxFiles;
+    if (typeof maxFiles === "number" && maxFiles >= 0 && manifest.copiedFiles >= maxFiles) {
+      this.markTruncated(manifest, `已达到快照文件数预算 ${maxFiles}。`);
+      return true;
+    }
+    const maxBytes = options.maxBytes;
+    const copiedBytes = manifest.copiedBytes ?? 0;
+    if (typeof maxBytes === "number" && maxBytes >= 0 && copiedBytes + nextFileBytes > maxBytes) {
+      this.markTruncated(manifest, `已达到快照体积预算 ${formatBytes(maxBytes)}。`);
+      return true;
+    }
+    return false;
+  }
+
+  private markTruncated(manifest: SnapshotManifest, reason: string) {
+    manifest.truncated = true;
+    manifest.limitReason = reason;
   }
 
   private normalizeScopedPaths(workspacePath: string, scopedPaths: string[]) {
@@ -182,4 +236,11 @@ export class SnapshotManager {
       .sort((a, b) => a.length - b.length)
       .filter((target, index, items) => !items.slice(0, index).some((parent) => target.startsWith(`${parent}${path.sep}`)));
   }
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes}B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${Math.round(kib)}KB`;
+  return `${Math.round(kib / 1024)}MB`;
 }

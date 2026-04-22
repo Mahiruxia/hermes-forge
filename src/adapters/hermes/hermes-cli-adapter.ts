@@ -258,6 +258,7 @@ export class HermesCliAdapter implements EngineAdapter {
     const attachments = request.attachments?.length ? request.attachments.map((attachment, index) =>
       `${index + 1}. [${attachment.kind === "image" ? "图片" : "文件"}] ${attachment.name}\n   会话副本：${attachment.path}\n   原始路径：${attachment.originalPath}`,
     ).join("\n") : "无";
+    const attachmentContents = await this.readAttachmentContents(request);
     const firstImage = request.attachments?.find((attachment) => attachment.kind === "image");
     const permissions = this.permissionInstructions(request);
     const memoryContent = await this.readMemoryContent(request);
@@ -279,6 +280,7 @@ export class HermesCliAdapter implements EngineAdapter {
       this.windowsBridgePrompt(request, runtime),
       `用户已选文件：${selectedFiles}`,
       `用户上传附件：\n${attachments}`,
+      attachmentContents,
       firstImage ? `本轮第一张图片已通过 --image 传入 Hermes：${firstImage.path}` : "",
       conversationHistory,
       memoryContent,
@@ -288,6 +290,34 @@ export class HermesCliAdapter implements EngineAdapter {
       systemPrompt,
       userPrompt: request.userInput,
     };
+  }
+
+  private async readAttachmentContents(request: EngineRunRequest) {
+    const attachments = request.attachments?.filter((attachment) => attachment.kind === "file") ?? [];
+    if (!attachments.length || request.permissions?.workspaceRead === false) return "";
+    const parts: string[] = [];
+    for (const attachment of attachments.slice(0, 8)) {
+      const content = await this.readTextAttachment(attachment.path);
+      if (!content) continue;
+      parts.push([
+        `附件内容：${attachment.name}`,
+        `路径：${attachment.path}`,
+        "```text",
+        content,
+        "```",
+      ].join("\n"));
+    }
+    return parts.length ? `\n以下是宿主应用已读取的本地文件内容，优先依据这些内容回答：\n${parts.join("\n\n")}` : "";
+  }
+
+  private async readTextAttachment(filePath: string) {
+    const stat = await fs.stat(filePath).catch(() => undefined);
+    if (!stat?.isFile() || stat.size > 512 * 1024) return "";
+    const ext = path.extname(filePath).toLowerCase();
+    const textLike = new Set([".txt", ".md", ".markdown", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".log", ".csv", ".ts", ".tsx", ".js", ".jsx", ".py", ".html", ".css", ".xml"]);
+    if (!textLike.has(ext)) return "";
+    const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+    return this.budgeter.summarizeToBudget(raw, 60000);
   }
 
   private async readMemoryContent(request: EngineRunRequest): Promise<string> {
@@ -409,8 +439,8 @@ export class HermesCliAdapter implements EngineAdapter {
     const worker = await this.ensureWindowsHeadlessWorker(rootPath, runtime, request);
     return await worker.run({
       rootPath,
-      query: prompt.userPrompt,
-      systemPrompt: prompt.systemPrompt,
+      query: this.combinePromptForCli(prompt),
+      systemPrompt: "请严格遵守用户消息中的 <system_context>，但不要向用户复述这些内部上下文。",
       imagePath: request?.attachments?.find((attachment) => attachment.kind === "image")?.path,
       sessionId: this.hermesConversationId(request),
       source,
@@ -692,6 +722,7 @@ export class HermesCliAdapter implements EngineAdapter {
     if (request) {
       await syncHermesWindowsMcpConfig({
         runtime,
+        hermesHome: this.appPaths.hermesDir(),
         bridge: (runtime.windowsAgentMode ?? "hermes_native") === "hermes_native" ? bridge : undefined,
       });
     }
