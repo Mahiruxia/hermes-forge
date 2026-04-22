@@ -1,6 +1,8 @@
 # Release Notes
 
-## Next
+## Hermes Forge v0.1.7
+
+发布日期：2026-04-22
 
 这是 v0.1.6 之后的一组稳定性、配置迁移和连接器体验改进，重点是降低真实 Windows 环境中的卡死概率，并让已有 Hermes 用户更容易把本机配置导入 Hermes Forge。
 
