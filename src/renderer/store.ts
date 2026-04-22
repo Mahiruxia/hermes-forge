@@ -193,6 +193,7 @@ const useAppStoreBase = create<AppStore>()(
         ...state,
         inspectorOpen: false,
         workspaceDrawerOpen: false,
+        agentPanelOpen: false,
         activePanel: "chat",
         runningTaskRunId: undefined,
         runningSessionId: undefined,
@@ -201,6 +202,7 @@ const useAppStoreBase = create<AppStore>()(
         streamEventsByTaskId: {},
         pendingTasksBySessionId: {},
         contextBundle: undefined,
+        sessionAgentInsight: undefined,
       }),
     }
   )

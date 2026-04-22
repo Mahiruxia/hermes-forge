@@ -8,6 +8,7 @@ import { RuntimeEnvResolver } from "./runtime-env-resolver";
 import { SessionLog } from "./session-log";
 import { ApprovalService } from "./approval-service";
 import { HermesWindowsBridgeTestService } from "./hermes-windows-bridge-test-service";
+import { SessionAgentInsightService } from "./session-agent-insight-service";
 import { WindowsControlBridge } from "./windows-control-bridge";
 import { WindowsNativeIntentService } from "./windows-native-intent-service";
 import { WindowsToolExecutor } from "./windows-tool-executor";
@@ -181,6 +182,7 @@ app.whenReady().then(async () => {
   );
   const memoryBroker = new MemoryBroker(budgeter);
   const sessionLog = new SessionLog(appPaths);
+  const sessionAgentInsightService = new SessionAgentInsightService(appPaths, sessionLog);
   const workSessionService = new WorkSessionService(appPaths);
   await workSessionService.ensureDefault();
   const workspaceLock = new WorkspaceLock();
@@ -250,6 +252,7 @@ app.whenReady().then(async () => {
       minWidth: 980,
       minHeight: 680,
       title: "Hermes Forge",
+      icon: resolveAppIconPath(),
       backgroundColor: "#f5f7f8",
       autoHideMenuBar: true,
       webPreferences: {
@@ -299,6 +302,7 @@ app.whenReady().then(async () => {
     runtimeEnvResolver,
     hermes,
     sessionLog,
+    sessionAgentInsightService,
     () => mainWindow,
     hermesToolLoopRunner,
     windowsNativeIntentService,
@@ -311,6 +315,7 @@ app.whenReady().then(async () => {
     fileTreeService,
     workspaceLock,
     sessionLog,
+    sessionAgentInsightService,
     workSessionService,
     hermes,
     updateService,
@@ -353,8 +358,20 @@ app.whenReady().then(async () => {
 
   app.on("before-quit", () => {
     killActiveCommands();
+    void hermes.stop("app-shutdown");
     void windowsControlBridge?.stop();
     void hermesConnectorService.shutdown();
     void modelRuntimeProxyService.shutdown();
   });
 });
+
+function resolveAppIconPath() {
+  const iconName = process.platform === "darwin"
+    ? "hermes-workbench.icns"
+    : process.platform === "win32"
+      ? "hermes-workbench.ico"
+      : "hermes-workbench.png";
+  return isDevMode
+    ? path.join(process.cwd(), "assets", "icons", iconName)
+    : path.join(process.resourcesPath, "icons", iconName);
+}

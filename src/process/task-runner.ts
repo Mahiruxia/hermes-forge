@@ -6,6 +6,7 @@ import type { EngineAdapter } from "../adapters/engine-adapter";
 import type { AppPaths } from "../main/app-paths";
 import type { RuntimeEnvResolver } from "../main/runtime-env-resolver";
 import type { SessionLog } from "../main/session-log";
+import type { SessionAgentInsightService } from "../main/session-agent-insight-service";
 import type { WindowsNativeIntentService, WindowsNativeIntentResult } from "../main/windows-native-intent-service";
 import type { HermesToolLoopRunner } from "./hermes-tool-loop-runner";
 import type { MemoryBroker } from "../memory/memory-broker";
@@ -58,6 +59,7 @@ export class TaskRunner {
     private readonly runtimeEnvResolver: RuntimeEnvResolver,
     private readonly hermesAdapter: EngineAdapter,
     private readonly sessionLog: SessionLog,
+    private readonly sessionAgentInsightService: SessionAgentInsightService,
     private readonly getMainWindow: () => BrowserWindow | undefined,
     private readonly hermesToolLoopRunner?: HermesToolLoopRunner,
     private readonly windowsNativeIntentService?: WindowsNativeIntentService,
@@ -111,6 +113,16 @@ export class TaskRunner {
     this.metrics.get(taskRunId)!.contextMs = Date.now() - contextAt;
 
     const permissions = resolveEnginePermissions(runtimeConfig, actualEngine);
+    await this.sessionAgentInsightService.recordTaskStart({
+      sessionId: workSessionId,
+      taskRunId,
+      runtimeConfig,
+      runtimeEnv,
+      contextBundle,
+      updatedAt: now(),
+    }).catch((error) => {
+      console.warn("[Hermes Forge] Failed to record session insight on task start:", error);
+    });
     const sessionId = taskRunId;
     const lock = this.workspaceLock.acquire(workspaceId, sessionId, {
       engineId: actualEngine,
@@ -173,6 +185,7 @@ export class TaskRunner {
     const runRequest: EngineRunRequest = {
       sessionId,
       conversationId: workSessionId,
+      conversationHistory: input.conversationHistory ?? [],
       workspaceId,
       workspacePath: targetPath,
       userInput: input.userInput,
@@ -267,6 +280,16 @@ export class TaskRunner {
         adapterMs: Date.now() - adapterStartedAt,
         outcome: failedResult ? "failed" : "completed",
       });
+      if (workSessionId) {
+        await this.sessionAgentInsightService.recordTaskTerminal({
+          sessionId: workSessionId,
+          taskRunId: request.sessionId,
+          status: failedResult ? "failed" : "complete",
+          updatedAt: now(),
+        }).catch((error) => {
+          console.warn("[Hermes Forge] Failed to record session insight terminal state:", error);
+        });
+      }
       await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, failedResult ? "failed" : "completed", "Hermes Tool Loop 任务生命周期已完成。");
     } catch (error) {
       const failure = this.classifyFailure(error, controller.signal.aborted);
@@ -281,6 +304,16 @@ export class TaskRunner {
         detail: failure.message,
         at: now(),
       });
+      if (workSessionId) {
+        await this.sessionAgentInsightService.recordTaskTerminal({
+          sessionId: workSessionId,
+          taskRunId: request.sessionId,
+          status: controller.signal.aborted ? "cancelled" : "failed",
+          updatedAt: now(),
+        }).catch((insightError) => {
+          console.warn("[Hermes Forge] Failed to record session insight terminal failure:", insightError);
+        });
+      }
       await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, controller.signal.aborted ? "cancelled" : "failed", failure.stageMessage);
     } finally {
       this.stopWaitNotices(request.sessionId);
@@ -316,6 +349,8 @@ export class TaskRunner {
     const runtimeEnv = this.nativeRuntimeEnv(runtimeConfig, input.modelProfileId);
     const request: EngineRunRequest = {
       sessionId: meta.sessionId,
+      conversationId: meta.workSessionId,
+      conversationHistory: input.conversationHistory ?? [],
       workspaceId: meta.workspaceId,
       workspacePath: meta.targetPath,
       userInput: input.userInput,
@@ -432,6 +467,16 @@ export class TaskRunner {
         adapterMs: Date.now() - startedAt,
         outcome: result.events.some((event) => event.type === "result" && !event.success) ? "failed" : "completed",
       });
+      if (workSessionId) {
+        await this.sessionAgentInsightService.recordTaskTerminal({
+          sessionId: workSessionId,
+          taskRunId: request.sessionId,
+          status: result.events.some((event) => event.type === "result" && !event.success) ? "failed" : "complete",
+          updatedAt: now(),
+        }).catch((error) => {
+          console.warn("[Hermes Forge] Failed to record session insight terminal state:", error);
+        });
+      }
       await this.publishStage(
         request.workspaceId,
         workSessionId,
@@ -448,6 +493,16 @@ export class TaskRunner {
         detail: error instanceof Error ? error.message : "未知错误",
         at: now(),
       });
+      if (workSessionId) {
+        await this.sessionAgentInsightService.recordTaskTerminal({
+          sessionId: workSessionId,
+          taskRunId: request.sessionId,
+          status: "failed",
+          updatedAt: now(),
+        }).catch((insightError) => {
+          console.warn("[Hermes Forge] Failed to record session insight terminal failure:", insightError);
+        });
+      }
       await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "failed", "Windows 原生执行失败。");
     } finally {
       this.running.delete(request.sessionId);
@@ -511,6 +566,16 @@ export class TaskRunner {
         adapterMs: Date.now() - adapterStartedAt,
         outcome: "completed",
       });
+      if (workSessionId) {
+        await this.sessionAgentInsightService.recordTaskTerminal({
+          sessionId: workSessionId,
+          taskRunId: request.sessionId,
+          status: "complete",
+          updatedAt: now(),
+        }).catch((error) => {
+          console.warn("[Hermes Forge] Failed to record session insight terminal state:", error);
+        });
+      }
       await this.publishUsage(request.workspaceId, workSessionId, request.sessionId, actualEngine, true);
       await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "completed", "Hermes 任务生命周期已完成。");
     } catch (error) {
@@ -540,6 +605,16 @@ export class TaskRunner {
         detail: failure.message,
         at: now(),
       });
+      if (workSessionId) {
+        await this.sessionAgentInsightService.recordTaskTerminal({
+          sessionId: workSessionId,
+          taskRunId: request.sessionId,
+          status: controller.signal.aborted ? "cancelled" : "failed",
+          updatedAt: now(),
+        }).catch((insightError) => {
+          console.warn("[Hermes Forge] Failed to record session insight terminal failure:", insightError);
+        });
+      }
     } finally {
       this.stopWaitNotices(request.sessionId);
       this.running.delete(request.sessionId);
@@ -682,6 +757,14 @@ export class TaskRunner {
     const envelope: TaskEventEnvelope = { taskRunId, workSessionId, sessionId: taskRunId, engineId, event };
     await this.sessionLog.append(workspaceId, envelope);
     this.getMainWindow()?.webContents.send(IpcChannels.taskEvent, envelope);
+    if (workSessionId) {
+      await this.sessionAgentInsightService.recordUsage({
+        sessionId: workSessionId,
+        workspaceId,
+      }).catch((error) => {
+        console.warn("[Hermes Forge] Failed to record session insight usage:", error);
+      });
+    }
     this.lastUsagePublishAt.set(taskRunId, Date.now());
   }
 

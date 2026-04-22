@@ -17,7 +17,7 @@ export function ContextInspector(props: {
   const permissions = store.runtimeConfig?.enginePermissions?.hermes;
 
   return (
-    <aside className={cn("absolute right-0 top-0 z-30 flex h-full w-[380px] max-w-[92vw] flex-col bg-[#f9f9fa]/95 shadow-[-20px_0_60px_rgba(0,0,0,0.08)] backdrop-blur-2xl transition-transform duration-300", props.open ? "translate-x-0" : "translate-x-full")}>
+    <aside className={cn("absolute right-0 top-0 z-50 flex h-full w-[380px] max-w-[92vw] flex-col bg-[#f9f9fa]/95 shadow-[-20px_0_60px_rgba(0,0,0,0.08)] backdrop-blur-2xl transition-transform duration-300", props.open ? "translate-x-0" : "translate-x-full")}>
       <div className="flex h-14 shrink-0 items-center justify-between px-4">
         <div>
           <p className="text-[13px] font-semibold text-slate-900">Hermes 工具区</p>

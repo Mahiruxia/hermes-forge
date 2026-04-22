@@ -8,6 +8,7 @@ import type { AppPaths } from "./app-paths";
 import type { RuntimeConfigStore } from "./runtime-config";
 import type { RuntimeEnvResolver } from "./runtime-env-resolver";
 import type { SessionLog } from "./session-log";
+import type { SessionAgentInsightService } from "./session-agent-insight-service";
 import type { WorkSessionService } from "./work-session-service";
 import type { HermesConnectorService } from "./hermes-connector-service";
 import type { HermesModelSyncService } from "./hermes-model-sync";
@@ -96,6 +97,7 @@ export type IpcServices = {
   fileTreeService: FileTreeService;
   workspaceLock: WorkspaceLock;
   sessionLog: SessionLog;
+  sessionAgentInsightService: SessionAgentInsightService;
   workSessionService: WorkSessionService;
   hermes: EngineAdapter;
   updateService: UpdateService;
@@ -183,9 +185,9 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   });
 
   ipcMain.handle(IpcChannels.openHelp, async () => {
-    const helpUrl = "https://docs.hermes.systems";
+    const helpUrl = "https://github.com/Mahiruxia/hermes-forge#readme";
     await shell.openExternal(helpUrl);
-    return { ok: true, message: `已打开帮助文档：${helpUrl}` };
+    return { ok: true, message: `已打开 Hermes Forge 官网：${helpUrl}` };
   });
 
   ipcMain.handle(IpcChannels.startTask, (_event, input) => {
@@ -226,15 +228,19 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     return services.workspaceLock.listActive(services.appPaths.workspaceId(parsed));
   });
 
-  ipcMain.handle(IpcChannels.getRecentTaskEvents, async (_event, workspacePath: string) => {
+  ipcMain.handle(IpcChannels.getRecentTaskEvents, async (_event, workspacePath: string, workSessionId?: string) => {
     const parsed = workspacePathInputSchema.parse(workspacePath);
+    const parsedSessionId = workSessionId ? sessionIdSchema.parse(workSessionId) : undefined;
     const workspaceId = services.appPaths.workspaceId(parsed);
-    return services.sessionLog.readRecent(workspaceId);
+    return services.sessionLog.readRecent(workspaceId, 200, parsedSessionId);
   });
 
   ipcMain.handle(IpcChannels.listSessions, () => services.workSessionService.list());
   ipcMain.handle(IpcChannels.createSession, async (_event, title?: string) =>
     services.workSessionService.create(typeof title === "string" ? title : undefined),
+  );
+  ipcMain.handle(IpcChannels.getSessionAgentInsight, (_event, id: string, eventSourcePath?: string) =>
+    services.sessionAgentInsightService.read(sessionIdSchema.parse(id), typeof eventSourcePath === "string" ? workspacePathInputSchema.parse(eventSourcePath) : undefined),
   );
   ipcMain.handle(IpcChannels.updateSession, async (_event, input) => {
     const parsed = sessionUpdateSchema.parse(input);

@@ -26,6 +26,12 @@ export const startTaskInputSchema = z.object({
   workspacePath: z.string().trim().max(1000).optional(),
   clientTaskId: z.string().trim().min(1).max(120).optional(),
   sessionId: z.string().trim().max(120).optional(),
+  conversationHistory: z.array(z.object({
+    role: z.enum(["user", "assistant"]),
+    content: z.string().trim().min(1).max(12000),
+    createdAt: z.string().trim().max(80).optional(),
+    taskRunId: z.string().trim().max(120).optional(),
+  })).max(24).default([]),
   sessionFilesPath: z.string().trim().min(1).max(1000),
   selectedFiles: z.array(z.string().max(1000)).default([]),
   attachments: z.array(sessionAttachmentSchema).default([]),

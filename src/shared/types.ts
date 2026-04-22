@@ -167,6 +167,42 @@ export type SessionMetaPatch = Partial<Pick<WorkSession, "pinned" | "tags" | "st
   projectId?: string | null;
 };
 
+export type SessionAgentInsightRuntime = {
+  taskRunId: string;
+  status: TaskRunStatus;
+  providerId?: ProviderId;
+  modelId?: string;
+  runtimeMode?: EngineExecutionMode;
+  contextWindow?: number;
+  temperature?: number;
+  updatedAt: string;
+};
+
+export type SessionAgentInsightUsage = {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalEstimatedCostUsd: number;
+  latestInputTokens: number;
+  latestOutputTokens: number;
+  latestEstimatedCostUsd: number;
+  updatedAt: string;
+};
+
+export type SessionAgentInsightMemory = {
+  bundleId: string;
+  usedCharacters: number;
+  maxCharacters: number;
+  summary: string;
+  updatedAt: string;
+};
+
+export type SessionAgentInsight = {
+  sessionId: string;
+  latestRuntime?: SessionAgentInsightRuntime;
+  usage?: SessionAgentInsightUsage;
+  memory?: SessionAgentInsightMemory;
+};
+
 export type ChatMessage = SessionMessage;
 
 export interface ChatSession {
@@ -683,6 +719,7 @@ export type ContextRequest = {
 export type EngineRunRequest = {
   sessionId: string;
   conversationId?: string;
+  conversationHistory?: ConversationHistoryEntry[];
   workspaceId: string;
   workspacePath: string;
   userInput: string;
@@ -694,6 +731,13 @@ export type EngineRunRequest = {
   runtimeEnv?: EngineRuntimeEnv;
   contextBundle?: ContextBundle;
   permissions?: EnginePermissionPolicy;
+};
+
+export type ConversationHistoryEntry = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt?: string;
+  taskRunId?: string;
 };
 
 export type EngineRuntimeEnv = {
@@ -757,6 +801,7 @@ export type StartTaskInput = {
   workspacePath?: string;
   clientTaskId?: string;
   sessionId?: string;
+  conversationHistory?: ConversationHistoryEntry[];
   sessionFilesPath: string;
   selectedFiles: string[];
   attachments?: SessionAttachment[];

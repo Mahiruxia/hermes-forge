@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   ActivityLog,
+  ConversationHistoryEntry,
   EngineEvent,
   RuntimeConfig,
   SecretVaultStatus,
   SetupCheck,
   SetupDependencyRepairId,
   SetupSummary,
+  TaskRunStatus,
   TaskEventEnvelope,
   TaskType,
   WorkSession,
@@ -60,9 +62,11 @@ type ConfigOverview = {
   health?: SetupSummary;
 };
 
-function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; onRefresh: () => Promise<void> }) {
+type FixTarget = "model" | "hermes" | "health" | "diagnostics";
+
+function SettingsView(props: { overview?: ConfigOverview; initialSection?: ConfigSectionId; onBack: () => void; onRefresh: () => Promise<void>; onExportDiagnostics?: () => void }) {
   const overview = props.overview;
-  const [activeSection, setActiveSection] = useState<ConfigSectionId>("general");
+  const [activeSection, setActiveSection] = useState<ConfigSectionId>(props.initialSection ?? "general");
   const [rootPath, setRootPath] = useState(overview?.hermes.rootPath ?? "");
   const [warmupMode, setWarmupMode] = useState(overview?.hermes.warmupMode ?? "cheap");
   const [permissions, setPermissions] = useState(overview?.hermes.permissions ?? {
@@ -89,6 +93,10 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
   useEffect(() => {
     setSecretRef(overview?.secrets[0]?.ref ?? "");
   }, [overview?.secrets]);
+
+  useEffect(() => {
+    if (props.initialSection) setActiveSection(props.initialSection);
+  }, [props.initialSection]);
 
   async function saveSecretSettings() {
     if (!secretRef.trim() || !secretValue.trim()) return;
@@ -177,155 +185,96 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
       onSectionChange={setActiveSection}
       onBack={props.onBack}
       saveNotice={saveNotice}
-      title="Hermes 配置中心"
-      description="用更清晰的分区方式管理运行环境、模型来源、密钥和系统健康状态。"
+      title="设置中心"
+      description="只保留会影响能否运行的关键配置。"
     >
       {activeSection === "general" ? (
-        <section className="space-y-4">
-          <div>
-            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-              General
-            </p>
-            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
-              常规设置
-            </h2>
-            <p className="mt-2 text-[14px] leading-6 text-slate-500">
-              管理 Hermes 根路径、预热策略和运行权限。
-            </p>
+        <section className="space-y-5">
+          <SettingsSectionHeader
+            label="Hermes"
+            title="运行基础"
+            description="这里只保留会影响任务启动的路径、预热和能力开关。"
+          />
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatusMetric label="根路径" value={rootPath.trim() ? "已设置" : "未设置"} tone={rootPath.trim() ? "ok" : "warning"} />
+            <StatusMetric label="预热" value={warmupMode} tone={warmupMode === "off" ? "neutral" : "ok"} />
+            <StatusMetric label="权限" value={`${Object.values(permissions).filter(Boolean).length}/${Object.keys(permissions).length}`} tone={permissions.enabled ? "ok" : "danger"} />
           </div>
-          <ConfigCard title="Hermes">
+
+          <SettingsPanelCard title="核心设置">
             <div className="grid gap-3">
-              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 p-4">
-                <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Runtime</p>
-                <label className="mt-3 block text-[12px] text-slate-500">
-                  <span className="mb-1.5 block">Hermes 根路径</span>
-                  <input
-                    value={rootPath}
-                    onChange={(event) => setRootPath(event.target.value)}
-                    className="w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
-                    placeholder="输入 Hermes 根路径"
-                  />
-                </label>
-              </div>
+              <label className="block text-[12px] font-medium text-slate-500">
+                <span className="mb-1.5 block">Hermes 根路径</span>
+                <input
+                  value={rootPath}
+                  onChange={(event) => setRootPath(event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[13px] text-slate-800 outline-none transition focus:ring-2 focus:ring-slate-900/10"
+                  placeholder="输入 Hermes 根路径"
+                />
+              </label>
 
-              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 p-4">
-                <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Warmup</p>
-                <label className="mt-3 block text-[12px] text-slate-500">
-                  <span className="mb-1.5 block">预热模式</span>
-                  <select
-                    value={warmupMode}
-                    onChange={(event) => setWarmupMode(event.target.value)}
-                    className="w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
-                  >
-                    <option value="off">off</option>
-                    <option value="cheap">cheap</option>
-                    <option value="real_probe">real_probe</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Permissions</p>
-                    <h3 className="mt-2 text-[15px] font-semibold text-slate-900">权限控制</h3>
-                    <p className="mt-1 text-[13px] leading-6 text-slate-500">
-                      把常用能力拆成独立开关，减少传统复选框带来的信息噪音。
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-500 shadow-sm">
-                    {Object.values(permissions).filter(Boolean).length}/{Object.keys(permissions).length} 已启用
-                  </span>
-                </div>
-
-                <div className="mt-4 grid gap-3">
-                  <ToggleSwitch
-                    checked={permissions.enabled}
-                    onChange={(checked) => setPermissions({ ...permissions, enabled: checked })}
-                    label="启用 Hermes"
-                    description="关闭后将阻止 Hermes 在桌面端运行任务。"
-                  />
-                  <ToggleSwitch
-                    checked={permissions.workspaceRead}
-                    onChange={(checked) => setPermissions({ ...permissions, workspaceRead: checked })}
-                    label="读取项目"
-                    description="允许读取当前工作区的文件与目录结构。"
-                  />
-                  <ToggleSwitch
-                    checked={permissions.fileWrite}
-                    onChange={(checked) => setPermissions({ ...permissions, fileWrite: checked })}
-                    label="写入文件"
-                    description="允许创建、修改或删除工作区内文件。"
-                  />
-                  <ToggleSwitch
-                    checked={permissions.commandRun}
-                    onChange={(checked) => setPermissions({ ...permissions, commandRun: checked })}
-                    label="运行命令"
-                    description="允许调用终端、Shell 和脚本执行。"
-                  />
-                  <ToggleSwitch
-                    checked={permissions.memoryRead}
-                    onChange={(checked) => setPermissions({ ...permissions, memoryRead: checked })}
-                    label="读取记忆"
-                    description="允许读取 USER / MEMORY 等长期记忆文件。"
-                  />
-                  <ToggleSwitch
-                    checked={permissions.contextBridge}
-                    onChange={(checked) => setPermissions({ ...permissions, contextBridge: checked })}
-                    label="桥接上下文"
-                    description="允许 Hermes 访问桌面桥接与宿主上下文能力。"
-                  />
-                </div>
-              </div>
+              <label className="block text-[12px] font-medium text-slate-500">
+                <span className="mb-1.5 block">启动预热</span>
+                <select
+                  value={warmupMode}
+                  onChange={(event) => setWarmupMode(event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[13px] text-slate-800 outline-none transition focus:ring-2 focus:ring-slate-900/10"
+                >
+                  <option value="off">关闭</option>
+                  <option value="cheap">轻量检查</option>
+                  <option value="real_probe">真实探针</option>
+                </select>
+              </label>
             </div>
-            <div className="flex justify-end">
-              <button className="rounded-xl bg-slate-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveHermesSettings()} type="button">
-                保存 Hermes 设置
-              </button>
+          </SettingsPanelCard>
+
+          <SettingsPanelCard title="能力开关">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ToggleSwitch checked={permissions.enabled} onChange={(checked) => setPermissions({ ...permissions, enabled: checked })} label="启用 Hermes" description="关闭后不再运行任务。" />
+              <ToggleSwitch checked={permissions.workspaceRead} onChange={(checked) => setPermissions({ ...permissions, workspaceRead: checked })} label="读取项目" description="读取工作区文件。" />
+              <ToggleSwitch checked={permissions.fileWrite} onChange={(checked) => setPermissions({ ...permissions, fileWrite: checked })} label="写入文件" description="写入前仍会审批。" />
+              <ToggleSwitch checked={permissions.commandRun} onChange={(checked) => setPermissions({ ...permissions, commandRun: checked })} label="运行命令" description="命令执行前审批。" />
+              <ToggleSwitch checked={permissions.memoryRead} onChange={(checked) => setPermissions({ ...permissions, memoryRead: checked })} label="读取记忆" description="读取 USER/MEMORY。" />
+              <ToggleSwitch checked={permissions.contextBridge} onChange={(checked) => setPermissions({ ...permissions, contextBridge: checked })} label="桌面桥接" description="启用 Windows 能力。" />
             </div>
-          </ConfigCard>
+          </SettingsPanelCard>
+
+          <div className="flex justify-end">
+            <button className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveHermesSettings()} type="button">
+              保存运行设置
+            </button>
+          </div>
         </section>
       ) : null}
 
       {activeSection === "providers" ? (
         <section className="space-y-4">
-          <div>
-            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-              Providers
-            </p>
-            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
-              模型提供商
-            </h2>
-            <p className="mt-2 text-[14px] leading-6 text-slate-500">
-              选择模型来源，并只在需要时展开对应配置项。
-            </p>
-          </div>
-          <ConfigCard title="模型来源">
-            <ModelConfigWizard
-              models={overview?.models ?? { defaultProfileId: undefined, providerProfiles: [], modelProfiles: [] }}
-              secrets={overview?.secrets ?? []}
-              onRefresh={props.onRefresh}
-              onSaved={showSaveNotice}
-            />
-          </ConfigCard>
+          <SettingsSectionHeader
+            label="Model"
+            title="模型连接"
+            description="选来源、测试连接、保存默认模型。其他细节先交给向导处理。"
+          />
+          <ModelConfigWizard
+            models={overview?.models ?? { defaultProfileId: undefined, providerProfiles: [], modelProfiles: [] }}
+            secrets={overview?.secrets ?? []}
+            onRefresh={props.onRefresh}
+            onSaved={showSaveNotice}
+          />
         </section>
       ) : null}
 
       {activeSection === "secrets" ? (
         <section className="space-y-4">
-          <div>
-            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-              Secrets
-            </p>
-            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
-              密钥管理
-            </h2>
-            <p className="mt-2 text-[14px] leading-6 text-slate-500">
-              统一保存和删除 API Key，避免配置分散。
-            </p>
+          <SettingsSectionHeader
+            label="Secrets"
+            title="本地密钥"
+            description="这里只显示保存状态；真实内容不会回显。"
+          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <StatusMetric label="已记录条目" value={`${overview?.secrets.length ?? 0}`} tone={(overview?.secrets.length ?? 0) > 0 ? "ok" : "neutral"} />
+            <StatusMetric label="存储方式" value="本机保管库" tone="ok" />
           </div>
-          <ConfigCard title="密钥">
-            <ConfigRow label="已记录条目" value={`${overview?.secrets.length ?? 0}`} />
+          <SettingsPanelCard title="保存或更新密钥">
             <label className="block text-[12px] text-slate-500">
               <span className="mb-1 block">密钥引用</span>
               <input value={secretRef} onChange={(event) => setSecretRef(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none" placeholder="例如 provider.openrouter.apiKey" />
@@ -335,10 +284,13 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
               <input value={secretValue} onChange={(event) => setSecretValue(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-700 outline-none" placeholder="输入 API Key（不会显示明文到 Renderer 之外）" type="password" />
             </label>
             <div className="flex justify-end">
-              <button className="rounded-xl bg-slate-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveSecretSettings()} type="button">
+              <button className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveSecretSettings()} type="button">
                 保存密钥
               </button>
             </div>
+          </SettingsPanelCard>
+
+          <SettingsPanelCard title="已保存引用">
             <div className="space-y-2">
               {(overview?.secrets ?? []).slice(0, 6).map((secret) => (
                 <div key={secret.ref} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[12px] text-slate-600">
@@ -356,45 +308,25 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
               ))}
               {!(overview?.secrets.length) ? <p className="text-[12px] text-slate-400">暂无密钥元信息。</p> : null}
             </div>
-          </ConfigCard>
+          </SettingsPanelCard>
         </section>
       ) : null}
 
       {activeSection === "health" ? (
         <section className="space-y-4">
-          <div>
-            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-              Health
-            </p>
-            <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">
-              系统状态
-            </h2>
-            <p className="mt-2 text-[14px] leading-6 text-slate-500">
-              查看阻塞项、环境状态和修复建议。
-            </p>
+          <SettingsSectionHeader
+            label="Diagnostics"
+            title="状态与诊断"
+            description="优先看阻塞项；没有红色项就可以回到工作台发任务。"
+          />
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatusMetric label="整体状态" value={overview?.health?.ready ? "就绪" : "需处理"} tone={overview?.health?.ready ? "ok" : "danger"} />
+            <StatusMetric label="阻塞项" value={`${overview?.health?.blocking.length ?? 0}`} tone={(overview?.health?.blocking.length ?? 0) > 0 ? "danger" : "ok"} />
+            <StatusMetric label="检查项" value={`${overview?.health?.checks.length ?? 0}`} tone="neutral" />
           </div>
-          <ConfigCard title="健康检查">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <HealthSummaryCard
-                label="整体状态"
-                value={overview?.health?.ready ? "系统就绪" : "需要处理"}
-                tone={overview?.health?.ready ? "ok" : "error"}
-                detail={overview?.health?.ready ? "当前没有阻塞 Hermes 运行的关键问题。" : "仍然存在会阻止任务启动或影响运行的配置问题。"}
-              />
-              <HealthSummaryCard
-                label="阻塞项"
-                value={`${overview?.health?.blocking.length ?? 0}`}
-                tone={(overview?.health?.blocking.length ?? 0) > 0 ? "error" : "ok"}
-                detail={(overview?.health?.blocking.length ?? 0) > 0 ? "建议优先修复这些项目，再开始任务。" : "当前没有检测到阻塞项。"}
-              />
-            </div>
+          <SettingsPanelCard title="优先处理">
             {(overview?.health?.blocking.length ?? 0) > 0 ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-4 text-[12px] text-rose-700">
-                <div className="flex items-center gap-2">
-                  <StatusDot tone="error" pulse />
-                  <p className="font-medium">需要优先处理的阻塞项</p>
-                </div>
-                <div className="mt-3 space-y-3">
+              <div className="space-y-3">
                   {(overview?.health?.blocking ?? []).map((check, index) => (
                     <SetupCheckCard
                       key={`blocking-${check.id}-${index}`}
@@ -403,16 +335,26 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
                       busy={Boolean((check.autoFixId && repairingDependency === check.autoFixId) || setupActionRunning === check.id)}
                     />
                   ))}
-                </div>
               </div>
-            ) : null}
-            <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 px-4 py-4 text-[12px] text-slate-500">
-              <div className="flex items-center gap-2">
-                <StatusDot tone="neutral" />
-                <p className="font-medium text-slate-700">建议</p>
+            ) : (
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-[13px] font-medium text-emerald-700">
+                当前没有阻塞任务启动的问题。
               </div>
-              <p className="mt-1 leading-5">如果出现红色阻塞项，优先修复；黄色项通常表示建议优化，不一定会阻止当前任务运行。</p>
+            )}
+          </SettingsPanelCard>
+
+          <SettingsPanelCard title="诊断操作">
+            <div className="flex flex-wrap gap-2">
+              <button className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={props.onExportDiagnostics} type="button">
+                导出诊断信息
+              </button>
+              <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void props.onRefresh()} type="button">
+                重新检查
+              </button>
             </div>
+          </SettingsPanelCard>
+
+          <SettingsPanelCard title="详细检查">
             <div className="space-y-3">
               {(overview?.health?.checks ?? []).map((check, index) => (
                 <SetupCheckCard
@@ -424,27 +366,45 @@ function SettingsView(props: { overview?: ConfigOverview; onBack: () => void; on
               ))}
               {!(overview?.health?.checks.length) ? <p className="text-[12px] text-slate-400">暂无健康检查信息。</p> : null}
             </div>
-          </ConfigCard>
+          </SettingsPanelCard>
         </section>
       ) : null}
     </ConfigCenterLayout>
   );
 }
 
-function ConfigCard(props: { title: string; children: React.ReactNode }) {
+function SettingsSectionHeader(props: { label: string; title: string; description: string }) {
+  return (
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{props.label}</p>
+      <h2 className="mt-2 text-[24px] font-semibold tracking-tight text-slate-950">{props.title}</h2>
+      <p className="mt-2 text-[14px] leading-6 text-slate-500">{props.description}</p>
+    </div>
+  );
+}
+
+function SettingsPanelCard(props: { title: string; children: React.ReactNode }) {
   return (
     <section className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
-      <h2 className="mb-3 text-[15px] font-semibold text-slate-900">{props.title}</h2>
-      <div className="space-y-2">{props.children}</div>
+      <h3 className="mb-3 text-[14px] font-semibold text-slate-900">{props.title}</h3>
+      <div className="space-y-3">{props.children}</div>
     </section>
   );
 }
 
-function ConfigRow(props: { label: string; value: string }) {
+function StatusMetric(props: { label: string; value: string; tone: "ok" | "warning" | "danger" | "neutral" }) {
+  const toneClass =
+    props.tone === "ok"
+      ? "border-emerald-100 bg-emerald-50 text-emerald-700"
+      : props.tone === "warning"
+        ? "border-amber-100 bg-amber-50 text-amber-700"
+        : props.tone === "danger"
+          ? "border-rose-100 bg-rose-50 text-rose-700"
+          : "border-slate-200 bg-slate-50 text-slate-600";
   return (
-    <div className="flex items-start justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[12px]">
-      <span className="text-slate-400">{props.label}</span>
-      <span className="max-w-[65%] break-words text-right font-medium text-slate-700 [overflow-wrap:anywhere]">{props.value}</span>
+    <div className={`rounded-2xl border px-4 py-3 ${toneClass}`}>
+      <p className="text-[11px] font-medium opacity-75">{props.label}</p>
+      <p className="mt-1 truncate text-[18px] font-semibold">{props.value}</p>
     </div>
   );
 }
@@ -528,26 +488,6 @@ function setupFixButtonLabel(check: SetupCheck) {
   return "";
 }
 
-function HealthSummaryCard(props: {
-  label: string;
-  value: string;
-  detail: string;
-  tone: "ok" | "warning" | "error" | "neutral";
-}) {
-  return (
-    <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 px-4 py-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <StatusDot tone={props.tone} pulse={props.tone !== "neutral"} />
-          <p className="text-[12px] font-medium text-slate-500">{props.label}</p>
-        </div>
-        <span className="text-[15px] font-semibold text-slate-900">{props.value}</span>
-      </div>
-      <p className="mt-2 text-[12px] leading-5 text-slate-500">{props.detail}</p>
-    </div>
-  );
-}
-
 function StatusDot(props: {
   tone: "ok" | "warning" | "error" | "neutral";
   pulse?: boolean;
@@ -571,6 +511,7 @@ function StatusDot(props: {
 
 function App() {
   const [configOverview, setConfigOverview] = useState<ConfigOverview | undefined>();
+  const [settingsInitialSection, setSettingsInitialSection] = useState<ConfigSectionId>("general");
   const store = useAppStore();
 
   async function loadConfigOverview(workspacePath?: string) {
@@ -836,13 +777,14 @@ function App() {
     store.setSessionFilesPath(session.sessionFilesPath);
     store.setWorkspacePath(session.workspacePath ?? "");
     store.clearAttachments();
+    store.setSessionAgentInsight(undefined);
     
     // 关键数据：纯聊天会话从 sessionFilesPath 恢复事件；工作区只是可选上下文。
     const eventSourcePath = session.workspacePath || session.sessionFilesPath;
-    const [events, fileTree] = await Promise.all([
+    const [events, fileTree, insight] = await Promise.all([
       eventSourcePath
         ? safePromiseWithFallback(
-          window.workbenchClient.getRecentTaskEvents(eventSourcePath),
+          window.workbenchClient.getRecentTaskEvents(eventSourcePath, session.id),
           [],
           { errorMessage: "获取任务事件失败" }
         )
@@ -854,11 +796,19 @@ function App() {
             { errorMessage: "获取文件树失败" }
           )
         : undefined,
+      eventSourcePath
+        ? safePromiseWithFallback(
+            window.workbenchClient.getSessionAgentInsight(session.id, eventSourcePath),
+            undefined,
+            { errorMessage: "获取 Agent 面板恢复数据失败" }
+          )
+        : undefined,
     ]);
     
     store.setEvents(events);
     store.rebuildSessionProjections(session.id, events);
     store.setFileTree(fileTree);
+    store.setSessionAgentInsight(insight);
     
     // 非关键数据：后台异步加载
     Promise.all([
@@ -897,6 +847,9 @@ function App() {
     const remaining = useAppStore.getState().sessions.filter((item) => item.id !== result.deletedId);
     store.setSessions(remaining);
     store.clearSessionData(session.id);
+    if (deletedWasActive) {
+      store.setSessionAgentInsight(undefined);
+    }
     store.info("会话已删除", `已删除会话：${session.title}`);
     
     if (!deletedWasActive) return;
@@ -931,6 +884,7 @@ function App() {
     const result = await window.workbenchClient.clearSessionFiles(current.activeSessionId);
     store.upsertSession(result.session);
     store.clearSessionData(current.activeSessionId);
+    store.setSessionAgentInsight(undefined);
     store.clearAttachments();
   }
 
@@ -1042,6 +996,7 @@ function App() {
 
     const taskType = current.workspacePath.trim() ? inferTaskType(prompt, current.taskType) : "custom";
     const workSessionId = activeSessionId || "local-session";
+    const conversationHistory = buildConversationHistory(current, workSessionId);
     const clientTaskId = createClientTaskId();
     const createdAt = new Date().toISOString();
     store.beginTaskRun({ workSessionId, taskRunId: clientTaskId, userInput: prompt, createdAt });
@@ -1052,6 +1007,7 @@ function App() {
         clientTaskId,
         userInput: prompt,
         sessionId: activeSessionId,
+        conversationHistory,
         taskType,
         workspacePath: current.workspacePath || undefined,
         sessionFilesPath: sessionFilesPath || activeSessionId || "default",
@@ -1070,13 +1026,16 @@ function App() {
         event: { type: "status", level: "error", message, at: new Date().toISOString() },
       });
       await refreshSetupSummary();
-      store.setView(viewForFixAction(useAppStore.getState().setupSummary?.blocking[0]?.fixAction));
+      openFixTarget(fixTargetForFailure(message, useAppStore.getState().setupSummary?.blocking[0]?.fixAction));
       return;
     }
     store.clearAttachments();
     if (result.taskRunId !== clientTaskId) store.rebindTaskRunId(clientTaskId, result.taskRunId);
-    store.setRunningSessionId(result.taskRunId);
-    store.setRunningTaskRunId(result.taskRunId);
+    const resultProjection = useAppStore.getState().taskRunProjectionsById[result.taskRunId];
+    if (!isTerminalTaskStatus(resultProjection?.status)) {
+      store.setRunningSessionId(result.taskRunId);
+      store.setRunningTaskRunId(result.taskRunId);
+    }
     store.updateTaskRunMeta(result.taskRunId, {
       engineId: "hermes",
       actualEngine: "hermes",
@@ -1085,6 +1044,24 @@ function App() {
       modelId: result.runtime.modelId,
     });
     store.setContextBundle(result.contextBundle);
+    store.setSessionAgentInsight({
+      sessionId: activeSessionId || workSessionId,
+      latestRuntime: {
+        taskRunId: result.taskRunId,
+        status: "running",
+        providerId: result.runtime.providerId,
+        modelId: result.runtime.modelId,
+        runtimeMode: result.runtime.runtimeMode,
+        updatedAt: new Date().toISOString(),
+      },
+      memory: {
+        bundleId: result.contextBundle.id,
+        usedCharacters: result.contextBundle.usedCharacters,
+        maxCharacters: result.contextBundle.maxCharacters,
+        summary: result.contextBundle.summary,
+        updatedAt: result.contextBundle.createdAt,
+      },
+    });
     store.pushActivityLog({
       id: `start-${result.taskRunId}`,
       engineId: "hermes",
@@ -1221,6 +1198,16 @@ function App() {
     });
   }
 
+  function openFixTarget(target: FixTarget) {
+    if (target === "diagnostics") {
+      void exportDiagnostics();
+      return;
+    }
+    const section: ConfigSectionId = target === "model" ? "providers" : target === "hermes" ? "general" : "health";
+    setSettingsInitialSection(section);
+    store.setView("settings");
+  }
+
   if (store.firstLaunch) {
     return <WelcomePage onComplete={() => store.setFirstLaunch(false)} />;
   }
@@ -1229,7 +1216,13 @@ function App() {
     <>
       {store.isLoading("bootstrap") && <PageLoader />}
       {store.view === "settings" ? (
-        <SettingsView overview={configOverview} onBack={() => store.setView("home")} onRefresh={() => loadConfigOverview(useAppStore.getState().workspacePath || undefined).then(() => undefined)} />
+        <SettingsView
+          overview={configOverview}
+          initialSection={settingsInitialSection}
+          onBack={() => store.setView("home")}
+          onRefresh={() => loadConfigOverview(useAppStore.getState().workspacePath || undefined).then(() => undefined)}
+          onExportDiagnostics={exportDiagnostics}
+        />
       ) : (
         <DashboardView
           onPickWorkspace={pickWorkspace}
@@ -1250,6 +1243,7 @@ function App() {
           onRestoreSnapshot={restoreSnapshot}
           onRefreshFileTree={refreshFileTree}
           onExportDiagnostics={exportDiagnostics}
+          onOpenFix={openFixTarget}
           onRefreshWebUiOverview={loadWebUiOverview}
         />
       )}
@@ -1285,6 +1279,35 @@ function sessionTitleFromPrompt(prompt: string) {
   return prompt.trim().replace(/\s+/g, " ").slice(0, 32) || "新的会话";
 }
 
+function buildConversationHistory(state: ReturnType<typeof useAppStore.getState>, workSessionId: string): ConversationHistoryEntry[] {
+  const order = state.taskRunOrderBySession[workSessionId] ?? [];
+  return order
+    .map((taskRunId) => state.taskRunProjectionsById[taskRunId])
+    .filter((run): run is NonNullable<typeof run> => Boolean(run) && run.workSessionId === workSessionId)
+    .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+    .flatMap<ConversationHistoryEntry>((run) => {
+      const entries: ConversationHistoryEntry[] = [];
+      if (run.userMessage?.content.trim()) {
+        entries.push({
+          role: "user",
+          content: run.userMessage.content.trim(),
+          createdAt: run.userMessage.createdAt,
+          taskRunId: run.taskRunId,
+        });
+      }
+      if (run.assistantMessage.content.trim() && run.status === "complete") {
+        entries.push({
+          role: "assistant",
+          content: run.assistantMessage.content.trim(),
+          createdAt: run.assistantMessage.createdAt,
+          taskRunId: run.taskRunId,
+        });
+      }
+      return entries;
+    })
+    .slice(-24);
+}
+
 function humanizeStartFailure(message: string) {
   if (/MODEL_NOT_CONFIGURED|缺少模型|API Key|密钥/i.test(message)) return `Hermes 模型配置还没准备好：${message}`;
   if (/WORKSPACE_LOCKED|占用/i.test(message)) return "当前工作区正在被 Hermes 使用。请等待任务完成，或先停止当前任务。";
@@ -1292,9 +1315,17 @@ function humanizeStartFailure(message: string) {
   return message;
 }
 
-function viewForFixAction(action?: string) {
-  if (action === "configure_model" || action === "configure_hermes" || action === "open_settings") return "settings";
-  return "admin";
+function isTerminalTaskStatus(status?: TaskRunStatus) {
+  return status === "complete" || status === "failed" || status === "cancelled" || status === "interrupted";
+}
+
+function fixTargetForFailure(message: string, action?: string): FixTarget {
+  if (action === "configure_model") return "model";
+  if (action === "configure_hermes" || action === "open_settings") return "hermes";
+  if (/模型|密钥|API Key|auth|model/i.test(message)) return "model";
+  if (/Hermes 路径|Hermes 根路径|权限|控制台|Python|CLI|NoConsoleScreenBuffer/i.test(message)) return "hermes";
+  if (/诊断|退出码|unknown|未知/i.test(message)) return "diagnostics";
+  return "health";
 }
 
 function readRecentWorkspaces(): RecentWorkspace[] {

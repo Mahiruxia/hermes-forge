@@ -1,5 +1,5 @@
 import { combine } from "zustand/middleware";
-import type { FileLockState, FileTreeResult, SessionAttachment, SnapshotRecord, WorkSession } from "../../shared/types";
+import type { FileLockState, FileTreeResult, SessionAgentInsight, SessionAttachment, SnapshotRecord, WorkSession } from "../../shared/types";
 import type { RecentWorkspace } from "../store";
 
 export interface SessionState {
@@ -13,6 +13,7 @@ export interface SessionState {
   fileTree?: FileTreeResult;
   locks: FileLockState[];
   snapshots: SnapshotRecord[];
+  sessionAgentInsight?: SessionAgentInsight;
 }
 
 export interface SessionActions {
@@ -31,6 +32,7 @@ export interface SessionActions {
   setFileTree(fileTree?: FileTreeResult): void;
   setLocks(locks: FileLockState[]): void;
   setSnapshots(snapshots: SnapshotRecord[]): void;
+  setSessionAgentInsight(insight?: SessionAgentInsight): void;
 }
 
 export const sessionSlice = combine<SessionState, SessionActions>(
@@ -45,6 +47,7 @@ export const sessionSlice = combine<SessionState, SessionActions>(
     fileTree: undefined,
     locks: [],
     snapshots: [],
+    sessionAgentInsight: undefined,
   },
   (set) => ({
     setWorkspacePath: (path: string) => set({ workspacePath: path }),
@@ -88,5 +91,6 @@ export const sessionSlice = combine<SessionState, SessionActions>(
     setFileTree: (fileTree?: FileTreeResult) => set({ fileTree }),
     setLocks: (locks: FileLockState[]) => set({ locks }),
     setSnapshots: (snapshots: SnapshotRecord[]) => set({ snapshots }),
+    setSessionAgentInsight: (sessionAgentInsight?: SessionAgentInsight) => set({ sessionAgentInsight }),
   })
 );

@@ -31,6 +31,7 @@ import type {
   QuickTextFileInput,
   QuickTextFileResult,
   RuntimeConfig,
+  SessionAgentInsight,
   SecretRefStatus,
   SecretSaveInput,
   SecretVaultStatus,
@@ -101,9 +102,10 @@ declare global {
       listSnapshots(workspacePath: string): Promise<SnapshotRecord[]>;
       getFileTree(workspacePath: string): Promise<FileTreeResult>;
       listActiveLocks(workspacePath?: string): Promise<FileLockState[]>;
-      getRecentTaskEvents(workspacePath: string): Promise<TaskEventEnvelope[]>;
+      getRecentTaskEvents(workspacePath: string, workSessionId?: string): Promise<TaskEventEnvelope[]>;
       listSessions(): Promise<WorkSession[]>;
       createSession(title?: string): Promise<WorkSession>;
+      getSessionAgentInsight(sessionId: string, eventSourcePath?: string): Promise<SessionAgentInsight>;
       updateSession(input: {
         id: string;
         title?: string;

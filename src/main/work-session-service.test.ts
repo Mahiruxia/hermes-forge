@@ -35,10 +35,13 @@ describe("WorkSessionService.delete", () => {
     const sessionLogFile = path.join(appPaths.workspaceSessionDir(workspaceId), `${session.id}.jsonl`);
     const snapshotId = `snapshot-demo-${session.id.slice(0, 8)}`;
     const snapshotDir = path.join(appPaths.workspaceSnapshotDir(workspaceId), snapshotId);
+    const insightFile = appPaths.sessionAgentInsightPath(session.id);
     await fs.mkdir(path.dirname(sessionLogFile), { recursive: true });
     await fs.writeFile(sessionLogFile, "log", "utf8");
     await fs.mkdir(snapshotDir, { recursive: true });
     await fs.writeFile(path.join(appPaths.workspaceSnapshotDir(workspaceId), "latest.txt"), snapshotId, "utf8");
+    await fs.mkdir(path.dirname(insightFile), { recursive: true });
+    await fs.writeFile(insightFile, JSON.stringify({ sessionId: session.id }), "utf8");
 
     await service.delete(session.id);
 
@@ -46,6 +49,30 @@ describe("WorkSessionService.delete", () => {
     await expect(fs.stat(sessionLogFile)).rejects.toBeTruthy();
     await expect(fs.stat(snapshotDir)).rejects.toBeTruthy();
     await expect(fs.stat(path.join(appPaths.workspaceSnapshotDir(workspaceId), "latest.txt"))).rejects.toBeTruthy();
+    await expect(fs.stat(insightFile)).rejects.toBeTruthy();
+  });
+
+  it("removes pure chat workspace artifacts keyed by the session files path", async () => {
+    const { appPaths, service } = await createHarness();
+    const session = await service.create("纯聊天");
+    const workspaceId = appPaths.workspaceId(session.sessionFilesPath);
+    const sessionLogFile = path.join(appPaths.workspaceSessionDir(workspaceId), `${session.id}.jsonl`);
+    const snapshotId = `snapshot-demo-${session.id.slice(0, 8)}`;
+    const snapshotDir = path.join(appPaths.workspaceSnapshotDir(workspaceId), snapshotId);
+    const insightFile = appPaths.sessionAgentInsightPath(session.id);
+    await fs.mkdir(path.dirname(sessionLogFile), { recursive: true });
+    await fs.writeFile(sessionLogFile, "log", "utf8");
+    await fs.mkdir(snapshotDir, { recursive: true });
+    await fs.writeFile(path.join(appPaths.workspaceSnapshotDir(workspaceId), "latest.txt"), snapshotId, "utf8");
+    await fs.mkdir(path.dirname(insightFile), { recursive: true });
+    await fs.writeFile(insightFile, JSON.stringify({ sessionId: session.id }), "utf8");
+
+    await service.delete(session.id);
+
+    await expect(fs.stat(sessionLogFile)).rejects.toBeTruthy();
+    await expect(fs.stat(snapshotDir)).rejects.toBeTruthy();
+    await expect(fs.stat(path.join(appPaths.workspaceSnapshotDir(workspaceId), "latest.txt"))).rejects.toBeTruthy();
+    await expect(fs.stat(insightFile)).rejects.toBeTruthy();
   });
 });
 
@@ -75,5 +102,35 @@ describe("WorkSessionService.importFromFile", () => {
 
     expect(session.title).toContain("目录会话");
     expect(session.lastMessagePreview).toBe("hello");
+  });
+});
+
+describe("WorkSessionService.clearSessionFiles", () => {
+  it("clears workspace artifacts and insight sidecar for the session", async () => {
+    const { root, appPaths, service } = await createHarness();
+    const workspacePath = path.join(root, "clear-workspace");
+    await fs.mkdir(workspacePath, { recursive: true });
+
+    const session = await service.create("待清空");
+    await service.update(session.id, { workspacePath, workspaceStatus: "ready" });
+
+    const workspaceId = appPaths.workspaceId(workspacePath);
+    const sessionLogFile = path.join(appPaths.workspaceSessionDir(workspaceId), `${session.id}.jsonl`);
+    const snapshotId = `snapshot-demo-${session.id.slice(0, 8)}`;
+    const snapshotDir = path.join(appPaths.workspaceSnapshotDir(workspaceId), snapshotId);
+    const insightFile = appPaths.sessionAgentInsightPath(session.id);
+    await fs.mkdir(path.dirname(sessionLogFile), { recursive: true });
+    await fs.writeFile(sessionLogFile, "log", "utf8");
+    await fs.mkdir(snapshotDir, { recursive: true });
+    await fs.writeFile(path.join(appPaths.workspaceSnapshotDir(workspaceId), "latest.txt"), snapshotId, "utf8");
+    await fs.mkdir(path.dirname(insightFile), { recursive: true });
+    await fs.writeFile(insightFile, JSON.stringify({ sessionId: session.id }), "utf8");
+
+    const result = await service.clearSessionFiles(session.id);
+
+    expect(result.ok).toBe(true);
+    await expect(fs.stat(sessionLogFile)).rejects.toBeTruthy();
+    await expect(fs.stat(snapshotDir)).rejects.toBeTruthy();
+    await expect(fs.stat(insightFile)).rejects.toBeTruthy();
   });
 });

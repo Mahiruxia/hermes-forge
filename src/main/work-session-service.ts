@@ -134,6 +134,7 @@ export class WorkSessionService {
   async delete(id: string): Promise<{ ok: boolean; message: string; deletedId: string }> {
     const current = await this.readOrThrow(id);
     await this.cleanupWorkspaceArtifacts(current);
+    await fs.rm(this.appPaths.sessionAgentInsightPath(id), { force: true }).catch(() => undefined);
     await fs.rm(this.appPaths.sessionDir(id), { recursive: true, force: true });
     return {
       ok: true,
@@ -146,6 +147,8 @@ export class WorkSessionService {
     const current = await this.readOrThrow(id);
     const at = new Date().toISOString();
     const sessionFilesPath = this.appPaths.sessionFilesDir(id);
+    await this.cleanupWorkspaceArtifacts(current);
+    await fs.rm(this.appPaths.sessionAgentInsightPath(id), { force: true }).catch(() => undefined);
     await fs.rm(sessionFilesPath, { recursive: true, force: true });
     await this.ensureSessionLayout(id);
     const next: WorkSession = {
@@ -239,28 +242,33 @@ export class WorkSessionService {
   }
 
   private async cleanupWorkspaceArtifacts(session: WorkSession) {
-    const workspacePath = session.workspacePath?.trim();
-    if (!workspacePath) {
+    const artifactRoots = [session.workspacePath, session.sessionFilesPath]
+      .map((target) => target?.trim())
+      .filter((target): target is string => Boolean(target));
+    if (artifactRoots.length === 0) {
       return;
     }
-    const workspaceId = this.appPaths.workspaceId(workspacePath);
-    const logFile = path.join(this.appPaths.workspaceSessionDir(workspaceId), `${session.id}.jsonl`);
-    await fs.rm(logFile, { force: true }).catch(() => undefined);
 
-    const snapshotRoot = this.appPaths.workspaceSnapshotDir(workspaceId);
-    const snapshotEntries = await fs.readdir(snapshotRoot, { withFileTypes: true }).catch(() => []);
-    const sessionMarker = session.id.slice(0, 8);
-    await Promise.all(
-      snapshotEntries
-        .filter((entry) => entry.isDirectory())
-        .filter((entry) => entry.name.includes(sessionMarker))
-        .map((entry) => fs.rm(path.join(snapshotRoot, entry.name), { recursive: true, force: true }).catch(() => undefined)),
-    );
+    for (const artifactRoot of [...new Set(artifactRoots)]) {
+      const workspaceId = this.appPaths.workspaceId(artifactRoot);
+      const logFile = path.join(this.appPaths.workspaceSessionDir(workspaceId), `${session.id}.jsonl`);
+      await fs.rm(logFile, { force: true }).catch(() => undefined);
 
-    const latestPath = path.join(snapshotRoot, "latest.txt");
-    const latestSnapshotId = (await fs.readFile(latestPath, "utf8").catch(() => "")).trim();
-    if (latestSnapshotId && latestSnapshotId.includes(sessionMarker)) {
-      await fs.rm(latestPath, { force: true }).catch(() => undefined);
+      const snapshotRoot = this.appPaths.workspaceSnapshotDir(workspaceId);
+      const snapshotEntries = await fs.readdir(snapshotRoot, { withFileTypes: true }).catch(() => []);
+      const sessionMarker = session.id.slice(0, 8);
+      await Promise.all(
+        snapshotEntries
+          .filter((entry) => entry.isDirectory())
+          .filter((entry) => entry.name.includes(sessionMarker))
+          .map((entry) => fs.rm(path.join(snapshotRoot, entry.name), { recursive: true, force: true }).catch(() => undefined)),
+      );
+
+      const latestPath = path.join(snapshotRoot, "latest.txt");
+      const latestSnapshotId = (await fs.readFile(latestPath, "utf8").catch(() => "")).trim();
+      if (latestSnapshotId && latestSnapshotId.includes(sessionMarker)) {
+        await fs.rm(latestPath, { force: true }).catch(() => undefined);
+      }
     }
   }
 }

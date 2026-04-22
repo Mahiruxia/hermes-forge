@@ -5,6 +5,7 @@ import path from "node:path";
 import type { AppPaths } from "../../main/app-paths";
 import { syncHermesWindowsMcpConfig } from "../../main/hermes-native-mcp-config";
 import { MemoryBudgeter } from "../../memory/memory-budgeter";
+import { HermesHeadlessWorker } from "./hermes-headless-worker";
 import { runCommand, streamCommand } from "../../process/command-runner";
 import type { EngineAdapter, HermesToolLoopMessage } from "../engine-adapter";
 import type {
@@ -38,6 +39,7 @@ export class HermesCliAdapter implements EngineAdapter {
   label = "Hermes";
   capabilities = ["file_memory", "private_skills", "context_bridge", "cli"] as const;
   private windowsPython?: Promise<{ command: string; argsPrefix: string[]; lastError?: string }>;
+  private windowsHeadlessWorker?: HermesHeadlessWorker;
 
   constructor(
     private readonly appPaths: AppPaths,
@@ -92,7 +94,18 @@ export class HermesCliAdapter implements EngineAdapter {
     yield { type: "memory_access", engineId: this.id, action: "read", source: this.memoryDir(), at: now() };
 
     const prompt = await this.buildPrompt(request, runtime);
-    const invocation = await this.conversationInvocation(rootPath, runtime, prompt, request.workspacePath, request, "zhenghebao-client");
+    if (runtime.mode !== "wsl") {
+      const finalReply = await this.runViaWindowsWorker(rootPath, runtime, prompt, request, signal);
+      yield {
+        type: "result",
+        success: true,
+        title: "Hermes 回复",
+        detail: finalReply || "Hermes 已运行，但没有返回可显示的模型正文。请在右侧“查看过程”检查模型配置、Hermes 日志，或导出诊断报告。",
+        at: now(),
+      };
+      return;
+    }
+    const invocation = await this.headlessInvocation(rootPath, runtime, prompt, request, "zhenghebao-client");
     const launch = await this.launchSpec(runtime, rootPath, invocation.args, request.workspacePath, request);
 
     let exitCode: number | null = null;
@@ -145,6 +158,12 @@ export class HermesCliAdapter implements EngineAdapter {
     const runtime = await this.hermesRuntime();
     const rootPath = this.normalizeRootPath(await this.rootPath(), runtime);
     const prompt = this.buildToolLoopPrompt(request, runtime, transcript);
+    if (runtime.mode !== "wsl") {
+      return await this.runViaWindowsWorker(rootPath, runtime, {
+        systemPrompt: "你是 Hermes Windows Agent Planner。下面用户消息中包含工具规划协议，请严格按协议输出。",
+        userPrompt: prompt,
+      }, request, signal, "zhenghebao-client-tool-loop");
+    }
     const invocation = await this.conversationInvocation(rootPath, runtime, {
       systemPrompt: "你是 Hermes Windows Agent Planner。下面用户消息中包含工具规划协议，请严格按协议输出。",
       userPrompt: prompt,
@@ -175,6 +194,8 @@ export class HermesCliAdapter implements EngineAdapter {
 
 
   async stop(_sessionId: string) {
+    await this.windowsHeadlessWorker?.stop();
+    this.windowsHeadlessWorker = undefined;
     return;
   }
 
@@ -240,6 +261,7 @@ export class HermesCliAdapter implements EngineAdapter {
     const firstImage = request.attachments?.find((attachment) => attachment.kind === "image");
     const permissions = this.permissionInstructions(request);
     const memoryContent = await this.readMemoryContent(request);
+    const conversationHistory = this.conversationHistoryPrompt(request);
     const systemPrompt = [
       "你正在作为小白启动台里的 Hermes 本地轻量助手工作。",
       "请直接用自然、简洁的中文回答用户，不要输出 session_id、token、调试日志或 CLI 状态。",
@@ -258,6 +280,7 @@ export class HermesCliAdapter implements EngineAdapter {
       `用户已选文件：${selectedFiles}`,
       `用户上传附件：\n${attachments}`,
       firstImage ? `本轮第一张图片已通过 --image 传入 Hermes：${firstImage.path}` : "",
+      conversationHistory,
       memoryContent,
       bundle,
     ].filter(Boolean).join("\n");
@@ -292,6 +315,24 @@ export class HermesCliAdapter implements EngineAdapter {
       // 记忆文件读取失败不影响主流程
     }
     return "";
+  }
+
+  private conversationHistoryPrompt(request: EngineRunRequest): string {
+    const history = (request.conversationHistory ?? [])
+      .filter((item) => item.content.trim())
+      .slice(-24);
+    if (history.length === 0) {
+      return "";
+    }
+    const transcript = history.map((item, index) => {
+      const role = item.role === "user" ? "用户" : "Hermes";
+      return `${index + 1}. ${role}：${item.content.trim()}`;
+    }).join("\n\n");
+    return [
+      "\n当前工作台会话近期上下文：",
+      "下面是同一个左侧历史会话中的前几轮问答，请用它承接本轮，不要把它当成新的用户请求，也不要逐字复述。",
+      this.budgeter.summarizeToBudget(transcript, 9000),
+    ].join("\n");
   }
 
   private buildToolLoopPrompt(request: EngineRunRequest, runtime: HermesRuntimeConfig, transcript: HermesToolLoopMessage[]) {
@@ -331,7 +372,7 @@ export class HermesCliAdapter implements EngineAdapter {
     source: string,
   ): Promise<HermesInvocation> {
     if (runtime.mode !== "wsl") {
-      return this.headlessInvocation(rootPath, prompt, request, source);
+      return this.headlessInvocation(rootPath, runtime, prompt, request, source);
     }
 
     const combinedPrompt = this.combinePromptForCli(prompt);
@@ -357,24 +398,46 @@ export class HermesCliAdapter implements EngineAdapter {
     return { args };
   }
 
-  private async headlessInvocation(rootPath: string, prompt: HermesPromptPayload, request: EngineRunRequest | undefined, source: string): Promise<HermesInvocation> {
+  private async runViaWindowsWorker(
+    rootPath: string,
+    runtime: HermesRuntimeConfig,
+    prompt: HermesPromptPayload,
+    request: EngineRunRequest | undefined,
+    signal: AbortSignal,
+    source = "zhenghebao-client",
+  ) {
+    const worker = await this.ensureWindowsHeadlessWorker(rootPath, runtime, request);
+    return await worker.run({
+      rootPath,
+      query: prompt.userPrompt,
+      systemPrompt: prompt.systemPrompt,
+      imagePath: request?.attachments?.find((attachment) => attachment.kind === "image")?.path,
+      sessionId: this.hermesConversationId(request),
+      source,
+      maxTurns: source === "zhenghebao-client-tool-loop" ? 90 : 90,
+      env: sanitizeStringEnv(await this.hermesEnv(rootPath, runtime, request)),
+    }, signal);
+  }
+
+  private async headlessInvocation(rootPath: string, runtime: HermesRuntimeConfig, prompt: HermesPromptPayload, request: EngineRunRequest | undefined, source: string): Promise<HermesInvocation> {
     const promptPath = await this.writePromptFile(prompt.userPrompt);
     const systemPath = await this.writePromptFile(prompt.systemPrompt, "system");
+    const runnerPath = await this.headlessRunnerPath();
     const args = [
-      await this.headlessRunnerPath(),
+      runtime.mode === "wsl" ? toWslPath(runnerPath) : runnerPath,
       "--root-path",
       rootPath,
       "--query-file",
-      promptPath,
+      runtime.mode === "wsl" ? toWslPath(promptPath) : promptPath,
       "--system-file",
-      systemPath,
+      runtime.mode === "wsl" ? toWslPath(systemPath) : systemPath,
       "--source",
       source,
       ...(this.hermesConversationId(request) ? ["--session-id", this.hermesConversationId(request)!] : []),
     ];
     const firstImage = request?.attachments?.find((attachment) => attachment.kind === "image");
     if (firstImage) {
-      args.push("--image-path", firstImage.path);
+      args.push("--image-path", runtime.mode === "wsl" ? toWslPath(firstImage.path) : firstImage.path);
     }
     return {
       args,
@@ -417,6 +480,15 @@ export class HermesCliAdapter implements EngineAdapter {
       ? path.join(processWithResources.resourcesPath, "hermes-headless-runner.py")
       : undefined;
     const devPath = path.resolve(process.cwd(), "resources", "hermes-headless-runner.py");
+    return packagedPath && await this.exists(packagedPath) ? packagedPath : devPath;
+  }
+
+  private async headlessWorkerPath() {
+    const processWithResources = process as NodeJS.Process & { resourcesPath?: string };
+    const packagedPath = processWithResources.resourcesPath
+      ? path.join(processWithResources.resourcesPath, "hermes-headless-worker.py")
+      : undefined;
+    const devPath = path.resolve(process.cwd(), "resources", "hermes-headless-worker.py");
     return packagedPath && await this.exists(packagedPath) ? packagedPath : devPath;
   }
 
@@ -704,10 +776,7 @@ export class HermesCliAdapter implements EngineAdapter {
         args: [...python.argsPrefix, ...pythonArgs],
         cwd,
         env,
-        // Electron GUI processes have no attached console on Windows.
-        // A detached child gets its own hidden console session, which keeps
-        // prompt_toolkit from crashing while still letting us capture pipes.
-        detached: true,
+        detached: false,
       };
     }
     const linuxCwd = toWslPath(cwd);
@@ -744,6 +813,22 @@ export class HermesCliAdapter implements EngineAdapter {
   private async windowsPythonSpec(rootPath: string, cliPath: string, env: NodeJS.ProcessEnv) {
     this.windowsPython ??= this.detectWindowsPython(rootPath, cliPath, env);
     return await this.windowsPython;
+  }
+
+  private async ensureWindowsHeadlessWorker(rootPath: string, runtime: HermesRuntimeConfig, request?: EngineRunRequest) {
+    if (!this.windowsHeadlessWorker) {
+      this.windowsHeadlessWorker = new HermesHeadlessWorker(async () => {
+        const env = await this.hermesEnv(rootPath, runtime, request);
+        const python = await this.windowsPythonSpec(rootPath, this.hermesCliPath(rootPath, runtime), env);
+        return {
+          command: python.command,
+          args: [...python.argsPrefix, await this.headlessWorkerPath()],
+          cwd: request?.workspacePath ?? rootPath,
+          env,
+        };
+      });
+    }
+    return this.windowsHeadlessWorker;
   }
 
   private async detectWindowsPython(rootPath: string, cliPath: string, env: NodeJS.ProcessEnv) {
@@ -846,4 +931,14 @@ export function toWslPath(inputPath: string) {
     return `/mnt/${drive}/${rest}`;
   }
   return normalized.replace(/\\/g, "/");
+}
+
+function sanitizeStringEnv(env: NodeJS.ProcessEnv) {
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string") {
+      next[key] = value;
+    }
+  }
+  return next;
 }

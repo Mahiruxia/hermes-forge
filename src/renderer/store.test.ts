@@ -11,6 +11,16 @@ describe("renderer store task projections", () => {
     reset();
   });
 
+  it("keeps the session sidebar open by default and toggles it", () => {
+    expect(useAppStore.getState().sessionSidebarOpen).toBe(true);
+
+    useAppStore.getState().setSessionSidebarOpen(false);
+    expect(useAppStore.getState().sessionSidebarOpen).toBe(false);
+
+    useAppStore.getState().setSessionSidebarOpen(true);
+    expect(useAppStore.getState().sessionSidebarOpen).toBe(true);
+  });
+
   it("projects stdout and final result into the same task run", () => {
     useAppStore.getState().beginTaskRun({
       workSessionId: "session-1",
@@ -359,5 +369,100 @@ describe("renderer store task projections", () => {
     expect(state.taskRunProjectionsById["task-stream"]?.assistantMessage.content).toBe("第一段第二段");
     expect(state.taskRunProjectionsById["task-stream"]?.assistantMessage.status).toBe("complete");
     expect(state.taskRunProjectionsById["task-stream"]?.assistantMessage.parts).toEqual([firstEvent, finalEvent]);
+  });
+
+  it("keeps a long practical session stable across many task rounds", () => {
+    const sessionId = "session-long";
+    const events: TaskEventEnvelope[] = [];
+
+    for (let index = 0; index < 80; index += 1) {
+      const taskRunId = `task-${index.toString().padStart(2, "0")}`;
+      useAppStore.getState().beginTaskRun({
+        workSessionId: sessionId,
+        taskRunId,
+        userInput: `第 ${index + 1} 轮实战任务`,
+        createdAt: `2026-04-22T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      });
+      const stdoutEvent: TaskEventEnvelope = {
+        taskRunId,
+        workSessionId: sessionId,
+        sessionId: taskRunId,
+        engineId: "hermes",
+        event: {
+          type: "stdout",
+          line: `第 ${index + 1} 轮正在处理`,
+          at: `2026-04-22T10:${String(index % 60).padStart(2, "0")}:01.000Z`,
+        },
+      };
+      const resultEvent: TaskEventEnvelope = {
+        taskRunId,
+        workSessionId: sessionId,
+        sessionId: taskRunId,
+        engineId: "hermes",
+        event: {
+          type: "result",
+          success: true,
+          title: "Hermes 回复",
+          detail: `第 ${index + 1} 轮完成`,
+          at: `2026-04-22T10:${String(index % 60).padStart(2, "0")}:02.000Z`,
+        },
+      };
+      useAppStore.getState().applyTaskEvent(stdoutEvent);
+      useAppStore.getState().applyTaskEvent(resultEvent);
+      events.push(stdoutEvent, resultEvent);
+    }
+
+    const state = useAppStore.getState();
+    const order = state.taskRunOrderBySession[sessionId];
+    expect(order).toHaveLength(80);
+    expect(state.events).toHaveLength(160);
+    expect(order.every((taskRunId) => state.taskRunProjectionsById[taskRunId]?.status === "complete")).toBe(true);
+    expect(state.taskRunProjectionsById["task-79"]?.assistantMessage.content).toBe("第 80 轮完成");
+
+    reset();
+    useAppStore.getState().rebuildSessionProjections(sessionId, events);
+    const restored = useAppStore.getState();
+    expect(restored.taskRunOrderBySession[sessionId]).toHaveLength(80);
+    expect(restored.taskRunProjectionsById["task-00"]?.assistantMessage.content).toBe("第 1 轮完成");
+    expect(restored.taskRunProjectionsById["task-79"]?.status).toBe("complete");
+  });
+
+  it("does not mix another session into a long-session rebuild", () => {
+    const ownEvents = Array.from({ length: 12 }, (_, index): TaskEventEnvelope => ({
+      taskRunId: `own-${index}`,
+      workSessionId: "session-own",
+      sessionId: `own-${index}`,
+      engineId: "hermes",
+      event: {
+        type: "result",
+        success: true,
+        title: "Hermes 回复",
+        detail: `own ${index}`,
+        at: `2026-04-22T11:00:${String(index).padStart(2, "0")}.000Z`,
+      },
+    }));
+    const otherEvents = Array.from({ length: 12 }, (_, index): TaskEventEnvelope => ({
+      taskRunId: `other-${index}`,
+      workSessionId: "session-other",
+      sessionId: `other-${index}`,
+      engineId: "hermes",
+      event: {
+        type: "result",
+        success: true,
+        title: "Hermes 回复",
+        detail: `other ${index}`,
+        at: `2026-04-22T11:01:${String(index).padStart(2, "0")}.000Z`,
+      },
+    }));
+
+    useAppStore.getState().rebuildSessionProjections(
+      "session-own",
+      [...ownEvents, ...otherEvents].filter((event) => event.workSessionId === "session-own"),
+    );
+
+    const state = useAppStore.getState();
+    expect(state.taskRunOrderBySession["session-own"]).toHaveLength(12);
+    expect(state.taskRunProjectionsById["own-11"]?.assistantMessage.content).toBe("own 11");
+    expect(state.taskRunProjectionsById["other-0"]).toBeUndefined();
   });
 });

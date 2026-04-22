@@ -25,7 +25,7 @@ describe("DashboardView", () => {
       workspacePath: "D:/workspace/demo",
       runtimeConfig: {
         defaultModelProfileId: "custom-local-endpoint",
-        modelProfiles: [],
+        modelProfiles: [{ id: "custom-local-endpoint", provider: "custom", model: "qwen", baseUrl: "http://127.0.0.1:1234/v1" }],
         updateSources: {},
       },
       webUiOverview: {
@@ -41,8 +41,8 @@ describe("DashboardView", () => {
     });
   });
 
-  function renderView() {
-    render(
+  function renderView(overrides?: { onOpenFix?: (target: "model" | "hermes" | "health" | "diagnostics") => void }) {
+    return render(
       <DashboardView
         onPickWorkspace={vi.fn()}
         onSelectWorkspace={vi.fn()}
@@ -57,9 +57,69 @@ describe("DashboardView", () => {
         onRestoreSnapshot={vi.fn()}
         onRefreshFileTree={vi.fn()}
         onExportDiagnostics={vi.fn()}
+        onOpenFix={overrides?.onOpenFix}
       />,
     );
   }
+
+  it("shows the session sidebar by default and toggles it manually", () => {
+    renderView();
+
+    const shell = screen.getByTestId("session-sidebar-shell");
+    const inputShell = screen.getByTestId("chat-input-shell");
+    expect(shell).toHaveClass("w-[228px]");
+    expect(shell).toHaveClass("xl:w-[240px]");
+    expect(shell).toHaveClass("opacity-100");
+    expect(inputShell).toHaveClass("max-w-[1120px]");
+    expect(inputShell).toHaveClass("2xl:max-w-[1240px]");
+    expect(screen.getAllByText("测试会话").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "隐藏历史会话栏" }));
+
+    expect(shell).toHaveClass("w-0");
+    expect(shell).toHaveClass("opacity-0");
+    expect(shell).toHaveClass("-translate-x-2");
+    expect(shell).toHaveClass("pointer-events-none");
+    const restoreButton = screen.getByRole("button", { name: "显示历史会话栏" });
+    expect(restoreButton).toBeInTheDocument();
+    expect(restoreButton).toHaveClass("top-3");
+    expect(restoreButton).toHaveClass("h-9");
+    expect(restoreButton).toHaveClass("rounded-xl");
+
+    fireEvent.click(restoreButton);
+
+    expect(shell).toHaveClass("w-[228px]");
+    expect(shell).toHaveClass("translate-x-0");
+    expect(shell).toHaveClass("opacity-100");
+    expect(screen.queryByRole("button", { name: "显示历史会话栏" })).toBeNull();
+  });
+
+  it("adapts the right control panel as a collapsible layout column", () => {
+    const onOpenFix = vi.fn();
+    renderView({ onOpenFix });
+
+    const shell = screen.getByTestId("agent-panel-shell");
+    expect(shell).toHaveClass("w-0");
+    expect(shell).toHaveClass("opacity-0");
+    expect(shell).toHaveClass("pointer-events-none");
+    expect(screen.queryByRole("button", { name: "显示右侧控制面板" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent 面板" }));
+
+    expect(shell).toHaveClass("w-[360px]");
+    expect(shell).toHaveClass("translate-x-0");
+    expect(shell).toHaveClass("opacity-100");
+    expect(screen.queryByRole("button", { name: "显示右侧控制面板" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /更换模型/ }));
+    expect(onOpenFix).toHaveBeenCalledWith("model");
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭 Agent 面板" }));
+
+    expect(shell).toHaveClass("w-0");
+    expect(shell).toHaveClass("translate-x-2");
+    expect(shell).toHaveClass("opacity-0");
+  });
 
   it("renders clean chat shell with management and delete session actions", () => {
     useAppStore.setState({
@@ -101,26 +161,50 @@ describe("DashboardView", () => {
 
     renderView();
 
-    expect(screen.getByRole("button", { name: "配置中心" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "设置中心" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "删除" }).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Hermes").length).toBeGreaterThan(0);
     expect(screen.getAllByText("我可以帮你分析项目。").length).toBeGreaterThan(0);
+    const agentShell = screen.getByTestId("agent-panel-shell");
+    const agentDrawer = document.querySelector('aside[aria-label="Agent 面板"]');
+    expect(agentDrawer).not.toBeNull();
+    expect(agentShell).toHaveClass("w-0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent 面板" }));
+
+    expect(agentShell).toHaveClass("w-[360px]");
+
+    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
+
+    expect(useAppStore.getState().agentPanelOpen).toBe(false);
+    expect(useAppStore.getState().inspectorOpen).toBe(true);
+    expect(agentShell).toHaveClass("w-0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent 面板" }));
+
+    expect(useAppStore.getState().agentPanelOpen).toBe(true);
+    expect(useAppStore.getState().inspectorOpen).toBe(false);
+    expect(agentShell).toHaveClass("w-[360px]");
   });
 
   it("keeps secondary header actions folded until the menu is opened", () => {
     renderView();
-    const header = within(screen.getByRole("banner"));
+    const banner = screen.getByRole("banner");
+    const header = within(banner);
 
     expect(header.getByText("测试会话")).toBeTruthy();
+    expect(banner).toHaveClass("z-40");
     expect(header.getByText("Hermes Forge")).toBeTruthy();
-    expect(header.getByRole("button", { name: "文件树" })).toBeTruthy();
-    expect(header.getByRole("button", { name: "检查器" })).toBeTruthy();
+    expect(header.getByRole("button", { name: "搜索" })).toBeTruthy();
+    expect(header.getByRole("button", { name: "Agent 面板" })).toBeTruthy();
     expect(header.queryByRole("button", { name: "清空会话" })).toBeNull();
 
     fireEvent.click(header.getByRole("button", { name: "更多选项" }));
 
-    expect(header.getByRole("button", { name: "帮助" })).toBeTruthy();
+    expect(header.getByRole("button", { name: "官网" })).toBeTruthy();
     expect(header.getByRole("button", { name: "打开会话文件夹" })).toBeTruthy();
+    expect(header.queryByRole("button", { name: "打开文件树" })).toBeNull();
+    expect(header.getByRole("button", { name: "打开搜索与检查器" })).toBeTruthy();
     expect(header.getByRole("button", { name: "清空会话" })).toBeTruthy();
   });
 
@@ -217,6 +301,98 @@ describe("DashboardView", () => {
     renderView();
 
     expect(screen.getByRole("button", { name: "发送" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送" })).toHaveClass("bg-[var(--hermes-primary)]");
+    expect(screen.getByRole("button", { name: "qwen" })).toHaveClass("bg-[var(--hermes-primary-soft)]");
+  });
+
+  it("does not block the next send when a stale setup blocker conflicts with healthy Hermes status", () => {
+    useAppStore.setState({
+      userInput: "请问我刚才问了什么",
+      hermesStatus: {
+        engine: {
+          engineId: "hermes",
+          label: "Hermes",
+          available: true,
+          mode: "cli",
+          message: "Hermes CLI 已接入真实本地安装。",
+        },
+        memory: {
+          engineId: "hermes",
+          workspaceId: "workspace",
+          usedCharacters: 0,
+          maxCharacters: 28000,
+          entries: 0,
+          message: "memory ok",
+        },
+        update: {
+          engineId: "hermes",
+          updateAvailable: false,
+          sourceConfigured: true,
+          message: "update ok",
+        },
+      },
+      setupSummary: {
+        ready: false,
+        blocking: [
+          {
+            id: "hermes",
+            label: "Hermes",
+            status: "missing",
+            message: "后台健康检查的旧 Hermes 阻塞项。",
+            fixAction: "install_hermes",
+            blocking: true,
+          },
+        ],
+        checks: [],
+      },
+    });
+
+    renderView();
+
+    expect(screen.getByRole("button", { name: "发送" })).not.toBeDisabled();
+  });
+
+  it("shows a model setup reason and opens the fix target", () => {
+    const onOpenFix = vi.fn();
+    useAppStore.setState({
+      userInput: "帮我检查项目",
+      runtimeConfig: {
+        defaultModelProfileId: undefined,
+        modelProfiles: [],
+        updateSources: {},
+      },
+    });
+
+    render(
+      <DashboardView
+        onPickWorkspace={vi.fn()}
+        onSelectWorkspace={vi.fn()}
+        onCreateSession={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenSessionFolder={vi.fn()}
+        onClearSession={vi.fn()}
+        onStartTask={vi.fn()}
+        onCancelTask={vi.fn()}
+        onRestoreSnapshot={vi.fn()}
+        onRefreshFileTree={vi.fn()}
+        onExportDiagnostics={vi.fn()}
+        onOpenFix={onOpenFix}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /未配置可用模型/ }));
+    expect(onOpenFix).toHaveBeenCalledWith("model");
+  });
+
+  it("fills the input from an empty chat suggestion", () => {
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: /分析这个项目结构/ }));
+
+    expect(screen.getByLabelText("给 Hermes 发送消息")).toHaveValue("分析这个项目结构，并告诉我入口文件和关键模块。");
   });
 
   it("uses Enter to submit Hermes input", () => {

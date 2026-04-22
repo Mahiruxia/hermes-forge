@@ -9,6 +9,8 @@ export interface UiState {
   inspectorOpen: boolean;
   controlCenterOpen: boolean;
   workspaceDrawerOpen: boolean;
+  agentPanelOpen: boolean;
+  sessionSidebarOpen: boolean;
   activePanel: "chat" | "tasks" | "skills" | "memory" | "connectors" | "files" | "profiles" | "settings" | "spaces" | "projects";
   activeProfile?: string;
   selectedProjectId?: string;
@@ -26,6 +28,8 @@ export interface UiActions {
   setInspectorOpen(open: boolean): void;
   setControlCenterOpen(open: boolean): void;
   setWorkspaceDrawerOpen(open: boolean): void;
+  setAgentPanelOpen(open: boolean): void;
+  setSessionSidebarOpen(open: boolean): void;
   setActivePanel(panel: UiState["activePanel"]): void;
   setSelectedProject(projectId?: string): void;
   setSidebarGrouping(grouping: UiState["sidebarGrouping"]): void;
@@ -45,6 +49,8 @@ export const uiSlice = combine<UiState, UiActions>(
     inspectorOpen: false,
     controlCenterOpen: false,
     workspaceDrawerOpen: false,
+    agentPanelOpen: false,
+    sessionSidebarOpen: true,
     activePanel: "chat",
     activeProfile: undefined,
     selectedProjectId: undefined,
@@ -61,6 +67,8 @@ export const uiSlice = combine<UiState, UiActions>(
     setInspectorOpen: (open: boolean) => set({ inspectorOpen: open }),
     setControlCenterOpen: (open: boolean) => set({ controlCenterOpen: open }),
     setWorkspaceDrawerOpen: (open: boolean) => set({ workspaceDrawerOpen: open }),
+    setAgentPanelOpen: (open: boolean) => set({ agentPanelOpen: open }),
+    setSessionSidebarOpen: (open: boolean) => set({ sessionSidebarOpen: open }),
     setActivePanel: (panel: UiState["activePanel"]) => set({ activePanel: panel }),
     setSelectedProject: (projectId?: string) => set({ selectedProjectId: projectId }),
     setSidebarGrouping: (grouping: UiState["sidebarGrouping"]) => set({ sidebarGrouping: grouping }),

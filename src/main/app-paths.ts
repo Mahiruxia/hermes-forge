@@ -53,6 +53,10 @@ export class AppPaths {
     return path.join(this.sessionDir(sessionId), "metadata.json");
   }
 
+  sessionAgentInsightPath(sessionId: string) {
+    return path.join(this.sessionDir(sessionId), "agent-panel-insight.json");
+  }
+
   workspaceDir(workspaceId: string) {
     return path.join(this.userDataPath, "workspaces", workspaceId);
   }

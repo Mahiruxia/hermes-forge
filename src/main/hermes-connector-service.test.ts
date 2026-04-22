@@ -48,6 +48,20 @@ describe("HermesConnectorService helpers", () => {
     expect(testOnly.removeManagedBlock(original)).not.toContain("TELEGRAM_BOT_TOKEN=remove");
   });
 
+  it("redacts sensitive env values in backups", () => {
+    const backup = testOnly.sanitizeEnvBackup([
+      "OPENAI_API_KEY=sk-secret",
+      "WEIXIN_TOKEN=wx-secret",
+      "NORMAL_VALUE=keep",
+    ].join("\n"));
+
+    expect(backup).toContain("OPENAI_API_KEY=<redacted>");
+    expect(backup).toContain("WEIXIN_TOKEN=<redacted>");
+    expect(backup).toContain("NORMAL_VALUE=keep");
+    expect(backup).not.toContain("sk-secret");
+    expect(backup).not.toContain("wx-secret");
+  });
+
   it("parses configured Python commands with launcher arguments", () => {
     expect(testOnly.parseCommandLine("py -3")).toEqual({ command: "py", args: ["-3"], label: "py -3" });
     expect(testOnly.parseCommandLine('"D:\\Python311\\python.exe"')).toEqual({

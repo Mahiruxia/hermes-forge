@@ -1,8 +1,10 @@
-import { AtSign, FileText, Mic, MicOff, Paperclip, Send, Square, X } from "lucide-react";
+import { Command, Mic, MicOff, Paperclip, Plus, Send, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { useAppStore } from "../store";
 import { cn } from "./DashboardPrimitives";
+
+type FixTarget = "model" | "hermes" | "health" | "diagnostics";
 
 export function ChatInput(props: {
   onStartTask: () => void;
@@ -11,23 +13,23 @@ export function ChatInput(props: {
   onCreateSession?: () => void;
   onClearSession?: () => void;
   onRestoreSnapshot: () => void;
+  onOpenFix?: (target: FixTarget) => void;
   canStart: boolean;
+  sendBlockReason?: string;
+  sendBlockTarget?: FixTarget;
   latestSnapshotAvailable: boolean;
   locked: boolean;
 }) {
   const store = useAppStore();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const submittingRef = useRef(false);
+  const plusMenuRef = useRef<HTMLDivElement | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
   const [isListening, setIsListening] = useState(false);
-  const [listenError, setListenError] = useState<string | undefined>();
-  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [isDraggingAttachment, setIsDraggingAttachment] = useState(false);
   const [isImportingAttachment, setIsImportingAttachment] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const selectedFilesLabel = `${store.selectedFiles.length} files`;
-  const attachmentsLabel = `${store.attachments.length} attachments`;
-  const lockLabel = props.locked ? "工作区占用中" : "文件锁空闲";
   const permissions = store.runtimeConfig?.enginePermissions?.hermes;
   const permissionsLabel = permissions
     ? `读${permissions.workspaceRead === false ? "关" : "开"} 写${permissions.fileWrite === false ? "关" : "开"} 命令${permissions.commandRun === false ? "关" : "开"}`
@@ -35,20 +37,17 @@ export function ChatInput(props: {
   const currentModelProfile = store.runtimeConfig?.modelProfiles.find((profile) => profile.id === store.runtimeConfig?.defaultModelProfileId)
     ?? store.runtimeConfig?.modelProfiles[0];
   const currentModelLabel = currentModelProfile?.model || currentModelProfile?.name || currentModelProfile?.id || "未配置模型";
+  const statusTone = props.sendBlockTarget ? "action" : props.sendBlockReason ? "blocked" : "ready";
+  const statusText = props.sendBlockReason
+    ? props.sendBlockReason
+    : `${currentModelLabel} · ${store.workspacePath ? shortPath(store.workspacePath) : "无工作区"} · ${permissionsLabel}${props.locked ? " · 工作区占用中" : ""}`;
 
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, Math.floor(window.innerHeight * 0.4))}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, Math.floor(window.innerHeight * 0.35))}px`;
   }, [store.userInput]);
-
-  useEffect(() => {
-    if (listenError) {
-      const timer = setTimeout(() => setListenError(undefined), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [listenError]);
 
   useEffect(() => {
     return () => {
@@ -60,20 +59,15 @@ export function ChatInput(props: {
   }, []);
 
   useEffect(() => {
+    if (!plusMenuOpen) return undefined;
     function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node;
-      const profileButton = document.querySelector('[title="Profile"]');
-      if (profileButton && !profileButton.contains(target)) {
-        setProfileMenuOpen(false);
+      if (plusMenuRef.current && !plusMenuRef.current.contains(event.target as Node)) {
+        setPlusMenuOpen(false);
       }
     }
-    if (profileMenuOpen) {
-      document.addEventListener("click", handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener("click", handleClickOutside);
-    };
-  }, [profileMenuOpen]);
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [plusMenuOpen]);
 
   async function requestMicrophonePermission(): Promise<boolean> {
     try {
@@ -89,7 +83,7 @@ export function ChatInput(props: {
   function initRecognition() {
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionCtor) {
-      store.error("语音识别不可用", "您的浏览器不支持语音识别功能");
+      store.error("语音识别不可用", "当前环境不支持语音输入");
       return null;
     }
     const recognition = new SpeechRecognitionCtor();
@@ -119,28 +113,22 @@ export function ChatInput(props: {
 
     recognition.onstart = () => {
       setIsListening(true);
-      setListenError(undefined);
-      store.info("语音输入已启动", "正在监听您的语音...");
+      store.info("语音输入已启动", "正在监听你的语音");
     };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let transcript = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
         if (event.results[i].isFinal) {
           transcript += event.results[i][0].transcript;
         } else {
-          const currentInput = store.userInput;
-          const interimTranscript = event.results[i][0].transcript;
-          const lastSpaceIndex = currentInput.lastIndexOf(" ");
-          const baseText = lastSpaceIndex >= 0 ? currentInput.substring(0, lastSpaceIndex + 1) : "";
-          store.setUserInput(baseText + interimTranscript);
+          store.setUserInput(`${store.userInput.trimEnd()} ${event.results[i][0].transcript}`.trim());
           return;
         }
       }
       if (transcript) {
         const currentInput = store.userInput.trim();
-        const newInput = currentInput ? `${currentInput} ${transcript}` : transcript;
-        store.setUserInput(newInput);
+        store.setUserInput(currentInput ? `${currentInput} ${transcript}` : transcript);
       }
     };
 
@@ -148,9 +136,7 @@ export function ChatInput(props: {
       setIsListening(false);
       recognitionRef.current = null;
       if (event.error === "not-allowed") {
-        store.error("语音输入失败", "麦克风权限未授予，请在系统设置中允许");
-      } else if (event.error === "no-speech") {
-        store.warning("未检测到语音", "请确保麦克风正常工作并清晰说话");
+        store.error("语音输入失败", "麦克风权限未授予");
       } else if (event.error === "audio-capture") {
         store.error("麦克风不可用", "未检测到麦克风设备");
       } else {
@@ -188,6 +174,7 @@ export function ChatInput(props: {
     submittingRef.current = true;
     try {
       props.onStartTask();
+      setPlusMenuOpen(false);
     } finally {
       window.setTimeout(() => {
         submittingRef.current = false;
@@ -217,6 +204,7 @@ export function ChatInput(props: {
       return [];
     });
     if (attachments.length) store.addAttachments(attachments);
+    setPlusMenuOpen(false);
   }
 
   async function importDroppedAttachments(filePaths: string[]) {
@@ -330,15 +318,14 @@ export function ChatInput(props: {
     }
     if (name === "/model") {
       if (!arg) {
-        store.setControlCenterOpen(true);
-        store.setActivePanel("settings");
-        store.setLastWebUiError("模型设置入口已打开。");
+        props.onOpenFix?.("model");
+        store.info("模型设置入口已打开", "请在模型提供商里测试并保存默认模型。");
         store.setUserInput("");
         return;
       }
       const profiles = store.runtimeConfig?.modelProfiles ?? [];
       const matchedProfile = profiles.find(
-        (p) => p.id.toLowerCase() === arg.toLowerCase() || (p.name ?? p.id).toLowerCase() === arg.toLowerCase()
+        (profile) => profile.id.toLowerCase() === arg.toLowerCase() || (profile.name ?? profile.id).toLowerCase() === arg.toLowerCase(),
       );
       if (matchedProfile) {
         if (!store.runtimeConfig) {
@@ -354,14 +341,14 @@ export function ChatInput(props: {
           store.error("切换失败", "无法保存模型配置");
         });
       } else {
-        const availableModels = profiles.map((p) => p.name ?? p.id).join(", ");
+        const availableModels = profiles.map((profile) => profile.name ?? profile.id).join(", ");
         store.warning("模型不存在", `未找到模型 "${arg}"。可用模型：${availableModels || "无"}`);
       }
       store.setUserInput("");
       return;
     }
     if (name === "/compact") {
-      const sessionMessages = store.conversationMessages.filter((m) => m.sessionId === store.activeSessionId);
+      const sessionMessages = store.conversationMessages.filter((message) => message.sessionId === store.activeSessionId);
       if (sessionMessages.length <= 2) {
         store.info("无需压缩", "当前会话消息较少，无需压缩。");
         store.setUserInput("");
@@ -389,32 +376,22 @@ export function ChatInput(props: {
     void dispatchSlashCommand(name);
   }
 
+  function fillInput(prefix: string) {
+    const nextValue = store.userInput.trim().startsWith(prefix) ? store.userInput : `${prefix}${store.userInput}`.trimStart();
+    store.setUserInput(nextValue);
+    setPlusMenuOpen(false);
+    textareaRef.current?.focus();
+  }
+
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-5">
-      <div
-        className={cn(
-          "relative flex flex-col overflow-hidden rounded-2xl bg-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] ring-1 ring-slate-100/70",
-          isDraggingAttachment && "ring-2 ring-indigo-300",
-        )}
-        onDragEnter={handleAttachmentDragEnter}
-        onDragOver={handleAttachmentDragOver}
-        onDragLeave={handleAttachmentDragLeave}
-        onDrop={handleAttachmentDrop}
-      >
-        {isDraggingAttachment ? (
-          <div className="pointer-events-none absolute inset-0 z-40 grid place-items-center bg-indigo-50/85 backdrop-blur-[1px]">
-            <div className="rounded-2xl border border-dashed border-indigo-300 bg-white/90 px-5 py-3 text-center shadow-sm">
-              <p className="text-sm font-semibold text-indigo-700">{store.runningTaskRunId ? "当前任务运行中" : "松开即可添加附件"}</p>
-              <p className="mt-1 text-xs text-slate-500">{store.runningTaskRunId ? "请等 Hermes 完成后再上传文件" : "支持图片和常见文档，最多一次 12 个"}</p>
-            </div>
-          </div>
-        ) : null}
+    <div className="mx-auto w-full max-w-[1120px] px-4 pb-5 pt-4 2xl:max-w-[1240px]" data-testid="chat-input-shell">
+      <div className="relative">
         {commands.length ? (
-          <div className="absolute bottom-[calc(100%+8px)] left-0 z-20 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+          <div className="absolute bottom-[calc(100%+10px)] left-0 z-20 w-full overflow-hidden rounded-2xl border border-[var(--hermes-card-border)] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
             {commands.map((command, index) => (
               <button
                 key={command.name}
-                className={cn("flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-[12px]", index === commandIndex ? "bg-indigo-100/50 text-indigo-700" : "text-slate-600 hover:bg-slate-50")}
+                className={cn("flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-[12px]", index === commandIndex ? "bg-[var(--hermes-primary-soft)] text-[var(--hermes-primary)]" : "text-slate-600 hover:bg-[var(--hermes-primary-soft)]")}
                 onMouseEnter={() => setCommandIndex(index)}
                 onClick={() => applyCommand(command.name)}
                 type="button"
@@ -426,128 +403,155 @@ export function ChatInput(props: {
             ))}
           </div>
         ) : null}
-        <textarea
-          aria-label="给 Hermes 发送消息"
-          ref={textareaRef}
-          value={store.userInput}
-          onChange={(event) => store.setUserInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (commands.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-              event.preventDefault();
-              setCommandIndex((current) => {
-                const delta = event.key === "ArrowDown" ? 1 : -1;
-                return (current + delta + commands.length) % commands.length;
-              });
-              return;
-            }
-            if (commands.length && event.key === "Tab") {
-              event.preventDefault();
-              applyCommand(commands[commandIndex]?.name ?? commands[0].name);
-              return;
-            }
-            if (commands.length && event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              applyCommand(commands[commandIndex]?.name ?? commands[0].name);
-              return;
-            }
-            const sendKey = store.webUiOverview?.settings.sendKey ?? "enter";
-            const wantsSend = sendKey === "mod-enter" ? (event.metaKey || event.ctrlKey) : !event.shiftKey;
-            if (event.key === "Enter" && wantsSend && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              handleSubmit();
-            }
-          }}
-          className="max-h-[28vh] min-h-[76px] resize-none bg-white p-4 text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400"
-          placeholder="给赫尔墨斯发消息……也可以输入 / 使用命令"
-        />
-        <div className="flex items-center justify-between bg-white px-3 pb-3">
-          <div className="flex shrink-0 items-center gap-1">
-            <div className="relative">
-              <IconAction title="Profile" onClick={() => setProfileMenuOpen(!profileMenuOpen)}>
-                <AtSign size={15} strokeWidth={1.75} />
-              </IconAction>
-              {profileMenuOpen ? (
-                <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 w-48 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
-                  {store.webUiOverview?.profiles?.map((profile) => (
-                    <button
-                      key={profile.id}
-                      className={cn("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", profile.active ? "bg-indigo-100/50 text-indigo-700" : "text-slate-600 hover:bg-slate-50")}
-                      onClick={() => {
-                        void window.workbenchClient.switchProfile(profile.name).then((result) => {
-                          if (result.ok) {
-                            store.setWebUiOverview(undefined);
-                            void window.workbenchClient.getWebUiOverview().then(store.setWebUiOverview);
-                            store.success("Profile 已切换", `当前使用：${result.active}`);
-                          } else {
-                            store.error("切换失败", "无法切换到指定的 Profile");
-                          }
-                        }).catch(() => {
-                          store.error("切换失败", "网络错误或 Profile 不存在");
-                        });
-                        setProfileMenuOpen(false);
-                      }}
-                      type="button"
-                    >
-                      <span className={cn("h-2 w-2 shrink-0 rounded-full", profile.active ? "bg-indigo-500" : "bg-slate-300")} />
-                      <span className="flex-1 truncate">{profile.name}</span>
-                      {profile.active ? <span className="text-[10px] text-slate-400">当前</span> : null}
-                    </button>
-                  ))}
-                  <div className="border-t border-slate-100">
-                    <button
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-50"
-                      onClick={() => {
-                        store.setControlCenterOpen(true);
-                        setProfileMenuOpen(false);
-                      }}
-                      type="button"
-                    >
-                      <span>管理 Profile...</span>
-                    </button>
-                  </div>
-                </div>
-              ) : null}
+
+        <div
+          className={cn(
+            "relative overflow-hidden rounded-[28px] border border-[var(--hermes-card-border)] bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)] focus-within:hermes-purple-focus",
+            isDraggingAttachment && "ring-2 ring-[var(--hermes-primary-border)]",
+          )}
+          onDragEnter={handleAttachmentDragEnter}
+          onDragOver={handleAttachmentDragOver}
+          onDragLeave={handleAttachmentDragLeave}
+          onDrop={handleAttachmentDrop}
+        >
+          {isDraggingAttachment ? (
+            <div className="pointer-events-none absolute inset-0 z-30 grid place-items-center bg-slate-50/90">
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-3 text-center shadow-sm">
+                <p className="text-sm font-semibold text-slate-800">{store.runningTaskRunId ? "当前任务运行中" : "松开即可添加附件"}</p>
+                <p className="mt-1 text-xs text-slate-500">{store.runningTaskRunId ? "请等 Hermes 完成后再上传文件" : "支持图片和常见文档，最多一次 12 个"}</p>
+              </div>
             </div>
-            <IconAction title={isImportingAttachment ? "正在导入附件" : "上传文件或图片"} onClick={() => void pickAttachments()} disabled={Boolean(store.runningTaskRunId) || isImportingAttachment}>
-              <Paperclip size={15} strokeWidth={1.75} />
-            </IconAction>
-            <IconAction title={isListening ? "停止录音" : "语音输入"} onClick={toggleVoiceInput} tone={isListening ? "danger" : "normal"}>
-              {isListening ? <MicOff size={14} strokeWidth={1.75} /> : <Mic size={14} strokeWidth={1.75} />}
-            </IconAction>
-            <span className="ml-2 hidden truncate text-[10px] text-slate-400 sm:inline">
-              {currentModelLabel} · {store.workspacePath ? shortPath(store.workspacePath) : "没有工作区"} · {selectedFilesLabel} · {attachmentsLabel} · {permissionsLabel}{lockLabel !== "文件锁空闲" ? ` · ${lockLabel}` : ""}
-            </span>
-          </div>
-          <div className="flex shrink-0 items-center">
-            {store.runningTaskRunId ? (
-              <IconAction title="停止 Hermes" onClick={props.onCancelTask} tone="danger">
-                <Square size={14} strokeWidth={1.75} />
-              </IconAction>
-            ) : (
-              <button className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-100/70 text-indigo-700 transition-colors hover:bg-indigo-200/70 disabled:cursor-not-allowed disabled:opacity-40" aria-label="发送" onClick={handleSubmit} disabled={!props.canStart} type="button">
-                <Send size={15} strokeWidth={1.9} />
-                <span className="sr-only">发送</span>
+          ) : null}
+
+          <textarea
+            aria-label="给 Hermes 发送消息"
+            ref={textareaRef}
+            value={store.userInput}
+            onChange={(event) => store.setUserInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (commands.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                event.preventDefault();
+                setCommandIndex((current) => {
+                  const delta = event.key === "ArrowDown" ? 1 : -1;
+                  return (current + delta + commands.length) % commands.length;
+                });
+                return;
+              }
+              if (commands.length && event.key === "Tab") {
+                event.preventDefault();
+                applyCommand(commands[commandIndex]?.name ?? commands[0].name);
+                return;
+              }
+              if (commands.length && event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                applyCommand(commands[commandIndex]?.name ?? commands[0].name);
+                return;
+              }
+              const sendKey = store.webUiOverview?.settings.sendKey ?? "enter";
+              const wantsSend = sendKey === "mod-enter" ? (event.metaKey || event.ctrlKey) : !event.shiftKey;
+              if (event.key === "Enter" && wantsSend && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                handleSubmit();
+              }
+            }}
+            className="max-h-[28vh] min-h-[64px] w-full resize-none bg-transparent px-5 pt-5 text-[15px] leading-7 text-slate-800 outline-none placeholder:text-slate-400"
+            placeholder="给 Hermes 发送消息… 需要附件、语音、@ 提及或命令时，点左下角的 +"
+          />
+
+          <div className="flex items-center justify-between gap-3 px-4 pb-4 pt-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="relative" ref={plusMenuRef}>
+                <button
+                  className="grid h-10 w-10 place-items-center rounded-full border border-[var(--hermes-primary-border)] text-[var(--hermes-primary)] transition hover:bg-[var(--hermes-primary-soft)]"
+                  onClick={() => setPlusMenuOpen((value) => !value)}
+                  aria-label="打开更多输入入口"
+                  type="button"
+                >
+                  {isListening ? <MicOff size={16} /> : <Plus size={16} />}
+                </button>
+
+                {plusMenuOpen ? (
+                  <div className="absolute bottom-[calc(100%+10px)] left-0 z-20 w-56 overflow-hidden rounded-2xl border border-[var(--hermes-card-border)] bg-white p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
+                    <MenuItem icon={Paperclip} label={isImportingAttachment ? "正在导入附件" : "附件"} onClick={() => void pickAttachments()} disabled={Boolean(store.runningTaskRunId) || isImportingAttachment} />
+                    <MenuItem icon={isListening ? MicOff : Mic} label={isListening ? "停止语音输入" : "语音输入"} onClick={() => void toggleVoiceInput()} />
+                    <MenuItem icon={Plus} label="@ 提及" onClick={() => fillInput("@Hermes ")} />
+                    <MenuItem icon={Command} label="插入命令" onClick={() => fillInput("/")} />
+                  </div>
+                ) : null}
+              </div>
+
+              <button
+                className="inline-flex h-10 max-w-[220px] items-center rounded-full border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] px-3 text-[12px] font-medium text-[var(--hermes-primary)] transition hover:bg-white"
+                onClick={() => props.onOpenFix?.("model")}
+                type="button"
+              >
+                <span className="truncate">{currentModelLabel}</span>
               </button>
-            )}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              {store.runningTaskRunId ? (
+                <button
+                  className="grid h-10 w-10 place-items-center rounded-full border border-rose-200 bg-rose-50 text-rose-600 transition hover:bg-rose-100"
+                  onClick={props.onCancelTask}
+                  aria-label="停止 Hermes"
+                  type="button"
+                >
+                  <Square size={15} />
+                </button>
+              ) : (
+                <button
+                  className="grid h-10 w-10 place-items-center rounded-full bg-[var(--hermes-primary)] text-white shadow-[0_12px_28px_rgba(91,77,255,0.26)] transition hover:bg-[var(--hermes-primary-strong)] disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                  aria-label="发送"
+                  title={props.sendBlockReason ?? "发送"}
+                  onClick={handleSubmit}
+                  disabled={!props.canStart}
+                  type="button"
+                >
+                  <Send size={15} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
+
+        <div className="mt-2 flex items-center justify-between gap-3 px-1 text-[11px]">
+          <button
+            className={cn(
+              "min-w-0 truncate text-left transition",
+              statusTone === "ready" && "text-slate-400",
+              statusTone === "blocked" && "text-slate-400",
+              statusTone === "action" && "text-slate-500 underline decoration-slate-300 underline-offset-4",
+            )}
+            disabled={!props.sendBlockTarget}
+            onClick={() => props.sendBlockTarget && props.onOpenFix?.(props.sendBlockTarget)}
+            type="button"
+          >
+            {statusText}
+            {props.sendBlockTarget ? " · 点击修复" : ""}
+          </button>
+          <span className="shrink-0 text-slate-400">
+            {store.attachments.length ? `${store.attachments.length} 个附件` : "仅显示关键信息"}
+          </span>
+        </div>
+
         {store.attachments.length > 0 ? (
-          <div className="grid gap-2 px-1 pt-2 sm:grid-cols-2">
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {store.attachments.map((attachment) => (
-              <div key={attachment.id} className="group flex min-w-0 items-center gap-2 rounded-xl bg-slate-50/70 px-2.5 py-2">
+              <div key={attachment.id} className="group flex min-w-0 items-center gap-2 rounded-2xl border border-slate-200/70 bg-white px-3 py-3">
                 {attachment.kind === "image" ? (
-                  <img src={toFileUrl(attachment.path)} alt={attachment.name} className="h-10 w-10 shrink-0 rounded-lg border border-white object-cover shadow-sm" />
+                  <img src={toFileUrl(attachment.path)} alt={attachment.name} className="h-10 w-10 shrink-0 rounded-xl object-cover" />
                 ) : (
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500">
-                    <FileText size={17} strokeWidth={1.75} />
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500">
+                    <Paperclip size={16} />
                   </span>
                 )}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12px] font-semibold text-slate-700">{attachment.name}</span>
                   <span className="block text-[11px] text-slate-400">{attachment.kind === "image" ? "图片" : "文件"} · {formatBytes(attachment.size)}</span>
                 </span>
-                <button className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition-colors hover:bg-white hover:text-rose-600" onClick={() => store.removeAttachment(attachment.id)} title="移除附件" type="button">
-                  <X size={14} strokeWidth={1.75} />
+                <button className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-rose-600" onClick={() => store.removeAttachment(attachment.id)} title="移除附件" type="button">
+                  <X size={14} />
                 </button>
               </div>
             ))}
@@ -555,6 +559,21 @@ export function ChatInput(props: {
         ) : null}
       </div>
     </div>
+  );
+}
+
+function MenuItem(props: { icon: typeof Plus; label: string; disabled?: boolean; onClick: () => void }) {
+  const Icon = props.icon;
+  return (
+    <button
+      className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-[13px] text-slate-600 transition hover:bg-[var(--hermes-primary-soft)] hover:text-[var(--hermes-primary)] disabled:cursor-not-allowed disabled:opacity-40"
+      onClick={props.onClick}
+      disabled={props.disabled}
+      type="button"
+    >
+      <Icon size={15} />
+      {props.label}
+    </button>
   );
 }
 
@@ -578,27 +597,27 @@ function shortPath(value: string) {
 }
 
 function compactMessages(messages: Array<{ role: string; content: string }>, focus?: string): string {
-  const userMessages = messages.filter((m) => m.role === "user");
-  const agentMessages = messages.filter((m) => m.role === "agent");
-  
+  const userMessages = messages.filter((message) => message.role === "user");
+  const agentMessages = messages.filter((message) => message.role === "agent");
+
   const userPoints: string[] = [];
   for (const msg of userMessages) {
     const trimmed = msg.content.trim();
     if (trimmed.length > 0) {
-      const lines = trimmed.split(/\n/).filter((l) => l.trim()).slice(0, 2);
+      const lines = trimmed.split(/\n/).filter((line) => line.trim()).slice(0, 2);
       userPoints.push(...lines);
     }
   }
-  
+
   const agentActions: string[] = [];
   for (const msg of agentMessages) {
     const trimmed = msg.content.trim();
     if (trimmed.length > 0) {
-      const lines = trimmed.split(/\n/).filter((l) => l.trim()).slice(0, 2);
+      const lines = trimmed.split(/\n/).filter((line) => line.trim()).slice(0, 2);
       agentActions.push(...lines);
     }
   }
-  
+
   const summaryParts: string[] = [];
   if (userPoints.length > 0) {
     const userSummary = userPoints.slice(-4).join(" ");
@@ -611,23 +630,6 @@ function compactMessages(messages: Array<{ role: string; content: string }>, foc
   if (focus) {
     summaryParts.push(`重点关注：${focus}`);
   }
-  
-  return summaryParts.join("；");
-}
 
-function IconAction(props: { children: ReactNode; title: string; disabled?: boolean; tone?: "normal" | "danger"; onClick?: () => void }) {
-  return (
-    <button
-      className={cn(
-        "grid h-8 w-8 place-items-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40",
-        props.tone === "danger" && "text-rose-500 hover:text-rose-600",
-      )}
-      onClick={props.onClick}
-      disabled={props.disabled}
-      title={props.title}
-      type="button"
-    >
-      {props.children}
-    </button>
-  );
+  return summaryParts.join("；");
 }

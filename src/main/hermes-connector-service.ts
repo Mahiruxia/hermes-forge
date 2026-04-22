@@ -1130,7 +1130,7 @@ export class HermesConnectorService {
     if (!existing) return;
     const backupDir = path.join(path.dirname(this.envPath()), ".hermes-workbench-backups");
     await fs.mkdir(backupDir, { recursive: true });
-    await fs.writeFile(path.join(backupDir, `.env.${Date.now()}.bak`), existing, "utf8");
+    await fs.writeFile(path.join(backupDir, `.env.${Date.now()}.bak`), sanitizeEnvBackup(existing), "utf8");
   }
 }
 
@@ -1226,6 +1226,27 @@ export function removeManagedBlock(content: string) {
   const end = content.indexOf(MANAGED_END, start);
   if (end === -1) return content.slice(0, start).trimEnd();
   return `${content.slice(0, start)}${content.slice(end + MANAGED_END.length)}`.trimEnd();
+}
+
+function sanitizeEnvBackup(content: string) {
+  return content
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        return line;
+      }
+      const index = line.indexOf("=");
+      if (index <= 0) {
+        return line;
+      }
+      const key = line.slice(0, index).trim();
+      if (/(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|AES_KEY)/i.test(key)) {
+        return `${key}=<redacted>`;
+      }
+      return line;
+    })
+    .join("\n");
 }
 
 function decorateWeixinFailure(code: string | undefined, message: string, runtimePythonLabel?: string): WeixinQrLoginStatus {
@@ -1477,4 +1498,5 @@ export const testOnly = {
   parseWeixinQrEvent,
   buildGatewayEnv,
   removeManagedBlock,
+  sanitizeEnvBackup,
 };

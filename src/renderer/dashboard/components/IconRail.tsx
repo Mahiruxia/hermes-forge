@@ -1,4 +1,4 @@
-import { MessageSquare, CalendarClock, Sparkles, BookOpen, UserCircle, Settings, Cog, ExternalLink } from "lucide-react";
+import { MessageSquare, CalendarClock, Sparkles, BookOpen, UserCircle, Settings, Link2 } from "lucide-react";
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
 
@@ -9,15 +9,14 @@ export function IconRail() {
   const items: Array<{ id: PanelId; label: string; icon: typeof MessageSquare }> = [
     { id: "chat", label: "聊天", icon: MessageSquare },
     { id: "tasks", label: "任务", icon: CalendarClock },
-    { id: "skills", label: "技能", icon: Sparkles },
-    { id: "memory", label: "记忆", icon: BookOpen },
-    { id: "connectors", label: "连接器", icon: ExternalLink },
-    { id: "profiles", label: "Agent", icon: UserCircle },
-    { id: "settings", label: "设置", icon: Settings },
+    { id: "skills", label: "工具", icon: Sparkles },
+    { id: "memory", label: "知识库", icon: BookOpen },
+    { id: "connectors", label: "链接", icon: Link2 },
+    { id: "profiles", label: "个人", icon: UserCircle },
   ];
 
   return (
-    <nav className="flex h-full w-14 shrink-0 flex-col items-center gap-2 bg-[#f6f7f8] px-1.5 py-3 shadow-[inset_-1px_0_rgba(15,23,42,0.03)]">
+    <nav className="flex h-full w-[78px] shrink-0 flex-col items-center gap-3 border-r border-slate-200/70 bg-[#f8f9fb] px-2.5 py-4">
       {items.map((item) => {
         const Icon = item.icon;
         const active = store.activePanel === item.id;
@@ -25,36 +24,32 @@ export function IconRail() {
           <button
             key={item.id}
             className={cn(
-              "relative grid h-9 w-9 place-items-center rounded-xl text-slate-500 transition-all duration-200",
-              "hover:bg-slate-100 hover:text-slate-700",
-              active && "bg-indigo-50 text-indigo-600 shadow-[0_2px_8px_rgba(99,102,241,0.15)]"
+              "flex w-full flex-col items-center justify-center gap-1 rounded-2xl px-1 py-2.5 text-slate-500 transition-all duration-200",
+              "hover:bg-[var(--hermes-primary-soft)] hover:text-[var(--hermes-primary)]",
+              active && "bg-[var(--hermes-primary)] text-white shadow-[0_12px_28px_rgba(91,77,255,0.28)] ring-1 ring-[var(--hermes-primary-border)]"
             )}
             title={item.label}
             type="button"
             onClick={() => store.setActivePanel(item.id)}
           >
             <Icon size={18} strokeWidth={1.5} />
-            {active && (
-              <span className="absolute bottom-0.5 left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-indigo-500" />
-            )}
+            <span className={cn("text-[11px] font-medium", active && "text-white")}>{item.label}</span>
           </button>
         );
       })}
       
-      <div className="my-2 h-px w-6 bg-slate-200" />
+      <div className="my-1 h-px w-8 bg-slate-200" />
       
       <button
-        className="relative grid h-9 w-9 place-items-center rounded-xl text-slate-500 transition-all duration-200 hover:bg-slate-100 hover:text-slate-700"
-        title="配置中心"
+        className="mt-auto flex w-full flex-col items-center justify-center gap-1 rounded-2xl px-1 py-2.5 text-slate-500 transition-all duration-200 hover:bg-[var(--hermes-primary-soft)] hover:text-[var(--hermes-primary)]"
+        aria-label="设置中心"
+        title="设置中心"
         type="button"
         onClick={() => store.setView("settings")}
       >
-        <Cog size={18} strokeWidth={1.5} />
+        <Settings size={18} strokeWidth={1.5} />
+        <span className="text-[11px] font-medium">设置</span>
       </button>
-      
-      <div className="mt-auto grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-indigo-50 to-indigo-100 text-indigo-600">
-        <Sparkles size={16} />
-      </div>
     </nav>
   );
 }

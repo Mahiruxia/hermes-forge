@@ -17,6 +17,7 @@ import type {
   QuickTextFileInput,
   QuickTextFileResult,
   RuntimeConfig,
+  SessionAgentInsight,
   SecretRefStatus,
   SecretSaveInput,
   SecretVaultStatus,
@@ -86,10 +87,12 @@ const api = {
     ipcRenderer.invoke(IpcChannels.getFileTree, workspacePath) as Promise<FileTreeResult>,
   listActiveLocks: (workspacePath?: string) =>
     ipcRenderer.invoke(IpcChannels.listActiveLocks, workspacePath) as Promise<FileLockState[]>,
-  getRecentTaskEvents: (workspacePath: string) =>
-    ipcRenderer.invoke(IpcChannels.getRecentTaskEvents, workspacePath) as Promise<TaskEventEnvelope[]>,
+  getRecentTaskEvents: (workspacePath: string, workSessionId?: string) =>
+    ipcRenderer.invoke(IpcChannels.getRecentTaskEvents, workspacePath, workSessionId) as Promise<TaskEventEnvelope[]>,
   listSessions: () => ipcRenderer.invoke(IpcChannels.listSessions) as Promise<WorkSession[]>,
   createSession: (title?: string) => ipcRenderer.invoke(IpcChannels.createSession, title) as Promise<WorkSession>,
+  getSessionAgentInsight: (sessionId: string, eventSourcePath?: string) =>
+    ipcRenderer.invoke(IpcChannels.getSessionAgentInsight, sessionId, eventSourcePath) as Promise<SessionAgentInsight>,
   updateSession: (input: {
     id: string;
     title?: string;

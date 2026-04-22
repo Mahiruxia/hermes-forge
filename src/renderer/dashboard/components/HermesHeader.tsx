@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
-import { CalendarClock, HelpCircle, PanelRight, Search, Settings, Sparkles, Trash2, ChevronDown, FolderOpen } from "lucide-react";
-import type { SessionMetaPatch, WorkSession } from "../../../shared/types";
+import { useEffect, useRef, useState } from "react";
+import { ExternalLink, FolderOpen, MoreHorizontal, PanelRightOpen, Search, Sparkles, Trash2 } from "lucide-react";
+import type { SessionMetaPatch } from "../../../shared/types";
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
 import { StatusBar } from "./StatusBar";
@@ -10,17 +10,18 @@ export function HermesHeader(props: {
   onClearSession: () => void;
   onToggleInspector: () => void;
   onToggleWorkspace: () => void;
+  onToggleAgentPanel: () => void;
   onUpdateActiveSessionMeta: (patch: SessionMetaPatch) => void;
   onOpenSessionFolder: () => void;
   inspectorOpen?: boolean;
+  agentPanelOpen?: boolean;
 }) {
   const store = useAppStore();
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState("");
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  const activeSession = store.sessions.find((s) => s.id === store.activeSessionId);
+  const activeSession = store.sessions.find((session) => session.id === store.activeSessionId);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -28,22 +29,22 @@ export function HermesHeader(props: {
         setShowMenu(false);
       }
     }
+
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   function startEditing() {
-    if (activeSession) {
-      setTitleValue(activeSession.title);
-      setEditingTitle(true);
-    }
+    if (!activeSession) return;
+    setTitleValue(activeSession.title);
+    setEditingTitle(true);
   }
 
   function saveTitle() {
-    if (titleValue.trim()) {
-      props.onRenameSession(titleValue.trim());
-    }
+    const nextTitle = titleValue.trim();
+    if (nextTitle) props.onRenameSession(nextTitle);
     setEditingTitle(false);
+    setTitleValue("");
   }
 
   function cancelEditing() {
@@ -53,55 +54,99 @@ export function HermesHeader(props: {
 
   const menuItems: Array<
     | { divider: true }
-    | { icon: typeof HelpCircle; label: string; danger?: boolean; action: () => void }
+    | { icon: typeof ExternalLink; label: string; active?: boolean; danger?: boolean; action: () => void }
   > = [
-    { icon: HelpCircle, label: "帮助", action: () => { 
-      if (window.workbenchClient && typeof window.workbenchClient.openHelp === "function") {
-        window.workbenchClient.openHelp();
-      } else {
-        console.warn("workbenchClient.openHelp not available");
-      }
-      setShowMenu(false); 
-    } },
-    { icon: FolderOpen, label: "打开会话文件夹", action: () => { props.onOpenSessionFolder(); setShowMenu(false); } },
+    {
+      icon: PanelRightOpen,
+      label: props.agentPanelOpen ? "收起 Agent 面板" : "打开 Agent 面板",
+      active: props.agentPanelOpen,
+      action: () => {
+        props.onToggleAgentPanel();
+        setShowMenu(false);
+      },
+    },
+    {
+      icon: Search,
+      label: props.inspectorOpen ? "收起搜索与检查器" : "打开搜索与检查器",
+      active: props.inspectorOpen,
+      action: () => {
+        props.onToggleInspector();
+        setShowMenu(false);
+      },
+    },
     { divider: true },
-    { icon: Trash2, label: "清空会话", danger: true, action: () => { props.onClearSession(); setShowMenu(false); } },
+    {
+      icon: FolderOpen,
+      label: "打开会话文件夹",
+      action: () => {
+        props.onOpenSessionFolder();
+        setShowMenu(false);
+      },
+    },
+    {
+      icon: ExternalLink,
+      label: "官网",
+      action: () => {
+        if (window.workbenchClient && typeof window.workbenchClient.openHelp === "function") {
+          window.workbenchClient.openHelp();
+        }
+        setShowMenu(false);
+      },
+    },
+    { divider: true },
+    {
+      icon: Trash2,
+      label: "清空会话",
+      danger: true,
+      action: () => {
+        props.onClearSession();
+        setShowMenu(false);
+      },
+    },
   ];
 
   return (
-    <header className="flex h-12 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm">
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-100">
-            <Sparkles size={16} className="text-indigo-600" />
+    <header className="relative z-40 flex h-[58px] items-center justify-between border-b border-slate-200/70 bg-white/95 px-5 backdrop-blur-md" role="banner">
+      <div className="flex min-w-0 items-center gap-4">
+        <div className="flex items-center gap-3">
+          <div className="grid h-9 w-9 place-items-center rounded-[14px] border border-slate-200/80 bg-slate-950 text-white shadow-[0_8px_20px_rgba(15,23,42,0.12)]">
+            <Sparkles size={15} />
           </div>
-          <span className="text-sm font-semibold text-slate-800">Hermes Forge</span>
+          <div className="min-w-0">
+            <span className="block text-[15px] font-semibold tracking-tight text-slate-900">Hermes Forge</span>
+            <span className="block text-[11px] text-slate-400">Quiet workspace for Hermes</span>
+          </div>
         </div>
 
         {activeSession ? (
           editingTitle ? (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
               <input
                 className={inputClass}
                 value={titleValue}
                 onChange={(event) => setTitleValue(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") saveTitle();
-                  else if (event.key === "Escape") cancelEditing();
+                  if (event.key === "Escape") cancelEditing();
                 }}
                 autoFocus
               />
-              <button className="grid h-6 w-6 place-items-center rounded text-slate-500" onClick={saveTitle} type="button">
+              <button className="grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-700" onClick={saveTitle} type="button">
                 <CheckIcon />
               </button>
-              <button className="grid h-6 w-6 place-items-center rounded text-slate-500" onClick={cancelEditing} type="button">
+              <button className="grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-700" onClick={cancelEditing} type="button">
                 <XIcon />
               </button>
             </div>
           ) : (
-            <button className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-slate-600 transition-colors hover:bg-slate-100" onClick={startEditing} type="button">
-              <FileIcon />
-              <span className="truncate max-w-[200px]">{activeSession.title}</span>
+            <button className="group flex min-w-0 items-center gap-3 rounded-2xl px-3 py-2 text-left transition hover:bg-slate-50" onClick={startEditing} type="button">
+              <span className="min-w-0">
+                <span className="block truncate text-[14px] font-medium text-slate-900">{activeSession.title}</span>
+                <span className="mt-0.5 block truncate text-[11px] text-slate-400">会话 {activeSession.id}</span>
+              </span>
+              <span className="rounded-full border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-400 transition group-hover:border-slate-300 group-hover:text-slate-600">
+                编辑
+              </span>
             </button>
           )
         ) : null}
@@ -109,77 +154,74 @@ export function HermesHeader(props: {
 
       <div className="flex items-center gap-2">
         <StatusBar />
-        
-        <div className="mx-2 h-4 w-px bg-slate-200" />
-        
-        <button
-          className={cn("grid h-8 w-8 place-items-center rounded-md text-slate-500 transition-all hover:bg-slate-100", store.workspaceDrawerOpen && "bg-indigo-50 text-indigo-600")}
-          onClick={props.onToggleWorkspace}
-          title="文件树"
-          type="button"
-        >
-          <PanelRight size={16} />
-        </button>
 
         <button
-          className={cn("grid h-8 w-8 place-items-center rounded-md text-slate-500 transition-all hover:bg-slate-100", store.inspectorOpen && "bg-indigo-50 text-indigo-600")}
+          className={headerActionClass(props.inspectorOpen)}
           onClick={props.onToggleInspector}
-          title="检查器"
+          title="搜索与检查器"
+          aria-label="搜索"
           type="button"
         >
-          <Search size={16} />
+          <Search size={15} />
         </button>
 
-        <div className="mx-2 h-4 w-px bg-slate-200" />
+        <button
+          className={headerActionClass(props.agentPanelOpen)}
+          onClick={props.onToggleAgentPanel}
+          title={props.agentPanelOpen ? "收起 Agent 面板" : "打开 Agent 面板"}
+          aria-label="Agent 面板"
+          type="button"
+        >
+          <PanelRightOpen size={15} />
+        </button>
 
-        {!props.inspectorOpen && (
-          <div className="relative z-50" ref={menuRef}>
-            <button
-              className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-all hover:bg-slate-100"
-              onClick={() => setShowMenu(!showMenu)}
-              title="更多选项"
-              type="button"
-            >
-              <ChevronDown size={16} className={showMenu ? "rotate-180 transition-transform" : ""} />
-            </button>
-            
-            {showMenu && (
-              <div className="absolute right-0 top-full mt-1 w-40 origin-top-right rounded-xl bg-white py-1 shadow-lg ring-1 ring-slate-200/50 transition-all duration-150 ease-out">
-                {menuItems.map((item, index) => (
-                  "divider" in item ? (
-                    <div key={index} className="my-1 h-px bg-slate-100" />
-                  ) : (
-                    <button
-                      key={index}
-                      className={cn(
-                        "flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors",
-                        item.danger ? "text-rose-600 hover:bg-rose-50" : "text-slate-700 hover:bg-slate-50"
-                      )}
-                      onClick={item.action}
-                      type="button"
-                    >
-                      <item.icon size={14} />
-                      {item.label}
-                    </button>
-                  )
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        <div className="relative" ref={menuRef}>
+          <button
+            className={headerActionClass(showMenu)}
+            onClick={() => setShowMenu((value) => !value)}
+            aria-label="更多选项"
+            title="更多选项"
+            type="button"
+          >
+            <MoreHorizontal size={15} />
+          </button>
+
+          {showMenu ? (
+            <div className="absolute right-0 top-[calc(100%+10px)] z-50 w-52 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.12)] backdrop-blur-xl">
+              {menuItems.map((item, index) => (
+                "divider" in item ? (
+                  <div key={`divider-${index}`} className="my-1 h-px bg-slate-100" />
+                ) : (
+                  <button
+                    key={item.label}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition",
+                      item.danger && "text-rose-600 hover:bg-rose-50",
+                      !item.danger && item.active && "bg-slate-100 text-slate-900",
+                      !item.danger && !item.active && "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
+                    )}
+                    onClick={item.action}
+                    type="button"
+                  >
+                    <item.icon size={15} />
+                    <span>{item.label}</span>
+                  </button>
+                )
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
     </header>
   );
 }
 
-const inputClass = "w-48 rounded-lg border-none bg-slate-100 px-2 py-1 text-sm outline-none ring-1 ring-indigo-200";
+const inputClass = "w-52 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white";
 
-function FileIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-      <polyline points="14 2 14 8 20 8" />
-    </svg>
+function headerActionClass(active?: boolean) {
+  return cn(
+    "grid h-9 w-9 place-items-center rounded-xl border border-transparent text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900",
+    active && "border-slate-200 bg-slate-100 text-slate-900",
   );
 }
 

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertCircle, CheckCircle2, ChevronDown, Cloud, KeyRound, Loader2, Network, PlugZap, Server } from "lucide-react";
 import type { LocalModelDiscoveryResult, ModelConnectionTestResult } from "../../../../shared/types";
+import { cn } from "../../DashboardPrimitives";
 
 type ModelSummary = {
   sourceType?: string;
@@ -19,13 +20,158 @@ type OverviewModels = {
 };
 
 type SecretMeta = { ref: string; exists: boolean };
-type SourceType = "local_openai" | "openrouter" | "openai" | "custom_gateway";
+type SourceType =
+  | "local_openai"
+  | "openrouter"
+  | "openai"
+  | "deepseek"
+  | "qwen"
+  | "kimi"
+  | "volcengine"
+  | "volcengine_coding"
+  | "tencent_hunyuan"
+  | "minimax"
+  | "zhipu"
+  | "custom_gateway";
 
-const SOURCE_CARDS: Array<{ id: SourceType; label: string; detail: string }> = [
-  { id: "local_openai", label: "本地 OpenAI 兼容接口", detail: "适合 LM Studio、vLLM、本地中转接口。" },
-  { id: "openrouter", label: "OpenRouter", detail: "统一接入多个云模型，重点先把 Key 和模型选清楚。" },
-  { id: "openai", label: "OpenAI", detail: "直接配置 OpenAI API Key 和模型名。" },
-  { id: "custom_gateway", label: "自定义网关", detail: "用于公司内网网关或第三方兼容 OpenAI 接口。" },
+type ProviderPreset = {
+  id: SourceType;
+  label: string;
+  badge: string;
+  baseUrl: string;
+  defaultModel: string;
+  modelPlaceholder: string;
+  keyMode: "required" | "optional";
+  icon: typeof Server;
+};
+
+const PROVIDERS: ProviderPreset[] = [
+  {
+    id: "local_openai",
+    label: "本地 OpenAI-Compatible",
+    badge: "Local",
+    baseUrl: "http://127.0.0.1:1234/v1",
+    defaultModel: "",
+    modelPlaceholder: "qwen2.5-coder 或本地已加载模型",
+    keyMode: "optional",
+    icon: Server,
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    badge: "Cloud",
+    baseUrl: "https://openrouter.ai/api/v1",
+    defaultModel: "anthropic/claude-sonnet-4-5",
+    modelPlaceholder: "anthropic/claude-sonnet-4-5 或 openai/gpt-5",
+    keyMode: "required",
+    icon: Network,
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    badge: "Cloud",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-5.4",
+    modelPlaceholder: "gpt-5.4 或 gpt-4.1",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    badge: "国内",
+    baseUrl: "https://api.deepseek.com/v1",
+    defaultModel: "deepseek-chat",
+    modelPlaceholder: "deepseek-chat 或 deepseek-reasoner",
+    keyMode: "required",
+    icon: Network,
+  },
+  {
+    id: "qwen",
+    label: "阿里云百炼 / Qwen",
+    badge: "国内",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    defaultModel: "qwen3-coder-plus",
+    modelPlaceholder: "qwen3-coder-plus 或 qwen-max",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "kimi",
+    label: "Moonshot / Kimi",
+    badge: "国内",
+    baseUrl: "https://api.moonshot.ai/v1",
+    defaultModel: "kimi-k2.5",
+    modelPlaceholder: "kimi-k2.5",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "volcengine",
+    label: "火山方舟 / 豆包",
+    badge: "国内",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+    defaultModel: "doubao-seed-1-6-251015",
+    modelPlaceholder: "doubao-seed-1-6-251015 或你的方舟模型 ID",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "volcengine_coding",
+    label: "火山方舟 Coding Plan",
+    badge: "Coding Plan",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
+    defaultModel: "ark-code-latest",
+    modelPlaceholder: "ark-code-latest 或 Coding Plan 可用模型",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "tencent_hunyuan",
+    label: "腾讯混元",
+    badge: "国内",
+    baseUrl: "https://api.hunyuan.cloud.tencent.com/v1",
+    defaultModel: "hunyuan-turbos-latest",
+    modelPlaceholder: "hunyuan-turbos-latest",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "minimax",
+    label: "MiniMax",
+    badge: "国内",
+    baseUrl: "https://api.minimax.io/v1",
+    defaultModel: "MiniMax-M2.7",
+    modelPlaceholder: "MiniMax-M2.7 或 MiniMax-M2.5",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "zhipu",
+    label: "智谱 GLM",
+    badge: "国内",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    defaultModel: "glm-4.5",
+    modelPlaceholder: "glm-4.5 或 glm-4.5-flash",
+    keyMode: "required",
+    icon: Cloud,
+  },
+  {
+    id: "custom_gateway",
+    label: "自定义兼容网关",
+    badge: "Gateway",
+    baseUrl: "https://your-gateway.example.com/v1",
+    defaultModel: "",
+    modelPlaceholder: "你的网关模型 ID",
+    keyMode: "optional",
+    icon: PlugZap,
+  },
+];
+
+const PROVIDER_GROUPS: Array<{ label: string; ids: SourceType[] }> = [
+  { label: "推荐预设", ids: ["qwen", "kimi", "deepseek", "volcengine_coding", "openrouter", "openai"] },
+  { label: "国内厂商", ids: ["volcengine", "tencent_hunyuan", "minimax", "zhipu"] },
+  { label: "本地与自定义", ids: ["local_openai", "custom_gateway"] },
 ];
 
 export function ModelConfigWizard(props: {
@@ -42,53 +188,87 @@ export function ModelConfigWizard(props: {
   const [secretRef, setSecretRef] = useState(initial.secretRef);
   const [apiKey, setApiKey] = useState("");
   const [testResult, setTestResult] = useState<ModelConnectionTestResult | undefined>();
-  const [discovering, setDiscovering] = useState(false);
   const [discovery, setDiscovery] = useState<LocalModelDiscoveryResult | undefined>();
-  const [busyAction, setBusyAction] = useState<"test" | "save" | undefined>();
-  const [expandedSource, setExpandedSource] = useState<SourceType>(initial.sourceType);
-  const [showAdvancedSecretRef, setShowAdvancedSecretRef] = useState(false);
-  const [editorOpen, setEditorOpen] = useState(!initial.hasExistingConfig);
+  const [busyAction, setBusyAction] = useState<"discover" | "test" | "save" | undefined>();
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
 
   useEffect(() => {
     const nextSource = deriveInitialSourceType(props.models);
     const next = deriveStateForSource(props.models, nextSource);
     setSourceType(next.sourceType);
-    setExpandedSource(next.sourceType);
     setBaseUrl(next.baseUrl);
     setModel(next.model);
     setSecretRef(next.secretRef);
     setApiKey("");
     setTestResult(undefined);
-    setShowAdvancedSecretRef(false);
-    setEditorOpen(!next.hasExistingConfig);
+    setDiscovery(undefined);
+    setShowAdvanced(false);
+    setProviderMenuOpen(false);
   }, [props.models.defaultProfileId, props.models.modelProfiles]);
 
-  const testOk = Boolean(testResult?.ok);
-  const effectiveSecretRef = secretRef.trim() || defaultSecretRefForSource(expandedSource);
+  const provider = providerFor(sourceType);
+  const effectiveSecretRef = secretRef.trim() || defaultSecretRefForSource(sourceType);
   const hasStoredSecret = props.secrets.some((item) => item.ref === effectiveSecretRef && item.exists);
-  const activeDraftHasConfig = Boolean(model.trim() || baseUrl.trim() || hasStoredSecret);
+  const testOk = Boolean(testResult?.ok);
+  const currentProfile = props.models.modelProfiles.find((item) => item.id === props.models.defaultProfileId) ?? props.models.modelProfiles[0];
+  const currentSource = currentProfile ? inferSourceType(currentProfile.provider, currentProfile.baseUrl) : undefined;
+  const canUseSavedSecret = hasStoredSecret || Boolean(apiKey.trim()) || !sourceNeedsKey(sourceType);
+
+  const modelOptions = useMemo(
+    () => (testResult?.availableModels?.length ? testResult.availableModels : discovery?.recommendedModel ? [discovery.recommendedModel] : []),
+    [discovery?.recommendedModel, testResult?.availableModels],
+  );
+
+  function updateSource(nextSource: SourceType) {
+    const next = deriveStateForSource(props.models, nextSource);
+    setSourceType(nextSource);
+    setBaseUrl(next.baseUrl);
+    setModel(next.model);
+    setSecretRef(next.secretRef);
+    setApiKey("");
+    setDiscovery(undefined);
+    setTestResult(undefined);
+    setShowAdvanced(false);
+    setProviderMenuOpen(false);
+  }
+
+  function updateBaseUrl(value: string) {
+    setBaseUrl(value);
+    setTestResult(undefined);
+  }
+
+  function updateModel(value: string) {
+    setModel(value);
+    setTestResult(undefined);
+  }
+
+  function updateApiKey(value: string) {
+    setApiKey(value);
+    setTestResult(undefined);
+  }
 
   async function discoverLocal() {
-    setDiscovering(true);
+    setBusyAction("discover");
     try {
       const result = await window.workbenchClient.discoverLocalModelSources();
       setDiscovery(result);
-      if (result.recommendedBaseUrl) setBaseUrl(result.recommendedBaseUrl);
-      if (result.recommendedModel && !model.trim()) setModel(result.recommendedModel);
+      if (result.recommendedBaseUrl) updateBaseUrl(result.recommendedBaseUrl);
+      if (result.recommendedModel && !model.trim()) updateModel(result.recommendedModel);
     } finally {
-      setDiscovering(false);
+      setBusyAction(undefined);
     }
   }
 
-  async function testConnection(targetSource: SourceType = expandedSource) {
+  async function testConnection() {
     setBusyAction("test");
     setTestResult(undefined);
     try {
-      const ref = await ensureSecretIfNeeded(targetSource);
+      const ref = await ensureSecretIfNeeded(sourceType);
       const result = await window.workbenchClient.testModelConnection({
-        sourceType: targetSource,
+        sourceType: connectionSourceType(sourceType),
         model: model.trim(),
-        baseUrl: sourceNeedsBaseUrl(targetSource) ? baseUrl.trim() : undefined,
+        baseUrl: baseUrl.trim(),
         secretRef: ref,
       });
       setTestResult(result);
@@ -97,16 +277,16 @@ export function ModelConfigWizard(props: {
     }
   }
 
-  async function saveModel(targetSource: SourceType = expandedSource) {
+  async function saveModel() {
     setBusyAction("save");
     try {
-      const ref = await ensureSecretIfNeeded(targetSource);
-      const profileId = buildProfileId(targetSource);
+      const ref = await ensureSecretIfNeeded(sourceType);
+      const profileId = buildProfileId(sourceType);
       const nextProfile = {
         id: profileId,
-        provider: targetSource === "local_openai" || targetSource === "custom_gateway" ? "custom" : targetSource,
+        provider: sourceType === "openai" || sourceType === "openrouter" ? sourceType : "custom",
         model: model.trim(),
-        ...(sourceNeedsBaseUrl(targetSource) ? { baseUrl: baseUrl.trim() } : {}),
+        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
         ...(ref ? { secretRef: ref } : {}),
       };
       const nextProfiles = [
@@ -118,7 +298,7 @@ export function ModelConfigWizard(props: {
         modelProfiles: nextProfiles,
       });
       await props.onRefresh();
-      props.onSaved("模型来源已保存");
+      props.onSaved("模型来源已保存，并设为默认");
     } finally {
       setBusyAction(undefined);
     }
@@ -132,307 +312,257 @@ export function ModelConfigWizard(props: {
       setSecretRef(nextRef);
       return nextRef;
     }
-    if (sourceNeedsKey(targetSource) && !nextRef) throw new Error("当前来源需要 API Key。");
     return nextRef || undefined;
   }
 
-  const summary = props.models.summary;
-
-  function applySourceDraft(nextSource: SourceType) {
-    const next = deriveStateForSource(props.models, nextSource);
-    setSourceType(nextSource);
-    setExpandedSource(nextSource);
-    setBaseUrl(next.baseUrl);
-    setModel(next.model);
-    setSecretRef(next.secretRef);
-    setApiKey("");
-    setTestResult(undefined);
-    setDiscovery(undefined);
-    setShowAdvancedSecretRef(false);
-    setEditorOpen(!next.hasExistingConfig);
-  }
-
   return (
-    <div className="space-y-4">
-      <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 px-4 py-4 text-[12px] text-slate-600">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Current default</p>
-            <h3 className="mt-2 text-[15px] font-semibold text-slate-900">当前默认模型来源</h3>
+    <div className="space-y-5">
+      <section className="overflow-hidden border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-100 bg-slate-50/60 px-6 py-10 text-center">
+          <div className="mx-auto inline-flex items-center gap-3">
+            <span className="text-[28px] font-semibold text-blue-500">1.</span>
+            <h3 className="text-[26px] font-semibold tracking-tight text-slate-950">模型 (Models)</h3>
           </div>
-          <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-500 shadow-sm">
-            {summary?.sourceType || "未配置"}
-          </span>
-        </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <SummaryRow label="来源" value={summary?.sourceType || "未配置"} />
-          <SummaryRow label="Base URL" value={summary?.baseUrl || "未配置"} mono />
-          <SummaryRow label="模型" value={summary?.currentModel || "未配置"} />
-          <SummaryRow label="密钥状态" value={summary?.secretStatus || "未知"} />
-        </div>
-        {summary?.message ? <p className="mt-3">{summary.message}</p> : null}
-        {summary?.recommendedFix ? <p className="mt-1 text-[11px] text-slate-500">建议：{summary.recommendedFix}</p> : null}
-      </div>
-
-      <div className="space-y-3">
-        <div>
-          <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Provider selection</p>
-          <h3 className="mt-2 text-[15px] font-semibold text-slate-900">选择模型来源</h3>
-          <p className="mt-1 text-[13px] leading-6 text-slate-500">
-            先选一个来源卡片，只有当前选中的提供商才会展开设置表单。
-          </p>
+          <p className="mt-5 text-[15px] text-slate-600">添加至少 1 个模型，Hermes Forge 才能正常工作</p>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          {SOURCE_CARDS.map((source) => {
-            const selected = sourceType === source.id;
-            const sourceStatus = getSourceCardStatus(props.models, props.secrets, source.id);
-            return (
+        <div className="px-7 py-8">
+          <div className="grid gap-3">
+            <div className="relative">
               <button
-                key={source.id}
-                className={`rounded-2xl border px-4 py-4 text-left transition-all ${
-                  selected
-                    ? "border-slate-900 bg-slate-900 text-white shadow-[0_12px_32px_rgba(15,23,42,0.12)]"
-                    : "border-slate-200/80 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
-                }`}
-                onClick={() => {
-                  applySourceDraft(source.id);
-                }}
+                aria-expanded={providerMenuOpen}
+                aria-label="选择模型通道"
+                className="flex min-h-14 w-full items-center justify-between gap-3 border border-slate-200 bg-white px-4 text-left transition hover:bg-slate-50 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                onClick={() => setProviderMenuOpen((value) => !value)}
                 type="button"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[13px] font-semibold">{source.label}</p>
-                    <p className={`mt-2 text-[11px] leading-5 ${selected ? "text-white/75" : "text-slate-500"}`}>
-                      {source.detail}
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      <StatusBadge label={sourceStatus.label} tone={selected ? "selected" : sourceStatus.tone} />
-                      {sourceStatus.isDefault ? <StatusBadge label="当前默认" tone={selected ? "selected" : "default"} /> : null}
-                    </div>
-                  </div>
-                  <span
-                    className={`mt-1 inline-flex h-2.5 w-2.5 rounded-full ${
-                      selected
-                        ? "bg-white"
-                        : sourceStatus.tone === "success"
-                          ? "bg-emerald-500"
-                          : sourceStatus.tone === "warning"
-                            ? "bg-amber-500"
-                            : "bg-slate-300"
-                    }`}
-                  />
-                </div>
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-600">
+                    <provider.icon size={17} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[15px] font-semibold text-slate-950">{provider.label}</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">{provider.badge} · {provider.keyMode === "required" ? "需要 API Key" : "API Key 可选"}</span>
+                  </span>
+                </span>
+                <ChevronDown size={18} className={cn("shrink-0 text-slate-400 transition-transform", providerMenuOpen && "rotate-180")} />
               </button>
-            );
-          })}
-        </div>
-      </div>
 
-      {(() => {
-        const activeStatus = getSourceCardStatus(props.models, props.secrets, expandedSource);
-        const summaryTone = getStatusSurfaceTone(activeStatus.tone);
-        return (
-      <div className="rounded-2xl border border-slate-200/70 bg-white p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-400">Provider form</p>
-            <h3 className="mt-2 text-[15px] font-semibold text-slate-900">
-              {SOURCE_CARDS.find((item) => item.id === expandedSource)?.label}
-            </h3>
-            <p className="mt-1 text-[13px] leading-6 text-slate-500">
-              只展示当前来源需要填写的字段，避免把所有配置项一口气摊开。
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <StatusBadge label={activeStatus.label} tone={activeStatus.tone} />
-            {activeStatus.isDefault ? <StatusBadge label="当前默认" tone="default" /> : null}
-            <StatusBadge label={editorOpen ? "编辑中" : "摘要模式"} tone={editorOpen ? "default" : "muted"} />
-          </div>
-        </div>
-
-        <div className={`mt-4 rounded-2xl border px-4 py-4 ${summaryTone}`}>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-[12px] font-semibold text-slate-900">当前连接摘要</p>
-              <p className="mt-1 text-[12px] leading-6 text-slate-500">
-                先确认这一路来源当前的连接状态，需要修改时再展开表单。
-              </p>
+              {providerMenuOpen ? (
+                <div className="absolute left-0 right-0 z-30 mt-2 max-h-[420px] overflow-auto border border-slate-200 bg-white p-2 shadow-[0_22px_70px_rgba(15,23,42,0.14)]">
+                  {PROVIDER_GROUPS.map((group) => (
+                    <div key={group.label} className="mb-2 last:mb-0">
+                      <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">{group.label}</p>
+                      <div className="grid gap-1">
+                        {group.ids.map((id) => {
+                          const item = providerFor(id);
+                          const configured = getSourceCardStatus(props.models, props.secrets, id);
+                          const Icon = item.icon;
+                          const selected = sourceType === id;
+                          return (
+                            <button
+                              key={id}
+                              className={cn(
+                                "flex items-center gap-3 rounded-xl px-3 py-3 text-left transition",
+                                selected ? "bg-slate-950 text-white" : "text-slate-700 hover:bg-slate-50",
+                              )}
+                              onClick={() => updateSource(id)}
+                              type="button"
+                            >
+                              <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-lg", selected ? "bg-white/12" : "bg-slate-100 text-slate-500")}>
+                                <Icon size={16} />
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-[13px] font-semibold">{item.label}</span>
+                                <span className={cn("mt-0.5 block text-[11px]", selected ? "text-white/65" : "text-slate-400")}>
+                                  {item.badge} · {item.defaultModel || "手动填写模型"}
+                                </span>
+                              </span>
+                              <StatusBadge label={configured.isDefault ? "默认" : configured.label} tone={selected ? "selected" : configured.tone} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
+
+            <div className="border border-slate-200 bg-white">
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
+                <span className="text-[12px] font-medium text-slate-500">模型名称 / Model ID</span>
+                <span className="text-[11px] text-slate-400">可选择，也可直接输入添加</span>
+              </div>
+              <input
+                aria-label="添加模型名称"
+                list="hermes-model-options"
+                value={model}
+                onChange={(event) => updateModel(event.target.value)}
+                className="h-12 w-full bg-white px-4 font-mono text-[15px] text-slate-900 outline-none transition focus:bg-slate-50"
+                placeholder={provider.modelPlaceholder}
+              />
+              <datalist id="hermes-model-options">
+                {modelOptions.map((item) => <option key={item} value={item} />)}
+              </datalist>
+            </div>
+
             <button
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50"
-              onClick={() => setEditorOpen((value) => !value)}
+              className="h-12 w-full border border-slate-200 bg-white px-4 text-[15px] font-semibold text-slate-950 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+              disabled={!testOk || busyAction === "save"}
+              onClick={() => void saveModel()}
               type="button"
             >
-              {editorOpen ? "收起编辑" : "编辑连接"}
+              {busyAction === "save" ? "保存中..." : "一键添加为默认"}
             </button>
           </div>
 
-          <div className="mt-4 grid gap-2 sm:grid-cols-2">
-            <SummaryRow label="来源" value={SOURCE_CARDS.find((item) => item.id === expandedSource)?.label || expandedSource} />
-            <SummaryRow label="模型" value={model.trim() || "未填写"} />
-            {sourceNeedsBaseUrl(expandedSource) ? <SummaryRow label="Base URL" value={baseUrl.trim() || "未填写"} mono /> : null}
-            <SummaryRow label="密钥状态" value={hasStoredSecret ? "已保存到本地保管库" : sourceNeedsKey(expandedSource) ? "需要填写 API Key" : "可选"} />
-          </div>
-
-          {!editorOpen ? (
-            <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-3 text-[12px] text-slate-500">
-              {activeDraftHasConfig
-                ? "当前来源已经有配置，点“编辑连接”可以继续修改 URL、模型或密钥。"
-                : "当前来源还没有完整配置，点“编辑连接”开始填写。"}
-            </div>
-          ) : null}
-        </div>
-
-        {editorOpen ? (
-          <>
-            {expandedSource === "local_openai" ? (
-              <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-4 text-[12px] text-blue-700">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="font-medium">自动探测本地接口</p>
-                    <p className="mt-1 text-[11px] text-blue-600">先试常见地址，再决定是否手动填写，减少无效试错。</p>
-                  </div>
-                  <button
-                    className="rounded-xl bg-blue-600 px-3 py-2 text-[12px] font-medium text-white hover:bg-blue-700 disabled:opacity-60"
-                    disabled={discovering}
-                    onClick={() => void discoverLocal()}
-                    type="button"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      {discovering ? <Loader2 size={14} className="animate-spin" /> : null}
-                      {discovering ? "探测中..." : "自动探测"}
-                    </span>
-                  </button>
-                </div>
-                {discovery ? (
-                  <div className="mt-3 space-y-2">
-                    {discovery.candidates.map((candidate) => (
-                      <button
-                        key={candidate.baseUrl}
-                        className={`block w-full rounded-xl border px-3 py-3 text-left ${
-                          candidate.ok ? "border-emerald-200 bg-white text-emerald-700" : "border-slate-200 bg-white text-slate-500"
-                        }`}
-                        onClick={() => {
-                          setBaseUrl(candidate.baseUrl);
-                          if (candidate.availableModels[0]) setModel(candidate.availableModels[0]);
-                          setSourceType("local_openai");
-                          setExpandedSource("local_openai");
-                        }}
-                        type="button"
-                      >
-                        <p className="font-medium">{candidate.baseUrl}</p>
-                        <p className="mt-1 text-[11px] leading-5">
-                          {candidate.ok
-                            ? `可用模型：${candidate.availableModels.slice(0, 4).join("、") || "已连通，但服务未返回模型列表"}`
-                            : candidate.message}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {(expandedSource === "local_openai" || expandedSource === "custom_gateway") ? (
-                <label className="block text-[12px] text-slate-500">
-                  <span className="mb-1.5 block">Base URL</span>
-                  <input
-                    value={baseUrl}
-                    onChange={(event) => setBaseUrl(event.target.value)}
-                    className="w-full rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
-                    placeholder="例如 http://127.0.0.1:1234/v1"
-                  />
-                </label>
-              ) : null}
-
-              <label className="block text-[12px] text-slate-500">
-                <span className="mb-1.5 block">模型名</span>
-                <input
-                  value={model}
-                  onChange={(event) => setModel(event.target.value)}
-                  className="w-full rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
-                  placeholder={expandedSource === "openai" ? "例如 gpt-4.1" : "例如 qwen2.5-coder"}
-                />
-              </label>
-            </div>
-
-            <div className="mt-3">
-              <label className="block text-[12px] text-slate-500">
-                <span className="mb-1.5 block">API Key{expandedSource === "openai" || expandedSource === "openrouter" ? "" : "（可选）"}</span>
-                <input
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  className="w-full rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
-                  placeholder={
-                    expandedSource === "openai" || expandedSource === "openrouter"
-                      ? "输入或粘贴你的 API Key"
-                      : "如果你的本地接口或网关需要认证，可在这里填"
-                  }
-                  type="password"
-                />
-              </label>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                <span className={`inline-flex items-center rounded-full px-2 py-1 font-medium ${hasStoredSecret ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
-                  {hasStoredSecret ? "已保存密钥" : "尚未保存密钥"}
-                </span>
-                <span className="font-mono text-[10px] text-slate-400">{effectiveSecretRef}</span>
-              </div>
-              <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                这里只需要填一次真实的 API Key。上面的引用名只是内部存储位置，不是第二个 Key；如果重新输入，这次保存会覆盖原来的密钥。
-              </p>
-              <button
-                className="mt-3 text-[12px] font-medium text-slate-600 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
-                onClick={() => setShowAdvancedSecretRef((value) => !value)}
-                type="button"
-              >
-                {showAdvancedSecretRef ? "收起高级设置" : "高级设置：自定义密钥存储引用"}
-              </button>
-            </div>
-
-            {showAdvancedSecretRef ? (
-              <div className="mt-3 rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-4">
-                <label className="block text-[12px] text-slate-500">
-                  <span className="mb-1.5 block">密钥存储引用（高级）</span>
-                  <input
-                    value={secretRef}
-                    onChange={(event) => setSecretRef(event.target.value)}
-                    className="w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2.5 text-[13px] text-slate-700 outline-none transition focus:ring-2 focus:ring-blue-500/30"
-                    placeholder={defaultSecretRefForSource(expandedSource)}
-                  />
-                </label>
-                <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                  这个字段只决定密钥在本地保管库里的名字。大多数情况下保持默认即可，不需要手动修改。
-                </p>
-              </div>
-            ) : null}
-          </>
-        ) : null}
-
-        <div className="mt-4 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
-          <p className="font-medium">先测试，再保存</p>
-          <p className="mt-1 text-[11px] text-amber-600">
-            只有测试通过后，才允许“保存并设为默认”，这样问题会在配置阶段就被拦住。
+          <p className="mt-5 text-[14px] leading-7 text-slate-500">
+            {providerIntro(sourceType)}
+            <a className="ml-1 font-medium text-blue-600 underline decoration-blue-200 underline-offset-4" href="https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/" rel="noreferrer" target="_blank">
+              查看标准说明
+            </a>
           </p>
         </div>
 
-        {testResult ? (
-          <div className={`mt-4 rounded-2xl border px-4 py-3 text-[12px] ${testResult.ok ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
-            <p className="font-medium">{testResult.ok ? "测试通过" : "测试失败"}</p>
-            <p className="mt-1 whitespace-pre-wrap leading-6">{testResult.message}</p>
-            {testResult.recommendedFix ? <p className="mt-1 text-[11px] opacity-80">建议动作：{testResult.recommendedFix}</p> : null}
+        <div className="border-t border-slate-100 px-7 py-8">
+          <p className="text-[14px] text-slate-500">切换模型</p>
+          <div className="grid min-h-[230px] place-items-center text-center">
+            <div>
+              <div className="mx-auto mb-5 grid h-16 w-16 place-items-center text-slate-300">
+                <Server size={54} strokeWidth={1.2} />
+              </div>
+              <p className="text-[16px] font-semibold text-slate-950">
+                {currentProfile?.model ? currentProfile.model : "暂无数据"}
+              </p>
+              <p className="mt-2 max-w-sm text-[12px] leading-5 text-slate-400">
+                {currentProfile?.model ? "当前默认模型已保存。测试通过后可以把上方模型切换为新的默认项。" : "添加默认模型后，这里会显示可切换的模型。"}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Connection</p>
+            <h3 className="mt-1 text-[15px] font-semibold text-slate-900">连接参数</h3>
+          </div>
+          <StatusBadge label={testOk ? "测试通过" : "等待测试"} tone={testOk ? "success" : "muted"} />
+        </div>
+
+        <div className="grid gap-3">
+          <label className="block text-[12px] font-medium text-slate-500">
+            <span className="mb-1.5 block">Base URL</span>
+            <input
+              value={baseUrl}
+              onChange={(event) => updateBaseUrl(event.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[13px] text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
+              placeholder={provider.baseUrl}
+            />
+          </label>
+
+          <label className="block text-[12px] font-medium text-slate-500">
+            <span className="mb-1.5 flex items-center justify-between gap-2">
+              <span>API Key {provider.keyMode === "optional" ? "（可选）" : ""}</span>
+              <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold", hasStoredSecret ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>
+                <KeyRound size={11} />
+                {hasStoredSecret ? "已保存" : "未保存"}
+              </span>
+            </span>
+            <input
+              value={apiKey}
+              onChange={(event) => updateApiKey(event.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
+              placeholder={provider.keyMode === "required" ? "粘贴 API Key" : "本地接口无鉴权可留空"}
+              type="password"
+            />
+          </label>
+
+          <div className="flex flex-wrap gap-2">
+            {sourceType === "local_openai" ? (
+              <button
+                className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+                disabled={busyAction === "discover"}
+                onClick={() => void discoverLocal()}
+                type="button"
+              >
+                {busyAction === "discover" ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />}
+                自动探测
+              </button>
+            ) : null}
+            <button
+              className="text-[12px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
+              onClick={() => setShowAdvanced((value) => !value)}
+              type="button"
+            >
+              {showAdvanced ? "收起高级项" : "高级项：密钥引用名"}
+            </button>
+          </div>
+
+          {showAdvanced ? (
+            <label className="block rounded-2xl border border-slate-200 bg-slate-50 p-3 text-[12px] font-medium text-slate-500">
+              <span className="mb-1.5 block">Secret Ref</span>
+              <input
+                value={secretRef}
+                onChange={(event) => {
+                  setSecretRef(event.target.value);
+                  setTestResult(undefined);
+                }}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 font-mono text-[13px] text-slate-800 outline-none"
+                placeholder={defaultSecretRefForSource(sourceType)}
+              />
+            </label>
+          ) : null}
+        </div>
+
+        {discovery ? (
+          <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-[12px] text-blue-700">
+            <p className="font-semibold">{discovery.ok ? "发现可用本地接口" : "未发现本地接口"}</p>
+            <div className="mt-2 grid gap-2">
+              {discovery.candidates.map((candidate) => (
+                <button
+                  key={candidate.baseUrl}
+                  className="rounded-xl bg-white px-3 py-2 text-left text-[12px] text-slate-600"
+                  onClick={() => {
+                    updateBaseUrl(candidate.baseUrl);
+                    if (candidate.availableModels[0]) updateModel(candidate.availableModels[0]);
+                  }}
+                  type="button"
+                >
+                  <span className="block font-mono text-slate-800">{candidate.baseUrl}</span>
+                  <span className="mt-0.5 block">{candidate.availableModels.slice(0, 4).join("、") || candidate.message}</span>
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
 
-        <div className="mt-4 flex flex-wrap justify-end gap-2">
+        {testResult ? (
+          <div className={cn("mb-3 rounded-2xl border px-4 py-3 text-[12px]", testResult.ok ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700")}>
+            <div className="flex items-center gap-2 font-semibold">
+              {testResult.ok ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
+              {testResult.ok ? "测试通过" : "测试失败"}
+            </div>
+            <p className="mt-2 whitespace-pre-wrap leading-6">{testResult.message}</p>
+            {testResult.recommendedFix ? (
+              <div className="mt-2 rounded-xl bg-white/70 px-3 py-2 font-medium">
+                建议动作：{testResult.recommendedFix}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[12px] text-slate-500">
+            先测试连接。测试通过后，保存按钮才会启用。
+          </div>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2">
           <button
             className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-            disabled={busyAction === "test"}
-            onClick={() => {
-              setSourceType(expandedSource);
-              void testConnection(expandedSource);
-            }}
+            disabled={busyAction === "test" || !baseUrl.trim() || !model.trim() || !canUseSavedSecret}
+            onClick={() => void testConnection()}
             type="button"
           >
             <span className="inline-flex items-center gap-2">
@@ -441,12 +571,9 @@ export function ModelConfigWizard(props: {
             </span>
           </button>
           <button
-            className="rounded-xl bg-slate-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+            className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
             disabled={!testOk || busyAction === "save"}
-            onClick={() => {
-              setSourceType(expandedSource);
-              void saveModel(expandedSource);
-            }}
+            onClick={() => void saveModel()}
             type="button"
           >
             <span className="inline-flex items-center gap-2">
@@ -455,27 +582,37 @@ export function ModelConfigWizard(props: {
             </span>
           </button>
         </div>
-      </div>
-        );
-      })()}
-
-      {props.models.modelProfiles.some((item) => item.provider === "anthropic") ? (
-        <div className="rounded-2xl border border-slate-200/70 bg-slate-50/70 px-4 py-3 text-[12px] text-slate-500">
-          <p className="font-medium text-slate-700">已有配置 / 高级兼容项</p>
-          <p className="mt-1 leading-6">检测到旧的 Anthropic 或其他历史配置。本轮向导先聚焦 4 类主来源，但旧配置仍然保留，不会丢失。</p>
-        </div>
-      ) : null}
+      </section>
     </div>
   );
 }
 
-function SummaryRow(props: { label: string; value: string; mono?: boolean }) {
+function SummaryTile(props: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-white/70 bg-white px-3 py-2">
-      <p className="text-[11px] text-slate-400">{props.label}</p>
-      <p className={`mt-1 text-[12px] font-medium text-slate-700 ${props.mono ? "font-mono text-[11px]" : ""}`}>{props.value}</p>
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <p className="text-[11px] font-medium text-slate-400">{props.label}</p>
+      <p className="mt-1 truncate text-[12px] font-semibold text-slate-700">{props.value}</p>
     </div>
   );
+}
+
+function providerIntro(sourceType: SourceType) {
+  if (sourceType === "local_openai") {
+    return "本地 OpenAI-Compatible 适合 LM Studio、vLLM、Ollama 中转或 New API 等本机服务。";
+  }
+  if (sourceType === "openrouter") {
+    return "OpenRouter 适合统一接入多个云模型，建议只填写你常用的模型 ID。";
+  }
+  if (sourceType === "openai") {
+    return "OpenAI 通道需要 API Key 和模型 ID，Base URL 默认使用官方 /v1 地址。";
+  }
+  if (sourceType === "volcengine") {
+    return "火山方舟支持 OpenAI-compatible 调用，适合接入豆包等方舟模型。";
+  }
+  if (sourceType === "volcengine_coding") {
+    return "火山方舟 Coding Plan 适合代码类任务，已预置 Coding Plan 专用接口地址。";
+  }
+  return "自定义兼容网关适合公司内网、LiteLLM、One API、New API 或其他 OpenAI-compatible 服务。";
 }
 
 function StatusBadge(props: { label: string; tone: "success" | "warning" | "muted" | "default" | "selected" }) {
@@ -489,14 +626,7 @@ function StatusBadge(props: { label: string; tone: "success" | "warning" | "mute
           : props.tone === "selected"
             ? "bg-white/15 text-white"
             : "bg-slate-100 text-slate-600";
-  return <span className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${className}`}>{props.label}</span>;
-}
-
-function getStatusSurfaceTone(tone: "success" | "warning" | "muted" | "default") {
-  if (tone === "success") return "border-emerald-200/80 bg-emerald-50/70";
-  if (tone === "warning") return "border-amber-200/80 bg-amber-50/70";
-  if (tone === "default") return "border-blue-200/80 bg-blue-50/60";
-  return "border-slate-200/80 bg-slate-50/70";
+  return <span className={`inline-flex shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${className}`}>{props.label}</span>;
 }
 
 function deriveInitialSourceType(models: OverviewModels): SourceType {
@@ -507,21 +637,20 @@ function deriveInitialSourceType(models: OverviewModels): SourceType {
 
 function deriveStateForSource(models: OverviewModels, sourceType: SourceType) {
   const current = models.modelProfiles.find((item) => inferSourceType(item.provider, item.baseUrl) === sourceType);
+  const preset = providerFor(sourceType);
   if (!current) {
     return {
       sourceType,
-      baseUrl: defaultBaseUrlForSource(sourceType),
-      model: "",
+      baseUrl: preset.baseUrl,
+      model: preset.defaultModel,
       secretRef: defaultSecretRefForSource(sourceType),
-      hasExistingConfig: false,
     };
   }
   return {
     sourceType,
-    baseUrl: current.baseUrl ?? defaultBaseUrlForSource(sourceType),
+    baseUrl: current.baseUrl ?? preset.baseUrl,
     model: current.model ?? "",
-    secretRef: current.secretRef ?? "",
-    hasExistingConfig: Boolean(current.model || current.baseUrl || current.secretRef),
+    secretRef: current.secretRef ?? defaultSecretRefForSource(sourceType),
   };
 }
 
@@ -531,21 +660,17 @@ function getSourceCardStatus(models: OverviewModels, secrets: SecretMeta[], sour
   if (!current) {
     return { label: "未配置", tone: "muted" as const, isDefault };
   }
-
   const modelReady = Boolean(current.model?.trim());
-  const baseUrlReady = !sourceNeedsBaseUrl(sourceType) || Boolean(current.baseUrl?.trim());
+  const baseUrlReady = Boolean(current.baseUrl?.trim());
   const secretReady = !sourceNeedsKey(sourceType) || secrets.some((item) => item.ref === (current.secretRef || defaultSecretRefForSource(sourceType)) && item.exists);
-
-  if (!modelReady) {
-    return { label: "缺模型", tone: "warning" as const, isDefault };
-  }
-  if (!baseUrlReady) {
-    return { label: "缺地址", tone: "warning" as const, isDefault };
-  }
-  if (!secretReady) {
-    return { label: "缺 Key", tone: "warning" as const, isDefault };
-  }
+  if (!modelReady) return { label: "缺模型", tone: "warning" as const, isDefault };
+  if (!baseUrlReady) return { label: "缺地址", tone: "warning" as const, isDefault };
+  if (!secretReady) return { label: "缺 Key", tone: "warning" as const, isDefault };
   return { label: "已配置", tone: "success" as const, isDefault };
+}
+
+function providerFor(sourceType: SourceType) {
+  return PROVIDERS.find((item) => item.id === sourceType) ?? PROVIDERS[0];
 }
 
 function inferSourceType(provider: string, baseUrl?: string): SourceType {
@@ -553,7 +678,16 @@ function inferSourceType(provider: string, baseUrl?: string): SourceType {
   if (provider === "openai") return "openai";
   if (provider === "custom") {
     const text = (baseUrl ?? "").toLowerCase();
-    return text.includes("127.0.0.1") || text.includes("localhost") ? "local_openai" : "custom_gateway";
+    if (text.includes("127.0.0.1") || text.includes("localhost")) return "local_openai";
+    if (text.includes("deepseek.com")) return "deepseek";
+    if (text.includes("dashscope")) return "qwen";
+    if (text.includes("moonshot")) return "kimi";
+    if (text.includes("ark.cn-beijing.volces.com/api/coding")) return "volcengine_coding";
+    if (text.includes("ark.cn-beijing.volces.com")) return "volcengine";
+    if (text.includes("hunyuan.cloud.tencent.com")) return "tencent_hunyuan";
+    if (text.includes("minimax.io")) return "minimax";
+    if (text.includes("bigmodel.cn")) return "zhipu";
+    return "custom_gateway";
   }
   return "local_openai";
 }
@@ -565,20 +699,23 @@ function buildProfileId(sourceType: SourceType) {
 function defaultSecretRefForSource(sourceType: SourceType) {
   if (sourceType === "openai") return "provider.openai.apiKey";
   if (sourceType === "openrouter") return "provider.openrouter.apiKey";
+  if (sourceType === "deepseek") return "provider.deepseek.apiKey";
+  if (sourceType === "qwen") return "provider.qwen.apiKey";
+  if (sourceType === "kimi") return "provider.kimi.apiKey";
+  if (sourceType === "volcengine") return "provider.volcengine.apiKey";
+  if (sourceType === "volcengine_coding") return "provider.volcengine-coding.apiKey";
+  if (sourceType === "tencent_hunyuan") return "provider.tencent-hunyuan.apiKey";
+  if (sourceType === "minimax") return "provider.minimax.apiKey";
+  if (sourceType === "zhipu") return "provider.zhipu.apiKey";
   if (sourceType === "local_openai") return "provider.local.apiKey";
   return "provider.custom.apiKey";
 }
 
-function defaultBaseUrlForSource(sourceType: SourceType) {
-  if (sourceType === "openai") return "https://api.openai.com/v1";
-  if (sourceType === "openrouter") return "https://openrouter.ai/api/v1";
-  return "http://127.0.0.1:1234/v1";
-}
-
-function sourceNeedsBaseUrl(sourceType: SourceType) {
-  return sourceType === "local_openai" || sourceType === "custom_gateway";
-}
-
 function sourceNeedsKey(sourceType: SourceType) {
-  return sourceType === "openai" || sourceType === "openrouter";
+  return providerFor(sourceType).keyMode === "required";
+}
+
+function connectionSourceType(sourceType: SourceType): "local_openai" | "openrouter" | "openai" | "custom_gateway" {
+  if (sourceType === "local_openai" || sourceType === "openrouter" || sourceType === "openai") return sourceType;
+  return "custom_gateway";
 }

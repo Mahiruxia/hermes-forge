@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppPaths } from "./app-paths";
-import type { EngineEvent, TaskEventEnvelope } from "../shared/types";
+import type { EngineEvent, SessionAgentInsightUsage, TaskEventEnvelope } from "../shared/types";
 
 const SECRET_PATTERNS = [
   /sk-[A-Za-z0-9_-]{12,}/g,
@@ -18,23 +18,28 @@ export class SessionLog {
     await fs.appendFile(filePath, `${JSON.stringify(this.redact(envelope))}\n`, "utf8");
   }
 
-  async readRecent(workspaceId: string, maxEvents = 200) {
+  async readRecent(workspaceId: string, maxEvents = 200, workSessionId?: string) {
     const dir = this.appPaths.workspaceSessionDir(workspaceId);
     const files = await fs.readdir(dir).catch(() => []);
     const events: TaskEventEnvelope[] = [];
 
-    for (const file of files.filter((name) => name.endsWith(".jsonl")).slice(-12)) {
+    for (const file of files.filter((name) => name.endsWith(".jsonl"))) {
       const text = await fs.readFile(path.join(dir, file), "utf8").catch(() => "");
       for (const line of text.split(/\r?\n/).filter(Boolean)) {
         try {
-          events.push(JSON.parse(line) as TaskEventEnvelope);
+          const event = JSON.parse(line) as TaskEventEnvelope;
+          if (!workSessionId || event.workSessionId === workSessionId) {
+            events.push(event);
+          }
         } catch {
           // Ignore corrupt diagnostic lines.
         }
       }
     }
 
-    return events.slice(-maxEvents);
+    return events
+      .sort((left, right) => this.eventTimestamp(left.event).localeCompare(this.eventTimestamp(right.event)))
+      .slice(-maxEvents);
   }
 
   async summarizeRecentRuns(workspaceId: string, maxEvents = 400) {
@@ -63,6 +68,63 @@ export class SessionLog {
         toolCalls,
       };
     }).sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
+  }
+
+  async aggregateUsageForSession(workspaceId: string, workSessionId: string): Promise<SessionAgentInsightUsage | undefined> {
+    const dir = this.appPaths.workspaceSessionDir(workspaceId);
+    const files = await fs.readdir(dir).catch(() => []);
+    const latestByTaskRun = new Map<string, Extract<EngineEvent, { type: "usage" }>>();
+    let latestInputTokens = 0;
+    let latestOutputTokens = 0;
+    let latestEstimatedCostUsd = 0;
+    let updatedAt = "";
+
+    for (const file of files.filter((name) => name.endsWith(".jsonl"))) {
+      const text = await fs.readFile(path.join(dir, file), "utf8").catch(() => "");
+      for (const line of text.split(/\r?\n/).filter(Boolean)) {
+        try {
+          const event = JSON.parse(line) as TaskEventEnvelope;
+          if (event.workSessionId !== workSessionId || event.event.type !== "usage") {
+            continue;
+          }
+          const existing = latestByTaskRun.get(event.taskRunId);
+          if (!existing || event.event.at >= existing.at) {
+            latestByTaskRun.set(event.taskRunId, event.event);
+          }
+          if (event.event.at >= updatedAt) {
+            latestInputTokens = event.event.inputTokens;
+            latestOutputTokens = event.event.outputTokens;
+            latestEstimatedCostUsd = event.event.estimatedCostUsd;
+            updatedAt = event.event.at;
+          }
+        } catch {
+          // Ignore corrupt diagnostic lines.
+        }
+      }
+    }
+
+    if (!updatedAt) {
+      return undefined;
+    }
+
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalEstimatedCostUsd = 0;
+    for (const usage of latestByTaskRun.values()) {
+      totalInputTokens += usage.inputTokens;
+      totalOutputTokens += usage.outputTokens;
+      totalEstimatedCostUsd += usage.estimatedCostUsd;
+    }
+
+    return {
+      totalInputTokens,
+      totalOutputTokens,
+      totalEstimatedCostUsd,
+      latestInputTokens,
+      latestOutputTokens,
+      latestEstimatedCostUsd,
+      updatedAt,
+    };
   }
 
   private detectRunStatus(events: EngineEvent[]) {

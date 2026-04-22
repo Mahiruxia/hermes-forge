@@ -21,6 +21,7 @@ export const IpcChannels = {
   archiveSession: "sessions:archive",
   deleteSession: "sessions:delete",
   duplicateSession: "sessions:duplicate",
+  getSessionAgentInsight: "sessions:get-agent-insight",
   exportSession: "sessions:export",
   importSession: "sessions:import",
   importCliSession: "sessions:import-cli",
