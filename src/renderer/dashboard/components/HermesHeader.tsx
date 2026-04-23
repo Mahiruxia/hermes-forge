@@ -162,7 +162,7 @@ export function HermesHeader(props: {
   ];
 
   return (
-    <header className="relative z-40 flex h-[58px] items-center justify-between border-b border-slate-200/70 bg-white/95 px-5 backdrop-blur-md" role="banner">
+    <header className="hermes-header relative z-40 flex h-[58px] items-center justify-between border-b border-slate-200/70 bg-white/95 px-5 backdrop-blur-md" role="banner">
       <div className="flex min-w-0 items-center gap-4">
         <div className="flex items-center gap-3">
           <div className="grid h-9 w-9 place-items-center rounded-[14px] border border-slate-200/80 bg-slate-950 text-white shadow-[0_8px_20px_rgba(15,23,42,0.12)]">
@@ -259,7 +259,7 @@ export function HermesHeader(props: {
           </button>
 
           {showMenu ? (
-            <div className="absolute right-0 top-[calc(100%+10px)] z-50 w-52 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.12)] backdrop-blur-xl">
+            <div className="hermes-popover absolute right-0 top-[calc(100%+10px)] z-50 w-52 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.12)] backdrop-blur-xl">
               {menuItems.map((item, index) => (
                 "divider" in item ? (
                   <div key={`divider-${index}`} className="my-1 h-px bg-slate-100" />
@@ -292,7 +292,7 @@ const inputClass = "w-52 rounded-xl border border-slate-200 bg-slate-50 px-3 py-
 
 function headerActionClass(active?: boolean) {
   return cn(
-    "grid h-9 w-9 place-items-center rounded-xl border border-transparent text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900",
+    "hermes-header-action grid h-9 w-9 place-items-center rounded-xl border border-transparent text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900",
     active && "border-slate-200 bg-slate-100 text-slate-900",
   );
 }

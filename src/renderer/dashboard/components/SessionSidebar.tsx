@@ -42,7 +42,7 @@ export function SessionSidebar(props: {
   }
 
   return (
-    <aside className="flex h-full min-h-0 w-[228px] shrink-0 flex-col border-r border-slate-200/80 bg-[#fbfbfd] p-2 xl:w-[240px]">
+    <aside className="hermes-session-sidebar flex h-full min-h-0 w-[228px] shrink-0 flex-col border-r border-slate-200/80 bg-[#fbfbfd] p-2 xl:w-[240px]">
       <div className="space-y-2 border-b border-slate-200/70 pb-2">
         <div className="flex min-w-0 items-center gap-2">
           <button className="flex h-[34px] min-w-0 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--hermes-primary)] px-2.5 text-[12px] font-medium text-white shadow-[0_10px_24px_rgba(91,77,255,0.24)] transition hover:bg-[var(--hermes-primary-strong)]" onClick={props.onCreateSession} type="button">
@@ -53,9 +53,9 @@ export function SessionSidebar(props: {
             <PanelLeftClose size={15} />
           </button>
         </div>
-        <div className="flex h-8 items-center gap-2 rounded-xl border border-[var(--hermes-card-border)] bg-white px-2.5 focus-within:hermes-purple-focus">
+        <div className="hermes-session-search flex h-8 items-center gap-2 rounded-xl border border-[var(--hermes-card-border)] bg-white px-2.5 focus-within:hermes-purple-focus">
           <Search size={13} className="text-slate-400" />
-          <input className="min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-slate-400" placeholder="搜索会话" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input className="hermes-session-search__input min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-slate-400" placeholder="搜索会话" value={query} onChange={(event) => setQuery(event.target.value)} />
         </div>
         <div className="flex items-center justify-between px-0.5">
           <button className={tabClass(tab === "recent")} onClick={() => setTab("recent")} type="button">最近</button>
@@ -155,7 +155,7 @@ function SessionItem(props: {
   modelLabel: string;
 }) {
   return (
-    <div className={cn("group overflow-hidden rounded-xl px-2.5 py-2 text-[12px] transition-all focus-within:bg-white", props.active ? "bg-[var(--hermes-primary-soft)] text-[var(--hermes-primary)] shadow-sm ring-1 ring-[var(--hermes-primary-border)]" : "text-slate-600 hover:bg-white hover:shadow-sm hover:ring-1 hover:ring-slate-200/70")}>
+    <div className={cn("hermes-session-item group overflow-hidden rounded-xl px-2.5 py-2 text-[12px] transition-all focus-within:bg-white", props.active ? "is-active bg-[var(--hermes-primary-soft)] text-[var(--hermes-primary)] shadow-sm ring-1 ring-[var(--hermes-primary-border)]" : "text-slate-600 hover:bg-white hover:shadow-sm hover:ring-1 hover:ring-slate-200/70")}>
       <div className="flex items-start gap-2">
         <span className={cn("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", props.active ? "bg-[var(--hermes-primary)] shadow-[0_0_10px_rgba(91,77,255,0.4)]" : props.session.pinned ? "bg-amber-400" : "bg-slate-300/70")} />
         <button className="min-w-0 flex-1 overflow-hidden text-left" onClick={props.onSelect} type="button">

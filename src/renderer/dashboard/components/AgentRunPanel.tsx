@@ -102,13 +102,13 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
   return (
     <aside
       className={cn(
-        "flex h-full w-[360px] flex-col overflow-hidden border-l border-slate-200/80 bg-[#f5f6fa] shadow-[-12px_0_32px_rgba(15,23,42,0.06)]",
+        "hermes-agent-panel flex h-full w-[360px] flex-col overflow-hidden border-l border-slate-200/80 bg-[#f5f6fa] shadow-[-12px_0_32px_rgba(15,23,42,0.06)]",
         !props.open && "pointer-events-none",
       )}
       aria-hidden={!props.open}
       aria-label="Agent 面板"
     >
-      <div className="flex h-[58px] shrink-0 items-center justify-between border-b border-slate-200/80 px-4">
+      <div className="hermes-agent-panel__header flex h-[58px] shrink-0 items-center justify-between border-b border-slate-200/80 px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Repeat2 size={16} className="text-slate-500" />
           <div className="min-w-0">
@@ -126,7 +126,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
         </button>
       </div>
 
-      <div className="custom-scrollbar flex-1 space-y-3 overflow-y-auto px-3 py-3">
+      <div className="hermes-agent-panel__content custom-scrollbar flex-1 space-y-3 overflow-y-auto px-3 py-3">
         <PanelCard title="当前模型" action={hasModel ? <ReadyBadge /> : <StatusPill tone="amber">未配置</StatusPill>}>
           <div className="flex items-center gap-3">
             <span data-testid="agent-model-icon" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--hermes-primary-soft)] text-[var(--hermes-primary)] ring-1 ring-[var(--hermes-primary-border)]">
@@ -368,7 +368,7 @@ function buildToolCapabilities(toolEvents: TaskRunProjection["toolEvents"], acti
 
 function PanelCard(props: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-slate-200/70 bg-white px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+    <section className="hermes-agent-card rounded-xl border border-slate-200/70 bg-white px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-[14px] font-semibold text-[var(--hermes-primary)]">{props.title}</h3>
         {props.action}

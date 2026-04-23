@@ -58,9 +58,9 @@ export function PureChatContainer(props: {
   }, [latestRunSignature, followBottom, visibleRuns.length]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-white">
+    <div className="hermes-chat-shell relative flex h-full min-h-0 flex-col bg-white">
       <div
-        className="custom-scrollbar min-h-0 flex-1 overflow-y-auto bg-[#f6f7f9] px-4 py-5 sm:px-6"
+        className="hermes-chat-scroll custom-scrollbar min-h-0 flex-1 overflow-y-auto bg-[#f6f7f9] px-4 py-5 sm:px-6"
         onScroll={(event) => {
           const el = event.currentTarget;
           setFollowBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 160);
@@ -89,7 +89,7 @@ export function PureChatContainer(props: {
         </button>
       ) : null}
 
-      <div className="shrink-0 border-t border-slate-200/70 bg-white/90">
+      <div className="hermes-composer-shell shrink-0 border-t border-slate-200/70 bg-white/90">
         <ChatInput
           onStartTask={props.onStartTask}
           onCancelTask={props.onCancelTask}
@@ -186,10 +186,10 @@ function ChatMessageCard(props: { role: "user" | "assistant"; createdAt: string;
   return (
     <article
       className={cn(
-        "group relative w-full rounded-[24px] px-5 py-4 shadow-[0_16px_38px_rgba(15,23,42,0.05)] outline-none transition",
+        "hermes-message-card group relative w-full rounded-[24px] px-5 py-4 shadow-[0_16px_38px_rgba(15,23,42,0.05)] outline-none transition",
         isUser
-          ? "ml-auto max-w-[min(64%,560px)] border border-blue-100 bg-[#eef5ff] text-slate-800 max-sm:max-w-[92%]"
-          : "max-w-3xl border border-[var(--hermes-card-border)] bg-white text-slate-800",
+          ? "hermes-message-card--user ml-auto max-w-[min(64%,560px)] border border-blue-100 bg-[#eef5ff] text-slate-800 max-sm:max-w-[92%]"
+          : "hermes-message-card--assistant max-w-3xl border border-[var(--hermes-card-border)] bg-white text-slate-800",
       )}
       tabIndex={0}
     >
@@ -269,7 +269,7 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
           {waiting ? (
             <TypingState phase={run.status === "routing" ? "handoff" : "replying"} />
           ) : (
-            <div className="relative rounded-[22px] border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] p-4 before:absolute before:left-0 before:top-5 before:h-10 before:w-1 before:rounded-r-full before:bg-[var(--hermes-primary)]">
+            <div className="hermes-assistant-bubble relative rounded-[22px] border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] p-4 before:absolute before:left-0 before:top-5 before:h-10 before:w-1 before:rounded-r-full before:bg-[var(--hermes-primary)]">
               <StreamingMarkdown content={run.assistantMessage.content} isStreaming={run.status === "streaming"} className="prose prose-slate max-w-none break-words text-[14px] leading-relaxed text-slate-800 [overflow-wrap:anywhere] prose-p:my-3 prose-ul:my-3 prose-ol:my-3 prose-li:my-1.5 prose-li:leading-relaxed" />
               {softStreaming ? <SoftStreamingHint /> : null}
             </div>
@@ -504,7 +504,7 @@ function TypingState(props: { phase: "handoff" | "replying" }) {
     ? "Hermes 正在准备 MEMORY.md、工作区上下文和执行链路。通常很快就会开始输出。"
     : "Hermes 正在整理最终回复；如果等待时间偏长，可以展开工具过程或停止本轮任务。";
   return (
-    <div data-testid="typing-state" className="rounded-[22px] bg-[#f7f8fa] px-4 py-4">
+    <div data-testid="typing-state" className="hermes-typing-card rounded-[22px] bg-[#f7f8fa] px-4 py-4">
       <div className="flex items-center gap-2.5 text-[13px] font-medium text-slate-600">
         <span className="relative inline-flex h-5 w-5 items-center justify-center">
           <span className="absolute inset-0 animate-ping rounded-full bg-slate-200/70 [animation-duration:1.8s]" />

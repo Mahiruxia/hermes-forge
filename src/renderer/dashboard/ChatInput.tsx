@@ -483,7 +483,7 @@ export function ChatInput(props: {
 
         <div
           className={cn(
-            "relative overflow-hidden rounded-[28px] border border-[var(--hermes-card-border)] bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)] focus-within:hermes-purple-focus",
+            "hermes-composer-card relative overflow-hidden rounded-[28px] border border-[var(--hermes-card-border)] bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)] focus-within:hermes-purple-focus",
             isDraggingAttachment && "ring-2 ring-[var(--hermes-primary-border)]",
           )}
           onDragEnter={handleAttachmentDragEnter}
