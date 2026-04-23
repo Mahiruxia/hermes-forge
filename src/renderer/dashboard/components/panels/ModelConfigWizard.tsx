@@ -15,7 +15,7 @@ type ModelSummary = {
 type OverviewModels = {
   defaultProfileId?: string;
   providerProfiles: Array<{ id: string; provider: string; label: string; apiKeySecretRef?: string }>;
-  modelProfiles: Array<{ id: string; provider: string; model: string; baseUrl?: string; secretRef?: string }>;
+  modelProfiles: Array<{ id: string; name?: string; provider: string; model: string; baseUrl?: string; secretRef?: string }>;
   summary?: ModelSummary;
 };
 
@@ -180,12 +180,13 @@ export function ModelConfigWizard(props: {
   onRefresh: () => Promise<void>;
   onSaved: (message: string) => void;
 }) {
-  const initialSource = deriveInitialSourceType(props.models);
-  const initial = deriveStateForSource(props.models, initialSource);
-  const [sourceType, setSourceType] = useState<SourceType>(initial.sourceType);
-  const [baseUrl, setBaseUrl] = useState(initial.baseUrl);
-  const [model, setModel] = useState(initial.model);
-  const [secretRef, setSecretRef] = useState(initial.secretRef);
+  const currentProfile = props.models.modelProfiles.find((item) => item.id === props.models.defaultProfileId) ?? props.models.modelProfiles[0];
+  const initialDraft = draftStateForProfile(props.models, currentProfile?.id);
+  const [editingProfileId, setEditingProfileId] = useState<string | undefined>(currentProfile?.id);
+  const [sourceType, setSourceType] = useState<SourceType>(initialDraft.sourceType);
+  const [baseUrl, setBaseUrl] = useState(initialDraft.baseUrl);
+  const [model, setModel] = useState(initialDraft.model);
+  const [secretRef, setSecretRef] = useState(initialDraft.secretRef);
   const [apiKey, setApiKey] = useState("");
   const [testResult, setTestResult] = useState<ModelConnectionTestResult | undefined>();
   const [discovery, setDiscovery] = useState<LocalModelDiscoveryResult | undefined>();
@@ -194,8 +195,11 @@ export function ModelConfigWizard(props: {
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
 
   useEffect(() => {
-    const nextSource = deriveInitialSourceType(props.models);
-    const next = deriveStateForSource(props.models, nextSource);
+    const nextCurrent = props.models.modelProfiles.find((item) => item.id === editingProfileId)
+      ?? props.models.modelProfiles.find((item) => item.id === props.models.defaultProfileId)
+      ?? props.models.modelProfiles[0];
+    const next = draftStateForProfile(props.models, nextCurrent?.id);
+    setEditingProfileId(nextCurrent?.id);
     setSourceType(next.sourceType);
     setBaseUrl(next.baseUrl);
     setModel(next.model);
@@ -211,8 +215,6 @@ export function ModelConfigWizard(props: {
   const effectiveSecretRef = secretRef.trim() || defaultSecretRefForSource(sourceType);
   const hasStoredSecret = props.secrets.some((item) => item.ref === effectiveSecretRef && item.exists);
   const testOk = Boolean(testResult?.ok);
-  const currentProfile = props.models.modelProfiles.find((item) => item.id === props.models.defaultProfileId) ?? props.models.modelProfiles[0];
-  const currentSource = currentProfile ? inferSourceType(currentProfile.provider, currentProfile.baseUrl) : undefined;
   const canUseSavedSecret = hasStoredSecret || Boolean(apiKey.trim()) || !sourceNeedsKey(sourceType);
 
   const modelOptions = useMemo(
@@ -221,8 +223,36 @@ export function ModelConfigWizard(props: {
   );
 
   function updateSource(nextSource: SourceType) {
-    const next = deriveStateForSource(props.models, nextSource);
+    const next = draftStateForNewProfile(nextSource);
     setSourceType(nextSource);
+    setBaseUrl(next.baseUrl);
+    setModel(next.model);
+    setSecretRef(next.secretRef);
+    setApiKey("");
+    setDiscovery(undefined);
+    setTestResult(undefined);
+    setShowAdvanced(false);
+    setProviderMenuOpen(false);
+  }
+
+  function createNewProfile(nextSource: SourceType = sourceType) {
+    const next = draftStateForNewProfile(nextSource);
+    setEditingProfileId(undefined);
+    setSourceType(next.sourceType);
+    setBaseUrl(next.baseUrl);
+    setModel(next.model);
+    setSecretRef(next.secretRef);
+    setApiKey("");
+    setDiscovery(undefined);
+    setTestResult(undefined);
+    setShowAdvanced(false);
+    setProviderMenuOpen(false);
+  }
+
+  function editProfile(profileId: string) {
+    const next = draftStateForProfile(props.models, profileId);
+    setEditingProfileId(profileId);
+    setSourceType(next.sourceType);
     setBaseUrl(next.baseUrl);
     setModel(next.model);
     setSecretRef(next.secretRef);
@@ -281,9 +311,10 @@ export function ModelConfigWizard(props: {
     setBusyAction("save");
     try {
       const ref = await ensureSecretIfNeeded(sourceType);
-      const profileId = buildProfileId(sourceType);
+      const profileId = editingProfileId ?? buildProfileId(sourceType, props.models.modelProfiles);
       const nextProfile = {
         id: profileId,
+        name: friendlyProfileName(sourceType, model.trim()),
         provider: sourceType === "openai" || sourceType === "openrouter" ? sourceType : "custom",
         model: model.trim(),
         ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
@@ -294,14 +325,39 @@ export function ModelConfigWizard(props: {
         nextProfile,
       ];
       await window.workbenchClient.updateModelConfig({
-        defaultProfileId: profileId,
+        defaultProfileId: props.models.defaultProfileId ?? profileId,
         modelProfiles: nextProfiles,
       });
       await props.onRefresh();
-      props.onSaved("模型来源已保存，并设为默认");
+      setEditingProfileId(profileId);
+      props.onSaved(props.models.defaultProfileId ? "模型已保存" : "模型已保存，并设为默认");
     } finally {
       setBusyAction(undefined);
     }
+  }
+
+  async function setDefaultProfile(profileId: string) {
+    await window.workbenchClient.updateModelConfig({
+      defaultProfileId: profileId,
+      modelProfiles: props.models.modelProfiles,
+    });
+    await props.onRefresh();
+    props.onSaved("默认模型已切换");
+  }
+
+  async function deleteProfile(profileId: string) {
+    const nextProfiles = props.models.modelProfiles.filter((item) => item.id !== profileId);
+    await window.workbenchClient.updateModelConfig({
+      defaultProfileId: props.models.defaultProfileId,
+      modelProfiles: nextProfiles,
+    });
+    await props.onRefresh();
+    if (editingProfileId === profileId) {
+      const fallback = nextProfiles.find((item) => item.id === props.models.defaultProfileId) ?? nextProfiles[0];
+      if (fallback) editProfile(fallback.id);
+      else createNewProfile("local_openai");
+    }
+    props.onSaved("模型已删除");
   }
 
   async function ensureSecretIfNeeded(targetSource: SourceType) {
@@ -407,15 +463,14 @@ export function ModelConfigWizard(props: {
               </datalist>
             </div>
 
-            <button
-              className="h-12 w-full border border-slate-200 bg-white px-4 text-[15px] font-semibold text-slate-950 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-              disabled={!testOk || busyAction === "save"}
-              onClick={() => void saveModel()}
-              type="button"
-            >
-              {busyAction === "save" ? "保存中..." : "一键添加为默认"}
-            </button>
-          </div>
+              <button
+                className="h-12 w-full border border-slate-200 bg-white px-4 text-[15px] font-semibold text-slate-950 transition hover:bg-slate-50"
+                onClick={() => createNewProfile(sourceType)}
+                type="button"
+              >
+                新增模型草稿
+              </button>
+            </div>
 
           <p className="mt-5 text-[14px] leading-7 text-slate-500">
             {providerIntro(sourceType)}
@@ -426,20 +481,66 @@ export function ModelConfigWizard(props: {
         </div>
 
         <div className="border-t border-slate-100 px-7 py-8">
-          <p className="text-[14px] text-slate-500">切换模型</p>
-          <div className="grid min-h-[230px] place-items-center text-center">
+          <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <div className="mx-auto mb-5 grid h-16 w-16 place-items-center text-slate-300">
-                <Server size={54} strokeWidth={1.2} />
-              </div>
-              <p className="text-[16px] font-semibold text-slate-950">
-                {currentProfile?.model ? currentProfile.model : "暂无数据"}
-              </p>
-              <p className="mt-2 max-w-sm text-[12px] leading-5 text-slate-400">
-                {currentProfile?.model ? "当前默认模型已保存。测试通过后可以把上方模型切换为新的默认项。" : "添加默认模型后，这里会显示可切换的模型。"}
-              </p>
+              <p className="text-[14px] text-slate-500">已保存模型</p>
+              <p className="mt-1 text-[12px] text-slate-400">支持查看、编辑、删除，并显式切换默认模型。</p>
             </div>
+            <button
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50"
+              onClick={() => createNewProfile("local_openai")}
+              type="button"
+            >
+              添加模型
+            </button>
           </div>
+          {props.models.modelProfiles.length ? (
+            <div className="grid gap-3">
+              {props.models.modelProfiles.map((profile) => {
+                const profileSource = inferSourceType(profile.provider, profile.baseUrl);
+                const isDefault = profile.id === props.models.defaultProfileId || (!props.models.defaultProfileId && profile.id === currentProfile?.id);
+                const isEditing = profile.id === editingProfileId;
+                return (
+                  <div key={profile.id} className={cn("rounded-2xl border px-4 py-3", isEditing ? "border-slate-900 bg-slate-50" : "border-slate-200 bg-white")}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-[14px] font-semibold text-slate-900">{profile.name ?? profile.model}</p>
+                          {isDefault ? <StatusBadge label="默认" tone="default" /> : null}
+                          <StatusBadge label={providerFor(profileSource).label} tone="muted" />
+                        </div>
+                        <p className="mt-1 break-all font-mono text-[12px] text-slate-500">{profile.model}</p>
+                        <p className="mt-1 text-[11px] text-slate-400">{profile.baseUrl ?? providerFor(profileSource).baseUrl}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {!isDefault ? (
+                          <button className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void setDefaultProfile(profile.id)} type="button">
+                            设为默认
+                          </button>
+                        ) : null}
+                        <button className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => editProfile(profile.id)} type="button">
+                          编辑
+                        </button>
+                        <button className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-[12px] font-semibold text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40" disabled={isDefault} onClick={() => void deleteProfile(profile.id)} type="button">
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="grid min-h-[180px] place-items-center text-center">
+              <div>
+                <div className="mx-auto mb-5 grid h-16 w-16 place-items-center text-slate-300">
+                  <Server size={54} strokeWidth={1.2} />
+                </div>
+                <p className="text-[16px] font-semibold text-slate-950">还没有已保存模型</p>
+                <p className="mt-2 max-w-sm text-[12px] leading-5 text-slate-400">先在上方选择来源、测试连接，再保存成模型配置。</p>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -578,7 +679,7 @@ export function ModelConfigWizard(props: {
           >
             <span className="inline-flex items-center gap-2">
               {busyAction === "save" ? <Loader2 size={14} className="animate-spin" /> : null}
-              {busyAction === "save" ? "保存中..." : "保存并设为默认"}
+              {busyAction === "save" ? "保存中..." : editingProfileId ? "保存模型" : "新增模型"}
             </span>
           </button>
         </div>
@@ -629,28 +730,28 @@ function StatusBadge(props: { label: string; tone: "success" | "warning" | "mute
   return <span className={`inline-flex shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${className}`}>{props.label}</span>;
 }
 
-function deriveInitialSourceType(models: OverviewModels): SourceType {
-  const current = models.modelProfiles.find((item) => item.id === models.defaultProfileId) ?? models.modelProfiles[0];
-  if (!current) return "local_openai";
-  return inferSourceType(current.provider, current.baseUrl);
-}
-
-function deriveStateForSource(models: OverviewModels, sourceType: SourceType) {
-  const current = models.modelProfiles.find((item) => inferSourceType(item.provider, item.baseUrl) === sourceType);
-  const preset = providerFor(sourceType);
+function draftStateForProfile(models: OverviewModels, profileId?: string) {
+  const current = profileId ? models.modelProfiles.find((item) => item.id === profileId) : undefined;
   if (!current) {
-    return {
-      sourceType,
-      baseUrl: preset.baseUrl,
-      model: preset.defaultModel,
-      secretRef: defaultSecretRefForSource(sourceType),
-    };
+    return draftStateForNewProfile("local_openai");
   }
+  const sourceType = inferSourceType(current.provider, current.baseUrl);
+  const preset = providerFor(sourceType);
   return {
     sourceType,
     baseUrl: current.baseUrl ?? preset.baseUrl,
     model: current.model ?? "",
     secretRef: current.secretRef ?? defaultSecretRefForSource(sourceType),
+  };
+}
+
+function draftStateForNewProfile(sourceType: SourceType) {
+  const preset = providerFor(sourceType);
+  return {
+    sourceType,
+    baseUrl: preset.baseUrl,
+    model: preset.defaultModel,
+    secretRef: defaultSecretRefForSource(sourceType),
   };
 }
 
@@ -692,8 +793,23 @@ function inferSourceType(provider: string, baseUrl?: string): SourceType {
   return "local_openai";
 }
 
-function buildProfileId(sourceType: SourceType) {
-  return `wizard-${sourceType}`;
+function buildProfileId(sourceType: SourceType, existingProfiles: OverviewModels["modelProfiles"]) {
+  const base = `wizard-${sourceType}`;
+  if (!existingProfiles.some((item) => item.id === base)) {
+    return base;
+  }
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existingProfiles.some((item) => item.id === candidate)) {
+      return candidate;
+    }
+  }
+  return `${base}-${Date.now().toString(36)}`;
+}
+
+function friendlyProfileName(sourceType: SourceType, model: string) {
+  const provider = providerFor(sourceType);
+  return model ? `${provider.label} · ${model}` : provider.label;
 }
 
 function defaultSecretRefForSource(sourceType: SourceType) {

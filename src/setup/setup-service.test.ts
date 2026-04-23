@@ -366,6 +366,32 @@ describe("SetupService dependency health", () => {
       expect.objectContaining({ cwd: process.cwd() }),
     );
   });
+
+  it("surfaces missing PyYAML as a repairable Hermes dependency", async () => {
+    healthCheckMock.mockResolvedValueOnce({
+      engineId: "hermes",
+      label: "Hermes",
+      available: false,
+      mode: "cli",
+      path: path.join(tempRoot, "Hermes Agent"),
+      message: "ModuleNotFoundError: No module named 'yaml'",
+    });
+    const service = createService();
+
+    const summary = await service.getSummary();
+    const hermes = summary.checks.find((check) => check.id === "hermes");
+    expect(hermes).toMatchObject({
+      status: "missing",
+      autoFixId: "hermes_pyyaml",
+      fixAction: "install_hermes_dependency",
+      canAutoFix: true,
+      blocking: true,
+    });
+
+    const result = await service.repairDependency("hermes_pyyaml");
+    expect(result.ok).toBe(true);
+    expect(result.command).toBe("python -m pip install --upgrade PyYAML");
+  });
 });
 
 function createService(overrides: Partial<EngineAdapter> = {}) {

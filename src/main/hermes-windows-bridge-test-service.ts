@@ -28,6 +28,7 @@ export class HermesWindowsBridgeTestService {
   ) {}
 
   async test(): Promise<HermesWindowsBridgeTestResult> {
+    await this.bridge.start();
     const config = await this.readConfig();
     const runtime = config.hermesRuntime ?? DEFAULT_RUNTIME;
     const permissions = resolveEnginePermissions(config, "hermes");

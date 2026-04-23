@@ -1,5 +1,53 @@
 # Release Notes
 
+## Hermes Forge v0.1.8
+
+发布日期：2026-04-23
+
+这是一次面向 Windows 原生能力、桌面核心体验和发布前诊断可靠性的稳定版。重点是让 Windows 原生 Hermes 真正拿到当前有效的 Windows Control Bridge，并把模型、附件、主题和诊断体验补到可交付状态。
+
+### 新增内容
+
+- 模型配置改为多 profile 管理：
+  - 同一来源可以保存多个模型，不再互相覆盖。
+  - 设置页可查看、编辑、删除非默认模型，并显式设为默认。
+  - 聊天输入区的模型按钮可以直接切换默认模型，下一轮任务即时生效。
+- 聊天输入区增强：
+  - 附件按钮常驻显示，不再只藏在 `+` 菜单。
+  - 支持从系统剪贴板粘贴图片作为图片附件。
+  - 保留拖拽文件和图片上传能力。
+- 主题体验增强：
+  - 设置中心新增可见主题切换。
+  - 接入高级深灰暗色主题，并保留 OLED 主题枚举。
+- 诊断与系统审计增强：
+  - 系统能力审计增加模型连通预检，模型服务不可用时快速失败。
+  - 诊断导出改为容错导出，子检查失败也会生成报告并记录 `diagnosticErrors`。
+
+### 修复内容
+
+- 修复 Windows Bridge 端口过期导致 Hermes 无法检修 Windows 的问题：
+  - 启动、配置刷新和任务前都会同步当前有效 bridge URL/token。
+  - Bridge 测试会主动确保 bridge 已启动。
+  - MCP server 不再固定使用 `py -3`，Windows 模式会优先使用配置里的 Python。
+- 统一 Hermes HOME：
+  - 模型同步、连接器 `.env`、Gateway 和 Windows bridge MCP 配置都写入 Forge profile 的 Hermes HOME。
+  - 避免一部分链路写 `~/.hermes`，另一部分链路读 Forge profile 的配置。
+- 修复 `No module named 'yaml'` 这类 Hermes 依赖问题的体检体验：
+  - 识别为 `PyYAML` 缺失。
+  - 提供“修复 Hermes 依赖”入口。
+
+### 验证
+
+- `npm run check` 通过。
+- `npm run build` 通过。
+- `npm test` 通过，34 个测试文件、161 个测试。
+- `npx electron . --system-audit` 真实审计通过：
+  - 模型连通预检通过。
+  - 极限路径读取通过。
+  - 工作区外文件写入/回读通过。
+  - 大文件读取通过。
+  - 宿主 PowerShell 命令执行通过。
+
 ## Hermes Forge v0.1.7
 
 发布日期：2026-04-22

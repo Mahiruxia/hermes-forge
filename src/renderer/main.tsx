@@ -5,6 +5,8 @@ import type {
   ConversationHistoryEntry,
   EngineEvent,
   HermesInstallEvent,
+  HermesWebUiOverview,
+  HermesWebUiSettings,
   RuntimeConfig,
   SecretVaultStatus,
   SetupCheck,
@@ -33,7 +35,7 @@ const RECENT_WORKSPACES_KEY = "zhenghebao.hermes.recentWorkspaces";
 type ConfigOverview = {
   runtimeConfig: {
     defaultModelProfileId?: string;
-    modelProfiles: Array<{ id: string; provider: string; model: string; baseUrl?: string; secretRef?: string }>;
+    modelProfiles: Array<{ id: string; name?: string; provider: string; model: string; baseUrl?: string; secretRef?: string }>;
     providerProfiles?: Array<{ id: string; provider: string; label: string; apiKeySecretRef?: string }>;
   };
   hermes: {
@@ -51,7 +53,7 @@ type ConfigOverview = {
   models: {
     defaultProfileId?: string;
     providerProfiles: Array<{ id: string; provider: string; label: string; apiKeySecretRef?: string }>;
-    modelProfiles: Array<{ id: string; provider: string; model: string; baseUrl?: string; secretRef?: string }>;
+    modelProfiles: Array<{ id: string; name?: string; provider: string; model: string; baseUrl?: string; secretRef?: string }>;
     summary?: {
       sourceType?: string;
       currentModel?: string;
@@ -69,6 +71,7 @@ type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 
 function SettingsView(props: { overview?: ConfigOverview; initialSection?: ConfigSectionId; onBack: () => void; onRefresh: () => Promise<void>; onExportDiagnostics?: () => void }) {
   const overview = props.overview;
+  const store = useAppStore();
   const [activeSection, setActiveSection] = useState<ConfigSectionId>(props.initialSection ?? "general");
   const [rootPath, setRootPath] = useState(overview?.hermes.rootPath ?? "");
   const [warmupMode, setWarmupMode] = useState(overview?.hermes.warmupMode ?? "cheap");
@@ -86,6 +89,7 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
   const [repairingDependency, setRepairingDependency] = useState<SetupDependencyRepairId | undefined>();
   const [setupActionRunning, setSetupActionRunning] = useState<string | undefined>();
   const [installEvent, setInstallEvent] = useState<HermesInstallEvent | undefined>();
+  const [theme, setTheme] = useState<"green-light" | "light" | "slate" | "oled">(store.webUiOverview?.settings.theme ?? "green-light");
 
   function showSaveNotice(message: string) {
     setSaveNotice(message);
@@ -97,6 +101,10 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
   useEffect(() => {
     setSecretRef(overview?.secrets[0]?.ref ?? "");
   }, [overview?.secrets]);
+
+  useEffect(() => {
+    setTheme(store.webUiOverview?.settings.theme ?? "green-light");
+  }, [store.webUiOverview?.settings.theme]);
 
   useEffect(() => {
     if (props.initialSection) setActiveSection(props.initialSection);
@@ -148,6 +156,12 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
     });
     await props.onRefresh();
     showSaveNotice("Hermes 设置已保存");
+  }
+
+  async function saveThemeSettings() {
+    const settings = await window.workbenchClient.saveWebUiSettings({ theme });
+    store.setWebUiOverview(withThemeOverview(store.webUiOverview, settings));
+    showSaveNotice("界面主题已保存");
   }
 
   async function chooseHermesRoot() {
@@ -282,6 +296,20 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
                   <option value="real_probe">真实探针</option>
                 </select>
               </label>
+
+              <label className="block text-[12px] font-medium text-slate-500">
+                <span className="mb-1.5 block">界面主题</span>
+                <select
+                  value={theme}
+                  onChange={(event) => setTheme((["green-light", "light", "slate", "oled"].includes(event.target.value) ? event.target.value : "green-light") as typeof theme)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[13px] text-slate-800 outline-none transition focus:ring-2 focus:ring-slate-900/10"
+                >
+                  <option value="green-light">亮色（清新）</option>
+                  <option value="light">亮色（经典）</option>
+                  <option value="slate">深色（高级深灰）</option>
+                  <option value="oled">深色（OLED）</option>
+                </select>
+              </label>
             </div>
           </SettingsPanelCard>
 
@@ -313,7 +341,10 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
             </div>
           </SettingsPanelCard>
 
-          <div className="flex justify-end">
+          <div className="flex flex-wrap justify-end gap-2">
+            <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void saveThemeSettings()} type="button">
+              保存界面主题
+            </button>
             <button className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveHermesSettings()} type="button">
               保存运行设置
             </button>
@@ -555,6 +586,7 @@ function setupStatusLabel(status: SetupCheck["status"]) {
 function setupFixButtonLabel(check: SetupCheck) {
   if (check.autoFixId === "git") return "一键安装 Git";
   if (check.autoFixId === "python") return "一键安装 Python";
+  if (check.autoFixId === "hermes_pyyaml") return "修复 Hermes 依赖";
   if (check.autoFixId === "weixin_aiohttp") return "修复微信依赖";
   if (check.fixAction === "install_hermes") return "自动安装 Hermes";
   if (check.fixAction === "configure_model") return "打开模型配置";
@@ -595,6 +627,9 @@ function App() {
       { errorMessage: "加载配置概览失败" }
     );
     setConfigOverview(overview);
+    if (overview?.runtimeConfig) {
+      store.setRuntimeConfig(overview.runtimeConfig);
+    }
     return overview;
   }
 
@@ -607,6 +642,10 @@ function App() {
     store.setWebUiOverview(overview);
     return overview;
   }
+
+  useEffect(() => {
+    applyTheme(store.webUiOverview?.settings.theme ?? "green-light");
+  }, [store.webUiOverview?.settings.theme]);
 
   useEffect(() => {
     void bootstrap();
@@ -1364,6 +1403,30 @@ function activityTypeFromTask(taskType: TaskType): ActivityLog["type"] {
 
 function sessionTitleFromPrompt(prompt: string) {
   return prompt.trim().replace(/\s+/g, " ").slice(0, 32) || "新的会话";
+}
+
+function applyTheme(theme: "green-light" | "light" | "slate" | "oled") {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.body.setAttribute("data-theme", theme);
+}
+
+function withThemeOverview(
+  overview: HermesWebUiOverview | undefined,
+  settings: HermesWebUiSettings,
+): HermesWebUiOverview {
+  if (overview) {
+    return { ...overview, settings };
+  }
+  return {
+    settings,
+    projects: [],
+    spaces: [],
+    skills: [],
+    memory: [],
+    crons: [],
+    profiles: [],
+    slashCommands: [],
+  };
 }
 
 function promptNeedsWorkspace(input: string, selectedFiles: string[]) {

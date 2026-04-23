@@ -29,6 +29,36 @@
     --hermes-warn-soft: #fff7ed;
     --hermes-tool-blue: #3b82f6;
     --hermes-card-border: #e7e8f0;
+    --hermes-app-bg: #f5f5f7;
+    --hermes-app-text: #0f172a;
+  }
+
+  :root[data-theme="green-light"],
+  :root[data-theme="light"] {
+    --hermes-app-bg: #f5f5f7;
+    --hermes-app-text: #0f172a;
+  }
+
+  :root[data-theme="slate"] {
+    color-scheme: dark;
+    --hermes-primary: #8b7dff;
+    --hermes-primary-strong: #7665ff;
+    --hermes-primary-soft: #262241;
+    --hermes-primary-border: #3d3760;
+    --hermes-card-border: #2b3343;
+    --hermes-app-bg: #0f131a;
+    --hermes-app-text: #e5ecf6;
+  }
+
+  :root[data-theme="oled"] {
+    color-scheme: dark;
+    --hermes-primary: #8b7dff;
+    --hermes-primary-strong: #7665ff;
+    --hermes-primary-soft: #18142d;
+    --hermes-primary-border: #2b244a;
+    --hermes-card-border: #202632;
+    --hermes-app-bg: #050607;
+    --hermes-app-text: #eef2f8;
   }
 
   html,
@@ -43,13 +73,21 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: geometricPrecision;
     overscroll-behavior-y: none;
-    @apply bg-[#f5f5f7] text-slate-900;
+    background: var(--hermes-app-bg);
+    color: var(--hermes-app-text);
   }
 
   button,
   input,
   textarea {
     font: inherit;
+  }
+
+  :root[data-theme="slate"] body,
+  :root[data-theme="oled"] body {
+    background:
+      radial-gradient(circle at 10% -10%, rgb(91 77 255 / 0.18), transparent 28%),
+      linear-gradient(180deg, rgb(15 19 26 / 1) 0%, rgb(12 16 23 / 1) 100%);
   }
 
   ::selection {
@@ -308,6 +346,90 @@
     background: #cbd5e1;
     box-shadow: none;
   }
+}
+
+:root[data-theme="slate"] .bg-white,
+:root[data-theme="oled"] .bg-white,
+:root[data-theme="slate"] .bg-white\/80,
+:root[data-theme="oled"] .bg-white\/80,
+:root[data-theme="slate"] .bg-white\/90,
+:root[data-theme="oled"] .bg-white\/90,
+:root[data-theme="slate"] .bg-\[\#f6f8fb\],
+:root[data-theme="oled"] .bg-\[\#f6f8fb\],
+:root[data-theme="slate"] .bg-\[\#f6f7f9\],
+:root[data-theme="oled"] .bg-\[\#f6f7f9\],
+:root[data-theme="slate"] .bg-\[\#f7f8fa\],
+:root[data-theme="oled"] .bg-\[\#f7f8fa\] {
+  background-color: #151b24 !important;
+}
+
+:root[data-theme="slate"] .bg-slate-50,
+:root[data-theme="oled"] .bg-slate-50,
+:root[data-theme="slate"] .bg-slate-50\/60,
+:root[data-theme="oled"] .bg-slate-50\/60,
+:root[data-theme="slate"] .bg-slate-50\/70,
+:root[data-theme="oled"] .bg-slate-50\/70,
+:root[data-theme="slate"] .bg-slate-50\/80,
+:root[data-theme="oled"] .bg-slate-50\/80,
+:root[data-theme="slate"] .bg-slate-100,
+:root[data-theme="oled"] .bg-slate-100,
+:root[data-theme="slate"] .bg-slate-100\/80,
+:root[data-theme="oled"] .bg-slate-100\/80 {
+  background-color: #1b2430 !important;
+}
+
+:root[data-theme="slate"] .border-slate-200,
+:root[data-theme="oled"] .border-slate-200,
+:root[data-theme="slate"] .border-slate-200\/70,
+:root[data-theme="oled"] .border-slate-200\/70,
+:root[data-theme="slate"] .border-slate-200\/80,
+:root[data-theme="oled"] .border-slate-200\/80,
+:root[data-theme="slate"] .border-slate-100,
+:root[data-theme="oled"] .border-slate-100,
+:root[data-theme="slate"] .border-slate-100\/60,
+:root[data-theme="oled"] .border-slate-100\/60 {
+  border-color: #2b3343 !important;
+}
+
+:root[data-theme="slate"] .text-slate-950,
+:root[data-theme="oled"] .text-slate-950,
+:root[data-theme="slate"] .text-slate-900,
+:root[data-theme="oled"] .text-slate-900,
+:root[data-theme="slate"] .text-slate-800,
+:root[data-theme="oled"] .text-slate-800 {
+  color: #e6edf7 !important;
+}
+
+:root[data-theme="slate"] .text-slate-700,
+:root[data-theme="oled"] .text-slate-700,
+:root[data-theme="slate"] .text-slate-600,
+:root[data-theme="oled"] .text-slate-600 {
+  color: #c1ccd9 !important;
+}
+
+:root[data-theme="slate"] .text-slate-500,
+:root[data-theme="oled"] .text-slate-500,
+:root[data-theme="slate"] .text-slate-400,
+:root[data-theme="oled"] .text-slate-400,
+:root[data-theme="slate"] .placeholder\:text-slate-400::placeholder,
+:root[data-theme="oled"] .placeholder\:text-slate-400::placeholder {
+  color: #8da0b6 !important;
+}
+
+:root[data-theme="slate"] .hover\:bg-slate-50:hover,
+:root[data-theme="oled"] .hover\:bg-slate-50:hover,
+:root[data-theme="slate"] .hover\:bg-slate-100:hover,
+:root[data-theme="oled"] .hover\:bg-slate-100:hover {
+  background-color: #202a38 !important;
+}
+
+:root[data-theme="slate"] .shadow-\[0_18px_45px_rgba\(15\,23\,42\,0\.12\)\],
+:root[data-theme="oled"] .shadow-\[0_18px_45px_rgba\(15\,23\,42\,0\.12\)\],
+:root[data-theme="slate"] .shadow-\[0_16px_38px_rgba\(15\,23\,42\,0\.05\)\],
+:root[data-theme="oled"] .shadow-\[0_16px_38px_rgba\(15\,23\,42\,0\.05\)\],
+:root[data-theme="slate"] .shadow-sm,
+:root[data-theme="oled"] .shadow-sm {
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.28) !important;
 }
 
 @keyframes stream-sheen {

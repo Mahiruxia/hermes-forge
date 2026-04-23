@@ -97,6 +97,7 @@ declare global {
       pickHermesInstallFolder(): Promise<string | null>;
       pickSessionAttachments(sessionFilesPath: string): Promise<SessionAttachment[]>;
       importSessionAttachments(sessionFilesPath: string, filePaths: string[]): Promise<SessionAttachment[]>;
+      importClipboardImageAttachment(sessionFilesPath: string): Promise<SessionAttachment[]>;
       createQuickTextFile(input: QuickTextFileInput): Promise<QuickTextFileResult>;
       openPath(targetPath: string): Promise<{ ok: boolean; message: string }>;
       openHelp(): Promise<{ ok: boolean; message: string }>;

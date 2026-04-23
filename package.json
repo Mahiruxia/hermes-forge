@@ -1,6 +1,6 @@
 {
   "name": "hermes-forge",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "本地优先的 Hermes Agent 桌面客户端，支持自动部署、模型同步、微信连接器、Windows 桥接、文件上传与 GitHub 自动更新。",
   "author": "",
   "license": "MIT",

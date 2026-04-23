@@ -5,6 +5,7 @@ export const IpcChannels = {
   pickHermesInstallFolder: "setup:pick-hermes-install-folder",
   pickSessionAttachments: "workspace:pick-session-attachments",
   importSessionAttachments: "workspace:import-session-attachments",
+  importClipboardImageAttachment: "workspace:import-clipboard-image-attachment",
   createQuickTextFile: "workspace:create-quick-text-file",
   openPath: "system:open-path",
   getClientInfo: "system:get-client-info",

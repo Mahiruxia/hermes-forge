@@ -52,16 +52,56 @@ describe("ModelConfigWizard", () => {
 
     renderWizard({ onRefresh, onSaved });
 
-    expect(screen.getByRole("button", { name: /保存并设为默认/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /保存模型/ })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /立即测试/ }));
 
     expect((await screen.findAllByText("测试通过")).length).toBeGreaterThan(0);
-    const saveButton = screen.getByRole("button", { name: /保存并设为默认/ });
+    const saveButton = screen.getByRole("button", { name: /保存模型/ });
     expect(saveButton).not.toBeDisabled();
     fireEvent.click(saveButton);
 
     await waitFor(() => {
       expect(updateModelConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultProfileId: "wizard-local_openai" }));
+    });
+  });
+
+  it("shows multiple saved profiles and keeps same-source additions unique", async () => {
+    testModelConnection.mockResolvedValue({
+      ok: true,
+      profileId: "draft-local_openai",
+      sourceType: "local_openai",
+      message: "连接成功。",
+    });
+    updateModelConfig.mockResolvedValue({});
+
+    renderWizard({
+      models: {
+        defaultProfileId: "wizard-local_openai",
+        providerProfiles: [],
+        modelProfiles: [
+          { id: "wizard-local_openai", name: "本地 OpenAI-Compatible · qwen", provider: "custom", model: "qwen", baseUrl: "http://127.0.0.1:1234/v1" },
+          { id: "wizard-openrouter", name: "OpenRouter · anthropic/claude-sonnet-4-5", provider: "openrouter", model: "anthropic/claude-sonnet-4-5", baseUrl: "https://openrouter.ai/api/v1" },
+        ],
+      },
+    });
+
+    expect(screen.getByText("本地 OpenAI-Compatible · qwen")).toBeInTheDocument();
+    expect(screen.getByText("OpenRouter · anthropic/claude-sonnet-4-5")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+    fireEvent.change(screen.getByLabelText("添加模型名称"), { target: { value: "qwen3-coder-plus" } });
+    fireEvent.click(screen.getByRole("button", { name: /立即测试/ }));
+    expect((await screen.findAllByText("测试通过")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole("button", { name: /新增模型/ }).at(-1)!);
+
+    await waitFor(() => {
+      expect(updateModelConfig).toHaveBeenCalledWith(expect.objectContaining({
+        modelProfiles: expect.arrayContaining([
+          expect.objectContaining({ id: "wizard-local_openai", model: "qwen" }),
+          expect.objectContaining({ id: "wizard-openrouter", model: "anthropic/claude-sonnet-4-5" }),
+          expect.objectContaining({ id: "wizard-local_openai-2", model: "qwen3-coder-plus" }),
+        ]),
+      }));
     });
   });
 

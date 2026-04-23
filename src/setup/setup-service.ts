@@ -58,6 +58,13 @@ export class SetupService {
       }),
       await this.checkWinget(),
       await this.checkHermes(),
+      await this.checkPythonPackage("hermes-pyyaml", "Hermes 配置依赖", "yaml", "PyYAML", {
+        description: "Hermes CLI 读取 config.yaml 时需要 PyYAML；缺失时会出现 No module named 'yaml'。",
+        recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade PyYAML。",
+        fixAction: "install_hermes_dependency",
+        autoFixId: "hermes_pyyaml",
+        blocking: true,
+      }),
       await this.checkPythonPackage("weixin-aiohttp", "微信连接依赖", "aiohttp", "aiohttp"),
       await this.checkModelConfig(config),
       await this.checkWritable("user-data", "用户数据目录", this.appPaths.baseDir()),
@@ -149,6 +156,8 @@ export class SetupService {
         return await this.repairWithWinget(id, "Git", "Git.Git");
       case "python":
         return await this.repairWithWinget(id, "Python", "Python.Python.3.12");
+      case "hermes_pyyaml":
+        return await this.repairPythonPackage(id, "PyYAML", "PyYAML", "请重新检查 Hermes 状态，确认 yaml 模块已可导入。");
       case "weixin_aiohttp":
         return await this.repairPythonPackage(id, "aiohttp", "aiohttp");
       default:
@@ -388,6 +397,7 @@ export class SetupService {
     id: SetupDependencyRepairId,
     label: string,
     packageName: string,
+    successRecommendedFix = "请重新尝试微信扫码或刷新系统状态确认依赖已就绪。",
   ): Promise<SetupDependencyRepairResult> {
     const log: string[] = [];
     const startedAt = new Date().toISOString();
@@ -415,7 +425,7 @@ export class SetupService {
           stdout: result.stdout,
           stderr: result.stderr,
           logPath,
-          recommendedFix: "请重新尝试微信扫码或刷新系统状态确认依赖已就绪。",
+          recommendedFix: successRecommendedFix,
         };
       }
     }
@@ -437,6 +447,20 @@ export class SetupService {
   private async checkHermes(): Promise<SetupCheck> {
     const health = await this.hermes.healthCheck();
     if (!health.available) {
+      if (/No module named ['"]?yaml|ModuleNotFoundError.*yaml|PyYAML/i.test(health.message)) {
+        return {
+          id: "hermes",
+          label: "Hermes",
+          status: "missing",
+          message: `Hermes 未完全就绪：${health.message}`,
+          description: "Hermes CLI 已存在，但当前 Python 环境缺少 PyYAML，导致读取 config.yaml 时崩溃。",
+          recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade PyYAML。",
+          fixAction: "install_hermes_dependency",
+          autoFixId: "hermes_pyyaml",
+          canAutoFix: true,
+          blocking: true,
+        };
+      }
       return {
         id: "hermes",
         label: "Hermes",
@@ -746,6 +770,7 @@ export class SetupService {
     label: string,
     moduleName: string,
     packageName: string,
+    options: Partial<Pick<SetupCheck, "description" | "recommendedAction" | "fixAction" | "autoFixId" | "blocking">> = {},
   ): Promise<SetupCheck> {
     const script = `import ${moduleName}; print("${packageName} ok")`;
     const result = await runCommand("python", ["-c", script], {
@@ -765,12 +790,12 @@ export class SetupService {
       message: ok
         ? (result.stdout || result.stderr).trim() || `${label} 可用。`
         : `${label} 缺失或不可用：${result.stderr || result.stdout || "Python 无法导入该模块"}`,
-      description: "微信二维码登录与本地网关的部分异步 HTTP 能力依赖该 Python 包。",
-      recommendedAction: ok ? undefined : `点击修复微信依赖，或手动执行 python -m pip install ${packageName}。`,
-      fixAction: ok ? undefined : "install_weixin_dependency",
+      description: options.description ?? "微信二维码登录与本地网关的部分异步 HTTP 能力依赖该 Python 包。",
+      recommendedAction: ok ? undefined : options.recommendedAction ?? `点击修复微信依赖，或手动执行 python -m pip install ${packageName}。`,
+      fixAction: ok ? undefined : options.fixAction ?? "install_weixin_dependency",
       canAutoFix: ok ? undefined : true,
-      autoFixId: ok ? undefined : "weixin_aiohttp",
-      blocking: false,
+      autoFixId: ok ? undefined : options.autoFixId ?? "weixin_aiohttp",
+      blocking: options.blocking ?? false,
     };
   }
 

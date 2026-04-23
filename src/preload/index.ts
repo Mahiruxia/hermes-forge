@@ -66,6 +66,8 @@ const api = {
     ipcRenderer.invoke(IpcChannels.pickSessionAttachments, sessionFilesPath) as Promise<SessionAttachment[]>,
   importSessionAttachments: (sessionFilesPath: string, filePaths: string[]) =>
     ipcRenderer.invoke(IpcChannels.importSessionAttachments, sessionFilesPath, filePaths) as Promise<SessionAttachment[]>,
+  importClipboardImageAttachment: (sessionFilesPath: string) =>
+    ipcRenderer.invoke(IpcChannels.importClipboardImageAttachment, sessionFilesPath) as Promise<SessionAttachment[]>,
   createQuickTextFile: (input: QuickTextFileInput) =>
     ipcRenderer.invoke(IpcChannels.createQuickTextFile, input) as Promise<QuickTextFileResult>,
   openPath: (targetPath: string) => ipcRenderer.invoke(IpcChannels.openPath, targetPath) as Promise<{ ok: boolean; message: string }>,

@@ -122,6 +122,12 @@ describe("HermesWindowsBridgeTestService", () => {
 
 function fakeBridge() {
   return {
+    start: vi.fn(async () => ({
+      running: true,
+      host: "0.0.0.0",
+      port: 1234,
+      capabilities: ["powershell", "openPath", "clipboard", "screenshot", "writeTextFile"],
+    })),
     status: () => ({
       running: true,
       host: "0.0.0.0",

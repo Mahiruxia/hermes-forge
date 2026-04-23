@@ -1,6 +1,6 @@
 import { Command, Mic, MicOff, Paperclip, Plus, Send, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent, ReactNode } from "react";
+import type { ClipboardEvent, DragEvent, ReactNode } from "react";
 import { useAppStore } from "../store";
 import { cn } from "./DashboardPrimitives";
 
@@ -27,9 +27,11 @@ export function ChatInput(props: {
   const [commandIndex, setCommandIndex] = useState(0);
   const [isListening, setIsListening] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [isDraggingAttachment, setIsDraggingAttachment] = useState(false);
   const [isImportingAttachment, setIsImportingAttachment] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const permissions = store.runtimeConfig?.enginePermissions?.hermes;
   const permissionsLabel = permissions
     ? `读${permissions.workspaceRead === false ? "关" : "开"} 写${permissions.fileWrite === false ? "关" : "开"} 命令${permissions.commandRun === false ? "关" : "开"}`
@@ -68,6 +70,17 @@ export function ChatInput(props: {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [plusMenuOpen]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return undefined;
+    function handleClickOutside(event: MouseEvent) {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(event.target as Node)) {
+        setModelMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [modelMenuOpen]);
 
   async function requestMicrophonePermission(): Promise<boolean> {
     try {
@@ -240,6 +253,52 @@ export function ChatInput(props: {
     }
   }
 
+  async function importClipboardImage() {
+    if (!window.workbenchClient || typeof window.workbenchClient.importClipboardImageAttachment !== "function") {
+      store.warning("剪贴板图片不可用", "客户端未就绪，无法导入剪贴板图片");
+      return;
+    }
+    if (store.runningTaskRunId) {
+      store.warning("任务运行中", "请等待当前 Hermes 任务结束后再添加图片");
+      return;
+    }
+    setIsImportingAttachment(true);
+    try {
+      const attachments = await window.workbenchClient.importClipboardImageAttachment(
+        currentSessionPath(store.sessionFilesPath, store.activeSessionId),
+      );
+      if (attachments.length) {
+        store.addAttachments(attachments);
+        store.success("图片已添加", "已从剪贴板导入图片，可直接发送给 Hermes");
+      }
+    } catch (error) {
+      store.error("剪贴板图片导入失败", error instanceof Error ? error.message : "无法从剪贴板导入图片");
+    } finally {
+      setIsImportingAttachment(false);
+    }
+  }
+
+  async function switchDefaultModel(profileId: string) {
+    if (!store.runtimeConfig) {
+      store.error("切换失败", "运行时配置未加载");
+      return;
+    }
+    const target = store.runtimeConfig.modelProfiles.find((profile) => profile.id === profileId);
+    if (!target) {
+      store.warning("模型不存在", "找不到要切换的模型");
+      return;
+    }
+    try {
+      const nextConfig = { ...store.runtimeConfig, defaultModelProfileId: profileId };
+      const saved = await window.workbenchClient.saveRuntimeConfig(nextConfig);
+      store.setRuntimeConfig(saved);
+      store.success("模型已切换", `当前使用：${target.name ?? target.model}`);
+      setModelMenuOpen(false);
+    } catch (error) {
+      store.error("切换失败", error instanceof Error ? error.message : "无法保存模型配置");
+    }
+  }
+
   function handleAttachmentDragEnter(event: DragEvent<HTMLDivElement>) {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
@@ -269,6 +328,15 @@ export function ChatInput(props: {
       .map((file) => file.path)
       .filter((filePath): filePath is string => Boolean(filePath));
     void importDroppedAttachments(filePaths);
+  }
+
+  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const types = Array.from(event.clipboardData.items ?? []);
+    if (!types.some((item) => item.type.startsWith("image/"))) {
+      return;
+    }
+    event.preventDefault();
+    void importClipboardImage();
   }
 
   const commandQuery = store.userInput.startsWith("/") ? store.userInput.trim().toLowerCase() : "";
@@ -305,7 +373,16 @@ export function ChatInput(props: {
     if (name === "/theme") {
       const theme = (["green-light", "light", "slate", "oled"].includes(arg) ? arg : "green-light") as "green-light" | "light" | "slate" | "oled";
       const settings = await window.workbenchClient.saveWebUiSettings({ theme });
-      store.setWebUiOverview(store.webUiOverview ? { ...store.webUiOverview, settings } : undefined);
+      store.setWebUiOverview(store.webUiOverview ? { ...store.webUiOverview, settings } : {
+        settings,
+        projects: [],
+        spaces: [],
+        skills: [],
+        memory: [],
+        crons: [],
+        profiles: [],
+        slashCommands: [],
+      });
       store.setUserInput("");
       return;
     }
@@ -428,6 +505,7 @@ export function ChatInput(props: {
             ref={textareaRef}
             value={store.userInput}
             onChange={(event) => store.setUserInput(event.target.value)}
+            onPaste={handlePaste}
             onKeyDown={(event) => {
               if (commands.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                 event.preventDefault();
@@ -481,12 +559,60 @@ export function ChatInput(props: {
               </div>
 
               <button
-                className="inline-flex h-10 max-w-[220px] items-center rounded-full border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] px-3 text-[12px] font-medium text-[var(--hermes-primary)] transition hover:bg-white"
-                onClick={() => props.onOpenFix?.("model")}
+                className="grid h-10 w-10 place-items-center rounded-full border border-[var(--hermes-primary-border)] text-[var(--hermes-primary)] transition hover:bg-[var(--hermes-primary-soft)]"
+                onClick={() => void pickAttachments()}
+                aria-label="添加附件"
+                title="添加附件"
                 type="button"
+                disabled={Boolean(store.runningTaskRunId) || isImportingAttachment}
               >
-                <span className="truncate">{currentModelLabel}</span>
+                <Paperclip size={16} />
               </button>
+
+              <div className="relative" ref={modelMenuRef}>
+                <button
+                  className="inline-flex h-10 max-w-[220px] items-center rounded-full border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] px-3 text-[12px] font-medium text-[var(--hermes-primary)] transition hover:bg-white"
+                  onClick={() => setModelMenuOpen((value) => !value)}
+                  type="button"
+                >
+                  <span className="truncate">{currentModelLabel}</span>
+                </button>
+                {modelMenuOpen ? (
+                  <div className="absolute bottom-[calc(100%+10px)] left-0 z-20 max-h-72 w-72 overflow-auto rounded-2xl border border-[var(--hermes-card-border)] bg-white p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
+                    {(store.runtimeConfig?.modelProfiles ?? []).length ? (
+                      (store.runtimeConfig?.modelProfiles ?? []).map((profile) => {
+                        const active = profile.id === store.runtimeConfig?.defaultModelProfileId || (!store.runtimeConfig?.defaultModelProfileId && profile.id === currentModelProfile?.id);
+                        return (
+                          <button
+                            key={profile.id}
+                            className={cn("flex w-full items-center justify-between gap-3 rounded-xl px-3 py-3 text-left text-[12px] transition", active ? "bg-[var(--hermes-primary-soft)] text-[var(--hermes-primary)]" : "text-slate-600 hover:bg-slate-50")}
+                            onClick={() => void switchDefaultModel(profile.id)}
+                            type="button"
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate font-semibold">{profile.name ?? profile.model}</span>
+                              <span className="mt-0.5 block truncate font-mono text-[11px] text-slate-400">{profile.model}</span>
+                            </span>
+                            {active ? <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[var(--hermes-primary)]">默认</span> : null}
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="px-3 py-3 text-[12px] text-slate-500">还没有已保存模型</div>
+                    )}
+                    <button
+                      className="mt-1 flex w-full items-center justify-center rounded-xl border border-slate-200 px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50"
+                      onClick={() => {
+                        props.onOpenFix?.("model");
+                        setModelMenuOpen(false);
+                      }}
+                      type="button"
+                    >
+                      打开模型设置
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             <div className="flex shrink-0 items-center gap-2">

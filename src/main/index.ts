@@ -19,6 +19,7 @@ import { DiagnosticsService } from "../diagnostics/diagnostics-service";
 import { FileTreeService } from "../file-manager/file-tree-service";
 import { HermesConnectorService } from "./hermes-connector-service";
 import { HermesModelSyncService } from "./hermes-model-sync";
+import { syncHermesWindowsMcpConfig } from "./hermes-native-mcp-config";
 import { HermesWebUiService } from "./hermes-webui-service";
 import { ModelRuntimeProxyService } from "./model-runtime-proxy";
 import { MemoryBudgeter } from "../memory/memory-budgeter";
@@ -57,6 +58,33 @@ async function resolveWindowsHostForWsl(distro?: string) {
   }).catch(() => undefined);
   const host = parseWslHost(result?.stdout ?? "");
   return host || "127.0.0.1";
+}
+
+async function syncWindowsBridgeConfig(input: {
+  appPaths: AppPaths;
+  configStore: RuntimeConfigStore;
+  bridge?: WindowsControlBridge;
+}) {
+  const config = await input.configStore.read();
+  const runtime = {
+    mode: config.hermesRuntime?.mode ?? "windows",
+    distro: config.hermesRuntime?.distro?.trim() || undefined,
+    pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
+    windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
+  };
+  const permissions = resolveEnginePermissions(config, "hermes");
+  const bridge = permissions.enabled && permissions.contextBridge && runtime.windowsAgentMode !== "disabled"
+    ? input.bridge
+    : undefined;
+  if (bridge) {
+    await bridge.start();
+  }
+  const host = runtime.mode === "wsl" ? await resolveWindowsHostForWsl(runtime.distro) : "127.0.0.1";
+  return syncHermesWindowsMcpConfig({
+    runtime,
+    hermesHome: input.appPaths.hermesDir(),
+    bridge: bridge?.accessForHost(host),
+  });
 }
 
 function parseWslHost(stdout: string) {
@@ -175,6 +203,7 @@ app.whenReady().then(async () => {
       if (!permissions.contextBridge || !permissions.enabled) {
         return undefined;
       }
+      await windowsControlBridge?.start();
       const host = config.hermesRuntime?.mode === "wsl"
         ? await resolveWindowsHostForWsl(distro)
         : "127.0.0.1";
@@ -195,9 +224,12 @@ app.whenReady().then(async () => {
   await secretVault.status();
   const modelRuntimeProxyService = new ModelRuntimeProxyService();
   const runtimeEnvResolver = new RuntimeEnvResolver(configStore, secretVault, modelRuntimeProxyService);
-  const hermesModelSyncService = new HermesModelSyncService(runtimeEnvResolver);
+  const hermesModelSyncService = new HermesModelSyncService(runtimeEnvResolver, () => appPaths.hermesDir());
   await hermesModelSyncService.syncRuntimeConfig(await configStore.read()).catch((error) => {
     console.warn("[Hermes Forge] Model sync during startup failed:", error);
+  });
+  await syncWindowsBridgeConfig({ appPaths, configStore, bridge: windowsControlBridge }).catch((error) => {
+    console.warn("[Hermes Forge] Windows bridge sync during startup failed:", error);
   });
   const hermesSystemAuditService = new HermesSystemAuditService(
     appPaths,

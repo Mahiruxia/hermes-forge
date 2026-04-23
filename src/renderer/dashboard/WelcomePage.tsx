@@ -350,5 +350,6 @@ function welcomeSetupDotClass(status: SetupCheck["status"]) {
 function welcomeSetupFixLabel(id: SetupDependencyRepairId) {
   if (id === "git") return "装 Git";
   if (id === "python") return "装 Python";
+  if (id === "hermes_pyyaml") return "修 Hermes";
   return "修微信";
 }

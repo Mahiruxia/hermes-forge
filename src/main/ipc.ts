@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 import { z } from "zod";
 import type { AppPaths } from "./app-paths";
 import type { RuntimeConfigStore } from "./runtime-config";
@@ -12,6 +12,7 @@ import type { SessionAgentInsightService } from "./session-agent-insight-service
 import type { WorkSessionService } from "./work-session-service";
 import type { HermesConnectorService } from "./hermes-connector-service";
 import type { HermesModelSyncService } from "./hermes-model-sync";
+import { syncHermesWindowsMcpConfig } from "./hermes-native-mcp-config";
 import type { HermesWebUiService } from "./hermes-webui-service";
 import type { HermesWindowsBridgeTestService } from "./hermes-windows-bridge-test-service";
 import type { HermesSystemAuditService } from "./hermes-system-audit-service";
@@ -50,6 +51,7 @@ import type {
   SponsorEntry,
   SponsorOverview,
 } from "../shared/types";
+import { resolveEnginePermissions } from "../shared/types";
 import { normalizeOpenAiCompatibleBaseUrl } from "../shared/model-config";
 
 const quickTextFileInputSchema = z.object({
@@ -57,7 +59,7 @@ const quickTextFileInputSchema = z.object({
   content: z.string().max(20000).optional(),
 });
 const attachmentSourcePathsSchema = z.array(workspacePathInputSchema).max(12);
-const setupDependencyRepairIdSchema = z.enum(["git", "python", "weixin_aiohttp"]);
+const setupDependencyRepairIdSchema = z.enum(["git", "python", "hermes_pyyaml", "weixin_aiohttp"]);
 const installHermesOptionsSchema = z.object({
   rootPath: z.string().trim().min(1).max(1000).optional(),
 }).optional();
@@ -141,7 +143,30 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
         await restartGatewayIfRunning(services);
       }
     }
+    await syncCurrentWindowsBridgeConfig(saved).catch((error) => {
+      console.warn("[Hermes Forge] Failed to sync Windows bridge config:", error);
+    });
     return saved;
+  }
+
+  async function syncCurrentWindowsBridgeConfig(config: RuntimeConfig) {
+    const runtime = {
+      mode: config.hermesRuntime?.mode ?? "windows",
+      distro: config.hermesRuntime?.distro?.trim() || undefined,
+      pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
+      windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
+    };
+    const permissions = resolveEnginePermissions(config, "hermes");
+    const shouldEnable = permissions.enabled && permissions.contextBridge && runtime.windowsAgentMode !== "disabled";
+    if (shouldEnable) {
+      await services.windowsControlBridge.start();
+    }
+    const host = runtime.mode === "wsl" ? "127.0.0.1" : "127.0.0.1";
+    return syncHermesWindowsMcpConfig({
+      runtime,
+      hermesHome: services.appPaths.hermesDir(),
+      bridge: shouldEnable ? services.windowsControlBridge.accessForHost(host) : undefined,
+    });
   }
 
   ipcMain.handle(IpcChannels.restartApp, () => {
@@ -184,6 +209,10 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     const targetSessionPath = workspacePathInputSchema.parse(sessionFilesPath);
     const sourcePaths = attachmentSourcePathsSchema.parse(filePaths);
     return importSessionAttachments(targetSessionPath, sourcePaths);
+  });
+  ipcMain.handle(IpcChannels.importClipboardImageAttachment, async (_event, sessionFilesPath: string): Promise<SessionAttachment[]> => {
+    const targetSessionPath = workspacePathInputSchema.parse(sessionFilesPath);
+    return importClipboardImageAttachment(targetSessionPath);
   });
 
   ipcMain.handle(IpcChannels.createQuickTextFile, async (_event, input) => {
@@ -436,6 +465,9 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.testHermesSystemAudit, () => services.hermesSystemAuditService.test());
   ipcMain.handle(IpcChannels.getConfigOverview, async (_event, workspacePath?: string) => {
     const runtimeConfig = await services.configStore.read();
+    await syncCurrentWindowsBridgeConfig(runtimeConfig).catch((error) => {
+      console.warn("[Hermes Forge] Failed to refresh Windows bridge config for overview:", error);
+    });
     const secretRefs = new Set<string>();
     for (const profile of runtimeConfig.modelProfiles) {
       if (profile.secretRef) secretRefs.add(profile.secretRef);
@@ -1052,6 +1084,34 @@ async function importSessionAttachments(targetSessionPath: string, sourcePaths: 
     });
   }
   return attachments;
+}
+
+async function importClipboardImageAttachment(targetSessionPath: string) {
+  const image = clipboard.readImage();
+  if (image.isEmpty()) {
+    throw new Error("剪贴板里没有可导入的图片。");
+  }
+  const png = image.toPNG();
+  if (!png.byteLength) {
+    throw new Error("无法从剪贴板读取图片数据。");
+  }
+  const attachmentsDir = path.join(targetSessionPath, "attachments");
+  await fs.mkdir(attachmentsDir, { recursive: true });
+  const id = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  const fileName = `${id}-clipboard.png`;
+  const targetPath = await uniqueFilePath(attachmentsDir, fileName);
+  await fs.writeFile(targetPath, png);
+  const stat = await fs.stat(targetPath);
+  return [{
+    id,
+    name: "clipboard.png",
+    path: targetPath,
+    originalPath: "clipboard://image",
+    kind: "image" as const,
+    mimeType: "image/png",
+    size: stat.size,
+    createdAt: new Date().toISOString(),
+  }];
 }
 
 function inferMimeType(filePath: string) {

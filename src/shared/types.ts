@@ -66,6 +66,7 @@ export type HermesWindowsBridgeTestResult = {
 };
 
 export type HermesSystemAuditStepId =
+  | "preflight"
   | "read-nasty-path"
   | "write-outside-workspace"
   | "read-large-file"
@@ -974,7 +975,7 @@ export type RuntimeConfig = {
 };
 
 export type SetupRequirementStatus = "ok" | "missing" | "warning" | "running" | "failed";
-export type SetupDependencyRepairId = "git" | "python" | "weixin_aiohttp";
+export type SetupDependencyRepairId = "git" | "python" | "hermes_pyyaml" | "weixin_aiohttp";
 export type SetupFixAction =
   | "configure_hermes"
   | "configure_model"
@@ -982,6 +983,7 @@ export type SetupFixAction =
   | "install_hermes"
   | "install_git"
   | "install_python"
+  | "install_hermes_dependency"
   | "install_weixin_dependency";
 
 export type SetupCheck = {

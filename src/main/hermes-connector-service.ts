@@ -1,6 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import type { AppPaths } from "./app-paths";
 import { runCommand } from "../process/command-runner";
@@ -1156,7 +1155,7 @@ export class HermesConnectorService {
   }
 
   private envPath() {
-    return path.join(os.homedir(), ".hermes", ".env");
+    return path.join(this.appPaths.hermesDir(), ".env");
   }
 
   private hermesHomePath() {

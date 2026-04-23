@@ -29,13 +29,33 @@ export class HermesSystemAuditService {
   async test(): Promise<HermesSystemAuditResult> {
     const auditRoot = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-forge-system-audit-"));
     const workspacePath = path.join(auditRoot, "workspace-root");
-    await fs.mkdir(workspacePath, { recursive: true });
-    const config = await this.readConfig();
-    const runtimeEnv = await this.runtimeEnvResolver.resolve(config.defaultModelProfileId);
-    const permissions = resolveEnginePermissions(config, "hermes");
     const steps: HermesSystemAuditStep[] = [];
 
     try {
+      await fs.mkdir(workspacePath, { recursive: true });
+      const config = await this.readConfig();
+      const runtimeEnv = await this.runtimeEnvResolver.resolve(config.defaultModelProfileId);
+      const permissions = resolveEnginePermissions(config, "hermes");
+
+      const modelPreflight = await this.runCase({
+        id: "preflight",
+        label: "模型连通预检",
+        workspacePath,
+        runtimeEnv,
+        permissions,
+        prompt: [
+          "你正在执行 Hermes Forge 系统能力审计。",
+          "不要解释过程，不要输出 Markdown，只输出：AUDIT_MODEL_OK",
+        ].join("\n"),
+        verify: (execution) => execution.detail.includes("AUDIT_MODEL_OK")
+          ? passed("Hermes 模型链路可用。", execution.detail)
+          : failed("Hermes 模型链路不可用，已跳过后续系统能力审计。", execution.detail || "未收到模型预检标记。"),
+      });
+      steps.push(modelPreflight);
+      if (modelPreflight.status === "failed") {
+        return auditResult(workspacePath, steps);
+      }
+
       const nastyFile = await this.createNastyPathFile(auditRoot);
       steps.push(await this.runCase({
         id: "read-nasty-path",
@@ -126,6 +146,13 @@ export class HermesSystemAuditService {
             : failed("Hermes 未能返回预期的宿主机命令输出。", execution.detail),
         }));
       }
+    } catch (error) {
+      steps.push({
+        id: "preflight",
+        label: "审计预检",
+        status: "failed",
+        message: error instanceof Error ? error.message : "系统审计预检失败。",
+      });
     } finally {
       await fs.rm(auditRoot, { recursive: true, force: true }).catch(() => undefined);
       for (const step of steps) {
@@ -135,15 +162,7 @@ export class HermesSystemAuditService {
       }
     }
 
-    const failedStep = steps.find((step) => step.status === "failed");
-    return {
-      ok: !failedStep,
-      workspacePath,
-      steps,
-      message: failedStep
-        ? `系统能力审计未通过：${failedStep.label}。${failedStep.message}`
-        : "Hermes 系统级能力审计通过，当前 Electron 客户端具备预期的底层文件/命令能力。",
-    };
+    return auditResult(workspacePath, steps);
   }
 
   private async runCase(input: {
@@ -306,4 +325,16 @@ function failed(message: string, detail?: string) {
 
 function skipped(id: HermesSystemAuditStepId, label: string, message: string): HermesSystemAuditStep {
   return { id, label, status: "skipped", message };
+}
+
+function auditResult(workspacePath: string, steps: HermesSystemAuditStep[]): HermesSystemAuditResult {
+  const failedStep = steps.find((step) => step.status === "failed");
+  return {
+    ok: !failedStep,
+    workspacePath,
+    steps,
+    message: failedStep
+      ? `系统能力审计未通过：${failedStep.label}。${failedStep.message}`
+      : "Hermes 系统级能力审计通过，当前 Electron 客户端具备预期的底层文件/命令能力。",
+  };
 }

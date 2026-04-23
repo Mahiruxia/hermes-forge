@@ -42,8 +42,9 @@ export async function syncHermesWindowsMcpConfig(input: SyncInput) {
 
 async function buildServerBlock(runtime: HermesRuntimeConfig, bridge: BridgeAccess) {
   const scriptPath = await mcpServerScriptPath(runtime);
-  const command = runtime.mode === "wsl" ? runtime.pythonCommand?.trim() || "python3" : "py";
-  const args = runtime.mode === "wsl" ? [scriptPath] : ["-3", scriptPath];
+  const configuredPython = runtime.pythonCommand?.trim();
+  const command = runtime.mode === "wsl" ? configuredPython || "python3" : configuredPython || "python";
+  const args = [scriptPath];
   return [
     `  ${SERVER_NAME}:`,
     `    command: ${yamlString(command)}`,

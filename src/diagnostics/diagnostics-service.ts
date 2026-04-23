@@ -28,28 +28,45 @@ export class DiagnosticsService {
     const dir = path.join(this.appPaths.baseDir(), "diagnostics", createdAt.replace(/[:.]/g, "-"));
     await fs.mkdir(dir, { recursive: true });
 
-    const workspaceId = workspacePath?.trim() ? await this.appPaths.ensureWorkspaceLayout(workspacePath) : undefined;
-    const config = await this.configStore.read();
+    const diagnosticErrors: Array<{ section: string; message: string }> = [];
+    const capture = async <T>(section: string, task: () => Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await task();
+      } catch (error) {
+        diagnosticErrors.push({ section, message: error instanceof Error ? error.message : String(error) });
+        return fallback;
+      }
+    };
+
+    const workspaceId = workspacePath?.trim()
+      ? await capture("workspace", () => this.appPaths.ensureWorkspaceLayout(workspacePath), undefined as string | undefined)
+      : undefined;
+    const config = await capture("runtimeConfig", () => this.configStore.read(), { modelProfiles: [], updateSources: {}, enginePaths: {} });
     const safeConfig = {
       ...config,
       modelProfiles: config.modelProfiles.map((profile) => ({
         ...profile,
         secretRef: profile.secretRef ? "[CONFIGURED]" : undefined,
       })),
+      providerProfiles: config.providerProfiles?.map((profile) => ({
+        ...profile,
+        apiKeySecretRef: profile.apiKeySecretRef ? "[CONFIGURED]" : undefined,
+      })),
     };
 
-    const engine = await this.hermes.healthCheck();
-    const memory = workspaceId ? await this.hermes.getMemoryStatus(workspaceId) : undefined;
-    const snapshots = workspaceId ? await this.snapshotManager.listSnapshots(workspaceId) : [];
-    const events = workspaceId ? await this.sessionLog.readRecent(workspaceId, 80) : [];
-    const locks = this.workspaceLock.listActive(workspaceId);
-    const probes = await this.engineProbeService.probeHermes(workspacePath);
-    const installLogs = await this.listInstallLogs();
+    const engine = await capture("engine", () => this.hermes.healthCheck(), undefined);
+    const memory = workspaceId ? await capture("memory", () => this.hermes.getMemoryStatus(workspaceId), undefined) : undefined;
+    const snapshots = workspaceId ? await capture("snapshots", () => this.snapshotManager.listSnapshots(workspaceId), []) : [];
+    const events = workspaceId ? await capture("recentEvents", () => this.sessionLog.readRecent(workspaceId, 80), []) : [];
+    const locks = await capture("locks", async () => this.workspaceLock.listActive(workspaceId), []);
+    const probes = await capture("probes", () => this.engineProbeService.probeHermes(workspacePath), undefined);
+    const installLogs = await capture("installLogs", () => this.listInstallLogs(), []);
+    const setup = await capture("setup", () => this.setupService.getSummary(workspacePath), { ready: false, blocking: [], checks: [] });
 
     const report = {
       createdAt,
       clientInfo: this.clientInfo(),
-      setup: await this.setupService.getSummary(workspacePath),
+      setup,
       runtimeConfig: safeConfig,
       engine,
       probes,
@@ -58,14 +75,21 @@ export class DiagnosticsService {
       locks,
       installLogs,
       recentEvents: events,
+      diagnosticErrors,
     };
 
     await fs.writeFile(path.join(dir, "diagnostics.json"), JSON.stringify(report, null, 2), "utf8");
-    await fs.writeFile(path.join(dir, "README.txt"), "诊断报告已脱敏，不包含 API Key 明文。\n", "utf8");
+    await fs.writeFile(path.join(dir, "README.txt"), [
+      "诊断报告已脱敏，不包含 API Key 明文。",
+      diagnosticErrors.length ? `部分诊断项读取失败，详见 diagnostics.json 的 diagnosticErrors 字段。失败项：${diagnosticErrors.map((item) => item.section).join(", ")}` : "所有诊断项已尽量读取完成。",
+      "",
+    ].join("\n"), "utf8");
     return {
       ok: true,
       path: dir,
-      message: `诊断报告已导出：${dir}`,
+      message: diagnosticErrors.length
+        ? `诊断报告已导出：${dir}。部分诊断项读取失败，已写入报告。`
+        : `诊断报告已导出：${dir}`,
     };
   }
 

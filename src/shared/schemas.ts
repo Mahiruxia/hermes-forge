@@ -63,6 +63,7 @@ export const providerIdSchema = z.enum(["openai", "anthropic", "openrouter", "lo
 
 export const modelProfileSchema = z.object({
   id: z.string().trim().min(1).max(120),
+  name: z.string().trim().max(200).optional(),
   provider: providerIdSchema,
   baseUrl: z.string().trim().max(1000).optional(),
   model: z.string().trim().min(1).max(200),

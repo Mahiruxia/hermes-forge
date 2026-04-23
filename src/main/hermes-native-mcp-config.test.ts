@@ -67,4 +67,25 @@ describe("Hermes native MCP config helpers", () => {
       await fs.rm(hermesHome, { recursive: true, force: true });
     }
   });
+
+  it("uses the configured Windows Python command for the MCP server", async () => {
+    const hermesHome = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-home-"));
+    try {
+      await syncHermesWindowsMcpConfig({
+        runtime: { mode: "windows", pythonCommand: "C:\\Python\\python.exe", windowsAgentMode: "hermes_native" },
+        hermesHome,
+        bridge: {
+          url: "http://127.0.0.1:12345",
+          token: "test-token",
+          capabilities: "tool,manifest",
+        },
+      });
+
+      const config = await fs.readFile(path.join(hermesHome, "config.yaml"), "utf8");
+      expect(config).toContain('command: "C:\\\\Python\\\\python.exe"');
+      expect(config).not.toContain('- "-3"');
+    } finally {
+      await fs.rm(hermesHome, { recursive: true, force: true });
+    }
+  });
 });
