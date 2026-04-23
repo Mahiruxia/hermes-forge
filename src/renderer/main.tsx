@@ -89,7 +89,6 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
   const [repairingDependency, setRepairingDependency] = useState<SetupDependencyRepairId | undefined>();
   const [setupActionRunning, setSetupActionRunning] = useState<string | undefined>();
   const [installEvent, setInstallEvent] = useState<HermesInstallEvent | undefined>();
-  const [theme, setTheme] = useState<"green-light" | "light" | "slate" | "oled">(store.webUiOverview?.settings.theme ?? "green-light");
 
   function showSaveNotice(message: string) {
     setSaveNotice(message);
@@ -102,9 +101,6 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
     setSecretRef(overview?.secrets[0]?.ref ?? "");
   }, [overview?.secrets]);
 
-  useEffect(() => {
-    setTheme(store.webUiOverview?.settings.theme ?? "green-light");
-  }, [store.webUiOverview?.settings.theme]);
 
   useEffect(() => {
     if (props.initialSection) setActiveSection(props.initialSection);
@@ -158,11 +154,6 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
     showSaveNotice("Hermes 设置已保存");
   }
 
-  async function saveThemeSettings() {
-    const settings = await window.workbenchClient.saveWebUiSettings({ theme });
-    store.setWebUiOverview(withThemeOverview(store.webUiOverview, settings));
-    showSaveNotice("界面主题已保存");
-  }
 
   async function chooseHermesRoot() {
     const selected = await window.workbenchClient.pickHermesInstallFolder();
@@ -297,19 +288,6 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
                 </select>
               </label>
 
-              <label className="block text-[12px] font-medium text-slate-500">
-                <span className="mb-1.5 block">界面主题</span>
-                <select
-                  value={theme}
-                  onChange={(event) => setTheme((["green-light", "light", "slate", "oled"].includes(event.target.value) ? event.target.value : "green-light") as typeof theme)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[13px] text-slate-800 outline-none transition focus:ring-2 focus:ring-slate-900/10"
-                >
-                  <option value="green-light">亮色（清新）</option>
-                  <option value="light">亮色（经典）</option>
-                  <option value="slate">深色（高级深灰）</option>
-                  <option value="oled">深色（OLED）</option>
-                </select>
-              </label>
             </div>
           </SettingsPanelCard>
 
@@ -341,10 +319,7 @@ function SettingsView(props: { overview?: ConfigOverview; initialSection?: Confi
             </div>
           </SettingsPanelCard>
 
-          <div className="flex flex-wrap justify-end gap-2">
-            <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void saveThemeSettings()} type="button">
-              保存界面主题
-            </button>
+          <div className="flex justify-end">
             <button className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={() => void saveHermesSettings()} type="button">
               保存运行设置
             </button>
@@ -1406,8 +1381,9 @@ function sessionTitleFromPrompt(prompt: string) {
 }
 
 function applyTheme(theme: "green-light" | "light" | "slate" | "oled") {
-  document.documentElement.setAttribute("data-theme", theme);
-  document.body.setAttribute("data-theme", theme);
+  const resolved = theme === "oled" ? "slate" : theme;
+  document.documentElement.setAttribute("data-theme", resolved);
+  document.body.setAttribute("data-theme", resolved);
 }
 
 function withThemeOverview(

@@ -71,8 +71,8 @@ export function SupportView(props: { onBack: () => void }) {
   }
 
   return (
-    <section className="flex min-h-screen flex-col bg-[#f7f8fb] text-slate-900">
-      <header className="flex h-[58px] items-center justify-between border-b border-slate-200/70 bg-white/95 px-6 backdrop-blur-md">
+    <section className="hermes-support-page flex min-h-screen flex-col bg-[#f7f8fb] text-slate-900">
+      <header className="hermes-support-header flex h-[58px] items-center justify-between border-b border-slate-200/70 bg-white/95 px-6 backdrop-blur-md">
         <button
           className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
           onClick={props.onBack}
@@ -89,7 +89,7 @@ export function SupportView(props: { onBack: () => void }) {
 
       <main className="mx-auto grid w-full max-w-7xl flex-1 gap-6 px-7 py-7 lg:grid-cols-[minmax(0,1.28fr)_minmax(380px,0.78fr)]">
         <div className="space-y-5">
-          <section className="rounded-xl border border-slate-200/80 bg-white p-7 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
+          <section className="hermes-support-card rounded-xl border border-slate-200/80 bg-white p-7 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
             <SupportPill />
             <h1 className="mt-6 text-4xl font-semibold tracking-tight text-slate-950">支持与反馈 Hermes Forge</h1>
             <p className="mt-5 max-w-3xl text-[15px] leading-7 text-slate-500">
@@ -119,7 +119,7 @@ export function SupportView(props: { onBack: () => void }) {
             </p>
           </section>
 
-          <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
+          <section className="hermes-support-card rounded-xl border border-slate-200/80 bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold text-slate-950">反馈墙</h2>
@@ -166,7 +166,7 @@ export function SupportView(props: { onBack: () => void }) {
         </div>
 
         <aside className="space-y-5">
-          <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
+          <section className="hermes-support-card rounded-xl border border-slate-200/80 bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
             <h2 className="text-2xl font-semibold text-slate-950">意见反馈</h2>
             <p className="mt-3 text-sm leading-6 text-slate-500">
               直接写下建议、问题、使用卡点，或希望 Hermes Forge 优先打磨的方向。
@@ -207,7 +207,7 @@ export function SupportView(props: { onBack: () => void }) {
             </div>
           </section>
 
-          <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
+          <section className="hermes-support-card rounded-xl border border-slate-200/80 bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-2xl font-semibold text-slate-950">说明事项</h2>
               <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">感谢支持</span>

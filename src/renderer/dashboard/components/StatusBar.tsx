@@ -136,7 +136,7 @@ export function StatusBar() {
           <button
             key={item.key}
             className={cn(
-              "inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition",
+              "hermes-status-chip inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition",
               toneClass(item.tone),
             )}
             title={`${item.detail}${item.lastChecked ? ` · 最后检查 ${item.lastChecked}` : ""}`}
