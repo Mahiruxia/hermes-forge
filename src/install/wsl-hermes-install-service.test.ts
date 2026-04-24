@@ -253,4 +253,174 @@ describe("WslHermesInstallService", () => {
       hermesRuntime: expect.objectContaining({ managedRoot: "/home/test/existing-hermes" }),
     }));
   });
+
+  it("repairs missing dependencies for an existing Hermes CLI through an attached WSL venv wrapper", async () => {
+    const configStore = {
+      read: vi.fn(async () => ({
+        hermesRuntime: {
+          mode: "wsl",
+          distro: "Ubuntu",
+          pythonCommand: "python3",
+          managedRoot: "/mnt/c/Users/Jia/Hermes Agent",
+        },
+      })),
+      write: vi.fn(async () => undefined),
+    };
+    runCommandMock.mockImplementation(async (_command: string, _args: string[], options: { commandId: string }) => {
+      switch (options.commandId) {
+        case "install.wsl.resolve-home":
+        case "install.wsl.repaired-wrapper-home":
+          return { exitCode: 0, stdout: "/home/jia", stderr: "" };
+        case "install.wsl.mkdir-root":
+          return { exitCode: 0, stdout: "", stderr: "" };
+        case "install.wsl.ensure-python":
+          return { exitCode: 0, stdout: "Python 3.12.3", stderr: "" };
+        case "install.wsl.find-existing-hermes":
+          return { exitCode: 0, stdout: "/mnt/c/Users/Jia/Hermes Agent/hermes\n", stderr: "" };
+        case "install.wsl.existing-hermes-file":
+          return { exitCode: 0, stdout: "yes\n", stderr: "" };
+        case "install.wsl.existing-hermes-python":
+          return { exitCode: 0, stdout: "python3", stderr: "" };
+        case "install.wsl.existing-hermes-version":
+        case "install.wsl.existing-hermes-capabilities":
+          return { exitCode: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'dotenv'" };
+        case "install.wsl.repair-existing-hermes-deps":
+          return { exitCode: 0, stdout: "Successfully installed python-dotenv", stderr: "" };
+        case "install.wsl.repaired-existing-hermes-version":
+          return { exitCode: 0, stdout: "Hermes Agent v0.10.0", stderr: "" };
+        case "install.wsl.repaired-existing-hermes-capabilities":
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              cliVersion: "0.10.0",
+              capabilities: {
+                supportsLaunchMetadataArg: true,
+                supportsLaunchMetadataEnv: true,
+                supportsResume: true,
+              },
+            }),
+            stderr: "",
+          };
+        case "install.wsl.git-rev-parse":
+          return { exitCode: 1, stdout: "", stderr: "not a git repo" };
+        default:
+          return { exitCode: 1, stdout: "", stderr: `unexpected command: ${options.commandId}` };
+      }
+    });
+
+    const service = new WslHermesInstallService(
+      { baseDir: () => "C:\\temp" } as any,
+      configStore as any,
+      {
+        probe: vi.fn(async () => ({
+          overallStatus: "ready",
+          issues: [],
+          bridge: { running: true, reachable: true, configured: true, message: "ok" },
+        })),
+      } as any,
+      (() => ({ preflight: vi.fn() })) as any,
+      { diagnose: vi.fn(async () => createDoctorReport()) } as any,
+    );
+
+    const result = await service.install({
+      report: {
+        ...createDoctorReport(),
+        runtime: {
+          ...createDoctorReport().runtime,
+          managedRoot: "/mnt/c/Users/Jia/Hermes Agent",
+        },
+      },
+    });
+
+    expect(result.healthCheckPassed).toBe(true);
+    expect(result.installExecuted).toBe(false);
+    expect(result.hermesRoot).toContain("/home/jia/.hermes-forge/attached-hermes-");
+    expect(result.steps.find((step) => step.step === "repair-existing-hermes-deps")).toMatchObject({ status: "passed" });
+    expect(configStore.write).toHaveBeenCalledWith(expect.objectContaining({
+      hermesRuntime: expect.objectContaining({ managedRoot: expect.stringContaining("/home/jia/.hermes-forge/attached-hermes-") }),
+    }));
+  });
+
+  it("detects missing dependencies from capabilities output even when version prints successfully", async () => {
+    const configStore = {
+      read: vi.fn(async () => ({
+        hermesRuntime: {
+          mode: "wsl",
+          distro: "Ubuntu",
+          pythonCommand: "python3",
+          managedRoot: "/mnt/c/Users/Jia/Hermes Agent",
+        },
+      })),
+      write: vi.fn(async () => undefined),
+    };
+    runCommandMock.mockImplementation(async (_command: string, _args: string[], options: { commandId: string }) => {
+      switch (options.commandId) {
+        case "install.wsl.resolve-home":
+        case "install.wsl.repaired-wrapper-home":
+          return { exitCode: 0, stdout: "/home/jia", stderr: "" };
+        case "install.wsl.mkdir-root":
+          return { exitCode: 0, stdout: "", stderr: "" };
+        case "install.wsl.ensure-python":
+          return { exitCode: 0, stdout: "Python 3.12.3", stderr: "" };
+        case "install.wsl.find-existing-hermes":
+          return { exitCode: 0, stdout: "/mnt/c/Users/Jia/Hermes Agent/hermes\n", stderr: "" };
+        case "install.wsl.existing-hermes-file":
+          return { exitCode: 0, stdout: "yes\n", stderr: "" };
+        case "install.wsl.existing-hermes-python":
+          return { exitCode: 0, stdout: "python3", stderr: "" };
+        case "install.wsl.existing-hermes-version":
+          return { exitCode: 0, stdout: "Hermes Agent v0.9.0", stderr: "" };
+        case "install.wsl.existing-hermes-capabilities":
+          return { exitCode: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'dotenv'" };
+        case "install.wsl.repair-existing-hermes-deps":
+          return { exitCode: 0, stdout: "Successfully installed python-dotenv", stderr: "" };
+        case "install.wsl.repaired-existing-hermes-version":
+          return { exitCode: 0, stdout: "Hermes Agent v0.10.0", stderr: "" };
+        case "install.wsl.repaired-existing-hermes-capabilities":
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              cliVersion: "0.10.0",
+              capabilities: {
+                supportsLaunchMetadataArg: true,
+                supportsLaunchMetadataEnv: true,
+                supportsResume: true,
+              },
+            }),
+            stderr: "",
+          };
+        case "install.wsl.git-rev-parse":
+          return { exitCode: 1, stdout: "", stderr: "not a git repo" };
+        default:
+          return { exitCode: 1, stdout: "", stderr: `unexpected command: ${options.commandId}` };
+      }
+    });
+
+    const service = new WslHermesInstallService(
+      { baseDir: () => "C:\\temp" } as any,
+      configStore as any,
+      {
+        probe: vi.fn(async () => ({
+          overallStatus: "ready",
+          issues: [],
+          bridge: { running: true, reachable: true, configured: true, message: "ok" },
+        })),
+      } as any,
+      (() => ({ preflight: vi.fn() })) as any,
+      { diagnose: vi.fn(async () => createDoctorReport()) } as any,
+    );
+
+    const result = await service.install({
+      report: {
+        ...createDoctorReport(),
+        runtime: {
+          ...createDoctorReport().runtime,
+          managedRoot: "/mnt/c/Users/Jia/Hermes Agent",
+        },
+      },
+    });
+
+    expect(result.healthCheckPassed).toBe(true);
+    expect(result.steps.find((step) => step.step === "repair-existing-hermes-deps")).toMatchObject({ status: "passed" });
+  });
 });

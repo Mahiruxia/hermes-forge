@@ -392,9 +392,88 @@ describe("SetupService dependency health", () => {
     expect(result.ok).toBe(true);
     expect(result.command).toBe("python -m pip install --upgrade PyYAML");
   });
+
+  it("surfaces missing python-dotenv as a repairable Hermes dependency", async () => {
+    healthCheckMock.mockResolvedValueOnce({
+      engineId: "hermes",
+      label: "Hermes",
+      available: false,
+      mode: "cli",
+      path: path.join(tempRoot, "Hermes Agent"),
+      message: "ModuleNotFoundError: No module named 'dotenv'",
+    });
+    const service = createService();
+
+    const summary = await service.getSummary();
+    const hermes = summary.checks.find((check) => check.id === "hermes");
+    expect(hermes).toMatchObject({
+      status: "missing",
+      autoFixId: "hermes_python_dotenv",
+      fixAction: "install_hermes_dependency",
+      canAutoFix: true,
+      blocking: true,
+    });
+
+    const result = await service.repairDependency("hermes_python_dotenv");
+    expect(result.ok).toBe(true);
+    expect(result.command).toBe("python -m pip install --upgrade python-dotenv");
+  });
+
+  it("does not block WSL mode on system python Hermes package probes", async () => {
+    config = {
+      defaultModelProfileId: "local",
+      modelProfiles: [{ id: "local", provider: "local", model: "gpt-5.4", baseUrl: "http://127.0.0.1:8080/v1" }],
+      updateSources: {},
+      enginePaths: {},
+      hermesRuntime: { mode: "wsl", distro: "Ubuntu", pythonCommand: "python3" },
+    };
+    healthCheckMock.mockResolvedValueOnce({
+      engineId: "hermes",
+      label: "Hermes",
+      available: true,
+      mode: "cli",
+      path: "/home/test/.hermes-forge/hermes-agent",
+      message: "Hermes CLI ready",
+    });
+    runCommandMock.mockImplementation(async (command: string, args: string[] = []) => {
+      if (command === "node" && args[0] === "--version") return { exitCode: 0, stdout: "v22.0.0", stderr: "" };
+      if (command === "wsl.exe" && args.includes("-c")) return { exitCode: 1, stdout: "", stderr: "No module named yaml" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const runtimeProbe = {
+      runtimeMode: "wsl",
+      gitAvailable: true,
+      pythonAvailable: false,
+      wslPythonAvailable: true,
+      wingetAvailable: true,
+      wslAvailable: true,
+      distroExists: true,
+      distroReachable: true,
+      distroName: "Ubuntu",
+      hermesRootExists: true,
+      hermesCliExists: true,
+      commands: {
+        git: { message: "git ok" },
+        python: { available: false, command: "python", args: [], message: "skipped", label: "python" },
+        winget: { message: "winget ok" },
+        wsl: { message: "WSL python ok", pythonCommand: "python3" },
+      },
+      paths: {
+        profileHermesPath: { path: "/home/test/.hermes-forge/hermes-agent/hermes" },
+      },
+      issues: [],
+    };
+    const service = createService({}, { probe: vi.fn(async () => runtimeProbe) } as any);
+
+    const summary = await service.getSummary();
+
+    expect(summary.checks.find((check) => check.id === "hermes-pyyaml")).toMatchObject({ status: "ok", blocking: false });
+    expect(summary.checks.find((check) => check.id === "hermes-dotenv")).toMatchObject({ status: "ok", blocking: false });
+    expect(summary.ready).toBe(true);
+  });
 });
 
-function createService(overrides: Partial<EngineAdapter> = {}) {
+function createService(overrides: Partial<EngineAdapter> = {}, runtimeProbeService?: any) {
   const appPaths = {
     baseDir: () => tempRoot,
   } as AppPaths;
@@ -411,5 +490,5 @@ function createService(overrides: Partial<EngineAdapter> = {}) {
     ...overrides,
   } as EngineAdapter;
 
-  return new SetupService(appPaths, hermes, configStore, { hasSecret: async () => false });
+  return new SetupService(appPaths, hermes, configStore, { hasSecret: async () => false }, runtimeProbeService);
 }

@@ -1119,7 +1119,7 @@ export type RuntimeConfig = {
 };
 
 export type SetupRequirementStatus = "ok" | "missing" | "warning" | "running" | "failed";
-export type SetupDependencyRepairId = "git" | "python" | "hermes_pyyaml" | "weixin_aiohttp";
+export type SetupDependencyRepairId = "git" | "python" | "hermes_pyyaml" | "hermes_python_dotenv" | "weixin_aiohttp";
 export type SetupFixAction =
   | "configure_hermes"
   | "configure_model"

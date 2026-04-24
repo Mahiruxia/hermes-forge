@@ -170,10 +170,11 @@ export async function validateWslHermesCli(
   });
   const command = `wsl.exe ${args.join(" ")}`;
   if (result.exitCode !== 0) {
+    const output = (result.stderr || result.stdout || "").trim();
     return {
       ok: false,
       kind: "capability_failed",
-      message: `capabilities --json 执行失败：exit ${result.exitCode ?? "unknown"}。${(result.stderr || result.stdout || "").trim()}`,
+      message: formatCapabilityFailureMessage(result.exitCode, output),
       command,
       result,
     };
@@ -354,4 +355,23 @@ function shellQuote(value: string) {
 
 function wslDistroArgs(runtime: Pick<HermesRuntimeConfig, "distro">) {
   return runtime.distro?.trim() ? ["-d", runtime.distro.trim()] : [];
+}
+
+function formatCapabilityFailureMessage(exitCode: number | null | undefined, output: string) {
+  const missingModule = detectMissingPythonModule(output);
+  if (missingModule) {
+    const packageName = missingModule === "dotenv" ? "python-dotenv" : missingModule === "yaml" ? "PyYAML" : missingModule;
+    return [
+      `capabilities --json 执行失败：Hermes CLI 的 Python 环境缺少依赖 ${packageName}。`,
+      "这通常不是模型配置问题，而是 WSL 中当前 Hermes 安装没有完成 pip 依赖安装，或 Forge 接到了 Windows 目录里的裸源码。",
+      "请点击一键修复 / 重新安装 Hermes；Forge 会优先复用现有 Hermes，并为它补齐 WSL venv 依赖。",
+      output,
+    ].filter(Boolean).join("\n");
+  }
+  return `capabilities --json 执行失败：exit ${exitCode ?? "unknown"}。${output}`;
+}
+
+function detectMissingPythonModule(output: string) {
+  const match = output.match(/ModuleNotFoundError:\s+No module named ['"]([^'"]+)['"]/i);
+  return match?.[1];
 }

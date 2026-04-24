@@ -111,6 +111,8 @@ export class NativeInstallStrategy implements InstallStrategy {
         return await this.repairWithWinget(id, "Python", "Python.Python.3.12");
       case "hermes_pyyaml":
         return await this.repairPythonPackage(id, "PyYAML", "PyYAML", "请重新检查 Hermes 状态，确认 yaml 模块已可导入。");
+      case "hermes_python_dotenv":
+        return await this.repairPythonPackage(id, "python-dotenv", "python-dotenv", "请重新检查 Hermes 状态，确认 dotenv 模块已可导入。");
       case "weixin_aiohttp":
         return await this.repairPythonPackage(id, "aiohttp", "aiohttp");
       default:

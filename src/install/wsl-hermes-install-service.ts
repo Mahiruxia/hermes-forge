@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import type { AppPaths } from "../main/app-paths";
 import type { RuntimeConfigStore } from "../main/runtime-config";
@@ -603,6 +604,45 @@ export class WslHermesInstallService {
           })],
         };
       }
+      const existingHermesOutput = [version.stderr, version.stdout, capabilities.stderr, capabilities.stdout].filter(Boolean).join("\n");
+      if (shouldRepairExistingHermesDependencies(existingHermesOutput)) {
+        const repaired = await this.createDependencyRepairedHermesWrapper(runtime, cliPath, rootPath, basePython);
+        if (repaired.ok) {
+          const repairedVersion = await this.runInDistro(runtime, `cd ${shellQuote(repaired.rootPath)} && ${shellQuote(repaired.python)} ${shellQuote(repaired.cliPath)} --version`, "install.wsl.repaired-existing-hermes-version");
+          const repairedCapabilities = await this.runInDistro(runtime, `cd ${shellQuote(repaired.rootPath)} && ${shellQuote(repaired.python)} ${shellQuote(repaired.cliPath)} capabilities --json`, "install.wsl.repaired-existing-hermes-capabilities");
+          const repairedCapabilityProbe = this.parseCapabilityProbe(repairedCapabilities);
+          if (repairedVersion.exitCode === 0 && repairedCapabilityProbe.minimumSatisfied) {
+            return {
+              ok: true,
+              rootPath: repaired.rootPath,
+              cliPath: repaired.cliPath,
+              python: repaired.python,
+              version: repairedVersion.stdout.trim(),
+              capabilityProbe: repairedCapabilityProbe,
+              steps: [installStep({
+                phase: "preflight",
+                step: "repair-existing-hermes-deps",
+                status: "passed",
+                code: "ok",
+                summary: "已复用已有 Hermes，并为它补齐 WSL Python 依赖。",
+                detail: [
+                  `Original CLI: ${cliPath}`,
+                  `Wrapper: ${repaired.cliPath}`,
+                  `Python: ${repaired.python}`,
+                  repaired.detail,
+                  repairedVersion.stdout.trim(),
+                  repairedCapabilities.stdout.trim(),
+                ].filter(Boolean).join("\n"),
+                fixHint: "已在 WSL HOME 下创建 Forge 管理的轻量 wrapper；原 Hermes 目录没有被覆盖。",
+              })],
+            };
+          }
+          failures.push(`${cliPath}: 依赖修复 wrapper 已创建，但 capability 仍未通过：${repairedCapabilities.stderr || repairedCapabilities.stdout || `exit ${repairedCapabilities.exitCode}`}`);
+          continue;
+        }
+        failures.push(`${cliPath}: 检测到 Python 依赖缺失，但自动创建 WSL venv wrapper 失败：${repaired.detail}`);
+        continue;
+      }
       const directVersion = await this.runInDistro(runtime, `cd ${shellQuote(rootPath)} && ${shellQuote(cliPath)} --version`, "install.wsl.existing-hermes-direct-version");
       const directCapabilities = await this.runInDistro(runtime, `cd ${shellQuote(rootPath)} && ${shellQuote(cliPath)} capabilities --json`, "install.wsl.existing-hermes-direct-capabilities");
       const directCapabilityProbe = this.parseCapabilityProbe(directCapabilities);
@@ -698,6 +738,44 @@ export class WslHermesInstallService {
     return create.exitCode === 0
       ? { ok: true, rootPath, cliPath }
       : { ok: false, detail: create.stderr || create.stdout || `exit ${create.exitCode}` };
+  }
+
+  private async createDependencyRepairedHermesWrapper(
+    runtime: WslDoctorReport["runtime"],
+    targetCliPath: string,
+    targetRootPath: string,
+    basePython: string,
+  ) {
+    const home = await this.runInDistro(runtime, "printf %s \"$HOME\"", "install.wsl.repaired-wrapper-home");
+    const baseHome = (home.stdout || "").trim();
+    if (!baseHome) return { ok: false as const, detail: home.stderr || home.stdout || "无法解析 WSL HOME" };
+    const hash = createHash("sha1").update(targetCliPath).digest("hex").slice(0, 12);
+    const rootPath = `${baseHome.replace(/\/+$/, "")}/.hermes-forge/attached-hermes-${hash}`;
+    const cliPath = `${rootPath}/hermes`;
+    const venvPython = `${rootPath}/.venv/bin/python`;
+    const wrapper = [
+      "#!/usr/bin/env python3",
+      "import os",
+      "import sys",
+      `VENV_PYTHON = ${JSON.stringify(venvPython)}`,
+      `TARGET = ${JSON.stringify(targetCliPath)}`,
+      "os.execv(VENV_PYTHON, [VENV_PYTHON, TARGET, *sys.argv[1:]])",
+      "",
+    ].join("\n");
+    const installScript = [
+      "set -e",
+      `mkdir -p ${shellQuote(rootPath)}`,
+      `[ -x ${shellQuote(venvPython)} ] || ${shellQuote(basePython)} -m venv ${shellQuote(`${rootPath}/.venv`)}`,
+      `${shellQuote(venvPython)} -m pip install --upgrade pip`,
+      `[ -f ${shellQuote(`${targetRootPath}/pyproject.toml`)} ] && (cd ${shellQuote(targetRootPath)} && ${shellQuote(venvPython)} -m pip install -e .) || ${shellQuote(venvPython)} -m pip install python-dotenv PyYAML`,
+      `cat > ${shellQuote(cliPath)} <<'PY'\n${wrapper}PY`,
+      `chmod +x ${shellQuote(cliPath)}`,
+      `${shellQuote(venvPython)} ${shellQuote(cliPath)} capabilities --json >/dev/null`,
+    ].join("\n");
+    const create = await this.runInDistro(runtime, installScript, "install.wsl.repair-existing-hermes-deps");
+    return create.exitCode === 0
+      ? { ok: true as const, rootPath, cliPath, python: venvPython, detail: create.stdout || create.stderr }
+      : { ok: false as const, detail: create.stderr || create.stdout || `exit ${create.exitCode}` };
   }
 
   private async reuseExistingRepo(runtime: WslDoctorReport["runtime"], hermesRoot: string): Promise<RepoEnsureResult> {
@@ -1182,6 +1260,10 @@ function dirnamePosix(inputPath: string) {
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function shouldRepairExistingHermesDependencies(output: string) {
+  return /ModuleNotFoundError:\s+No module named ['"](?:dotenv|yaml)['"]|No module named ['"](?:dotenv|yaml)['"]/i.test(output);
 }
 
 function cloneConfig(config: RuntimeConfig): RuntimeConfig {

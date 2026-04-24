@@ -51,7 +51,7 @@ export class ManagedWslInstallStrategy implements InstallStrategy {
         ok: false,
         id,
         message: "当前 Managed WSL repair 入口只覆盖 python/git/pip/venv 这条基础依赖链路。",
-        recommendedFix: "如需修复 Hermes Python 包依赖，请先完成 Managed WSL 安装链路，再处理 repo 内依赖。",
+        recommendedFix: "如需修复 Hermes Python 包依赖，请点击“安装 WSL 版 Hermes Agent”；安装器会优先复用现有 Hermes，并为它补齐 WSL venv 依赖。",
         plan: await this.plan({ mode: "wsl" }),
       };
     }

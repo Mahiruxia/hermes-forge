@@ -676,7 +676,7 @@ function needsManagedWslHermesInstall(report: OneClickDiagnosticsReport) {
       diagnostic.details,
       ...(diagnostic.suggestedActions ?? []),
     ].join("\n");
-    return installRelatedIds.has(diagnostic.id) && /WSL|wsl\.exe|Ubuntu|Hermes Agent|Hermes CLI|Hermes root|hermes_root_missing|hermes_cli_missing|不存在|未安装|不可用|无法找到/i.test(text);
+    return installRelatedIds.has(diagnostic.id) && /WSL|wsl\.exe|Ubuntu|Hermes Agent|Hermes CLI|Hermes root|capabilities|ModuleNotFoundError|No module named|dotenv|yaml|python-dotenv|PyYAML|hermes_root_missing|hermes_cli_missing|不存在|未安装|不可用|无法找到|依赖缺失/i.test(text);
   });
 }
 
@@ -702,6 +702,7 @@ function setupFixButtonLabel(check: SetupCheck) {
   if (check.autoFixId === "git") return "一键安装 Git";
   if (check.autoFixId === "python") return "一键安装 Python";
   if (check.autoFixId === "hermes_pyyaml") return "修复 Hermes 依赖";
+  if (check.autoFixId === "hermes_python_dotenv") return "修复 Hermes 依赖";
   if (check.autoFixId === "weixin_aiohttp") return "修复微信依赖";
   if (check.fixAction === "install_hermes") return "自动安装 Hermes";
   if (check.fixAction === "configure_model") return "打开模型配置";

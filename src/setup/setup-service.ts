@@ -69,11 +69,18 @@ export class SetupService {
       runtimeProbe ? this.wingetCheckFromProbe(runtimeProbe) : await this.checkWinget(),
       ...(runtimeProbe?.runtimeMode === "wsl" ? [this.wslCheckFromProbe(runtimeProbe)] : []),
       runtimeProbe ? this.hermesCheckFromProbe(runtimeProbe) : await this.checkHermes(),
-      await this.checkPythonPackageWithRuntime(runtimeProbe, "hermes-pyyaml", "Hermes 配置依赖", "yaml", "PyYAML", {
+      await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "hermes-pyyaml", "Hermes 配置依赖", "yaml", "PyYAML", {
         description: "Hermes CLI 读取 config.yaml 时需要 PyYAML；缺失时会出现 No module named 'yaml'。",
         recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade PyYAML。",
         fixAction: "install_hermes_dependency",
         autoFixId: "hermes_pyyaml",
+        blocking: true,
+      }),
+      await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "hermes-dotenv", "Hermes 环境变量依赖", "dotenv", "python-dotenv", {
+        description: "Hermes CLI 读取 .env 时需要 python-dotenv；缺失时会出现 No module named 'dotenv'。",
+        recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade python-dotenv。",
+        fixAction: "install_hermes_dependency",
+        autoFixId: "hermes_python_dotenv",
         blocking: true,
       }),
       await this.checkPythonPackageWithRuntime(runtimeProbe, "weixin-aiohttp", "微信连接依赖", "aiohttp", "aiohttp"),
@@ -296,6 +303,8 @@ export class SetupService {
         return await this.repairWithWinget(id, "Python", "Python.Python.3.12");
       case "hermes_pyyaml":
         return await this.repairPythonPackage(id, "PyYAML", "PyYAML", "请重新检查 Hermes 状态，确认 yaml 模块已可导入。");
+      case "hermes_python_dotenv":
+        return await this.repairPythonPackage(id, "python-dotenv", "python-dotenv", "请重新检查 Hermes 状态，确认 dotenv 模块已可导入。");
       case "weixin_aiohttp":
         return await this.repairPythonPackage(id, "aiohttp", "aiohttp");
       default:
@@ -595,6 +604,20 @@ export class SetupService {
           recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade PyYAML。",
           fixAction: "install_hermes_dependency",
           autoFixId: "hermes_pyyaml",
+          canAutoFix: true,
+          blocking: true,
+        };
+      }
+      if (/No module named ['"]?dotenv|ModuleNotFoundError.*dotenv|python-dotenv/i.test(health.message)) {
+        return {
+          id: "hermes",
+          label: "Hermes",
+          status: "missing",
+          message: `Hermes 未完全就绪：${health.message}`,
+          description: "Hermes CLI 已存在，但当前 Python 环境缺少 python-dotenv，导致读取 .env 时崩溃。",
+          recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade python-dotenv。",
+          fixAction: "install_hermes_dependency",
+          autoFixId: "hermes_python_dotenv",
           canAutoFix: true,
           blocking: true,
         };
@@ -978,6 +1001,27 @@ export class SetupService {
       autoFixId: ok ? undefined : options.autoFixId ?? "weixin_aiohttp",
       blocking: options.blocking ?? false,
     };
+  }
+
+  private async checkHermesPythonPackageWithRuntime(
+    probe: RuntimeProbeResult | undefined,
+    id: string,
+    label: string,
+    moduleName: string,
+    packageName: string,
+    options: Partial<Pick<SetupCheck, "description" | "recommendedAction" | "fixAction" | "autoFixId" | "blocking">> = {},
+  ): Promise<SetupCheck> {
+    if (probe?.runtimeMode === "wsl") {
+      return {
+        id,
+        label,
+        status: "ok",
+        message: "WSL Hermes 依赖由 Hermes venv 与 capabilities health check 验证，跳过系统 python3 包检测。",
+        description: "避免把 WSL 系统 Python 缺包误判为 Hermes venv 缺包；真实 Hermes 依赖问题会在 capabilities / Gateway 检查中显示。",
+        blocking: false,
+      };
+    }
+    return this.checkPythonPackageWithRuntime(probe, id, label, moduleName, packageName, options);
   }
 
   private async checkPythonPackage(
