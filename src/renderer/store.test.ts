@@ -59,6 +59,43 @@ describe("renderer store task projections", () => {
     expect(projection.actualEngine).toBe("hermes");
   });
 
+  it("filters Hermes CLI session lifecycle output from chat projections", () => {
+    useAppStore.getState().beginTaskRun({
+      workSessionId: "session-1",
+      taskRunId: "task-cli-status",
+      userInput: "继续",
+      createdAt: "2026-04-18T10:00:00.000Z",
+    });
+
+    useAppStore.getState().applyTaskEvent({
+      taskRunId: "task-cli-status",
+      workSessionId: "session-1",
+      engineId: "hermes",
+      event: {
+        type: "stdout",
+        line: "Resumed session 20260424_121414_49cda7 (4 user messages, 10 total messages)",
+        at: "2026-04-18T10:00:01.000Z",
+      },
+    });
+
+    useAppStore.getState().applyTaskEvent({
+      taskRunId: "task-cli-status",
+      workSessionId: "session-1",
+      engineId: "hermes",
+      event: {
+        type: "result",
+        success: true,
+        title: "Hermes 回复",
+        detail: "Resumed session 20260424_121414_49cda7 (4 user messages, 10 total messages)\n继续处理。",
+        at: "2026-04-18T10:00:02.000Z",
+      },
+    });
+
+    const projection = useAppStore.getState().taskRunProjectionsById["task-cli-status"];
+    expect(projection.assistantMessage.content).toBe("继续处理。");
+    expect(projection.status).toBe("complete");
+  });
+
   it("keeps only a bounded per-run event history in renderer state", () => {
     useAppStore.getState().beginTaskRun({
       workSessionId: "session-1",
@@ -399,6 +436,28 @@ describe("renderer store task projections", () => {
     expect(state.taskRunProjectionsById["task-stream"]?.assistantMessage.content).toBe("第一段第二段");
     expect(state.taskRunProjectionsById["task-stream"]?.assistantMessage.status).toBe("complete");
     expect(state.taskRunProjectionsById["task-stream"]?.assistantMessage.parts).toEqual([firstEvent, finalEvent]);
+  });
+
+  it("filters Hermes CLI session lifecycle output from stream text", () => {
+    useAppStore.getState().beginTaskRun({
+      workSessionId: "session-active",
+      taskRunId: "task-stream-cli-status",
+      userInput: "继续",
+      createdAt: "2026-04-18T10:00:00.000Z",
+    });
+
+    useAppStore.getState().applyStreamEvent({
+      id: "stream-cli-status",
+      taskId: "task-stream-cli-status",
+      seq: 1,
+      type: "text",
+      content: "⟳ Resumed session 20260424_121414_49cda7 (4 user messages, 10 total messages)\n继续处理。",
+      engineId: "hermes",
+      createdAt: "2026-04-18T10:00:01.000Z",
+      status: "complete",
+    });
+
+    expect(useAppStore.getState().taskRunProjectionsById["task-stream-cli-status"]?.assistantMessage.content).toBe("继续处理。");
   });
 
   it("keeps a long practical session stable across many task rounds", () => {

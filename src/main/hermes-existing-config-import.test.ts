@@ -42,6 +42,56 @@ describe("importExistingHermesConfig helpers", () => {
     });
   });
 
+  it("recognizes MiniMax minimaxi.com endpoints when importing the active Hermes model", () => {
+    const profile = testOnly.buildImportedModelProfile(
+      {
+        AI_PROVIDER: "custom",
+        AI_BASE_URL: "https://api.minimaxi.com/v1",
+        AI_MODEL: "MiniMax-M2.7",
+        OPENAI_API_KEY: "sk-test",
+      },
+      {},
+    );
+
+    expect(profile).toMatchObject({
+      id: stableModelProfileId({ provider: "custom", model: "MiniMax-M2.7", baseUrl: "https://api.minimaxi.com/v1" }),
+      provider: "custom",
+      baseUrl: "https://api.minimaxi.com/v1",
+      model: "MiniMax-M2.7",
+      secretRef: "provider.minimax.apiKey",
+    });
+  });
+
+  it.each([
+    ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "provider.deepseek.apiKey"],
+    ["DashScope/Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "provider.qwen.apiKey"],
+    ["Moonshot/Kimi", "https://api.moonshot.cn/v1", "kimi-k2", "provider.kimi.apiKey"],
+    ["Volcengine", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-1-6", "provider.volcengine.apiKey"],
+    ["Volcengine Coding", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-coding", "provider.volcengine-coding.apiKey"],
+    ["Tencent Hunyuan", "https://hunyuan.cloud.tencent.com/v1", "hunyuan-turbos-latest", "provider.tencent-hunyuan.apiKey"],
+    ["MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.7", "provider.minimax.apiKey"],
+    ["SiliconFlow", "https://api.siliconflow.cn/v1", "Qwen/Qwen3-Coder", "provider.siliconflow.apiKey"],
+    ["Zhipu", "https://open.bigmodel.cn/api/paas/v4", "glm-4.6", "provider.zhipu.apiKey"],
+  ])("imports %s coding model endpoint into a stable saved model profile", (_label, baseUrl, model, secretRef) => {
+    const profile = testOnly.buildImportedModelProfile(
+      {
+        AI_PROVIDER: "custom",
+        AI_BASE_URL: baseUrl,
+        AI_MODEL: model,
+        OPENAI_API_KEY: "sk-test",
+      },
+      {},
+    );
+
+    expect(profile).toMatchObject({
+      id: stableModelProfileId({ provider: "custom", model, baseUrl }),
+      provider: "custom",
+      baseUrl,
+      model,
+      secretRef,
+    });
+  });
+
   it("keeps anthropic provider when Hermes config explicitly uses anthropic", () => {
     const profile = testOnly.buildImportedModelProfile(
       {

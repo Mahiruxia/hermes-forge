@@ -7,6 +7,7 @@ import type { ClientUpdateEvent } from "../shared/types";
 export class ClientAutoUpdateService {
   private lastEvent: ClientUpdateEvent;
   private checking = false;
+  private startupCheckScheduled = false;
 
   constructor(private readonly getMainWindow: () => BrowserWindow | undefined) {
     this.lastEvent = this.event("idle", "自动更新已就绪。");
@@ -14,6 +15,8 @@ export class ClientAutoUpdateService {
   }
 
   scheduleStartupCheck(delayMs = 5000) {
+    if (this.startupCheckScheduled) return;
+    this.startupCheckScheduled = true;
     setTimeout(() => {
       void this.checkForUpdates(false);
     }, delayMs);
@@ -26,7 +29,14 @@ export class ClientAutoUpdateService {
     this.checking = true;
     try {
       this.publish(this.event("checking", manual ? "正在手动检查客户端更新..." : "正在后台检查客户端更新...", { manual }));
-      await autoUpdater.checkForUpdatesAndNotify();
+      const timedOut = Symbol("update-check-timeout");
+      const result = await Promise.race([
+        autoUpdater.checkForUpdatesAndNotify().then(() => undefined),
+        delay(35_000).then(() => timedOut),
+      ]);
+      if (result === timedOut) {
+        this.publish(this.event("idle", manual ? "检查更新超时，可稍后手动重试。" : "启动时更新检查未完成，已停止等待。", { manual }));
+      }
       return this.lastEvent;
     } catch (error) {
       const message = error instanceof Error ? error.message : "检查更新失败。";
@@ -114,6 +124,10 @@ export class ClientAutoUpdateService {
     if (!window || window.isDestroyed()) return;
     window.webContents.send(IpcChannels.clientUpdateEvent, event);
   }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function restartDialogOptions(version: string) {

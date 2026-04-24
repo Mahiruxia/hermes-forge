@@ -156,7 +156,8 @@ function inferImportedSourceType(rawProvider?: string, rawBaseUrl?: string) {
   if (baseUrl.includes("ark.cn-beijing.volces.com/api/coding")) return "volcengine_coding";
   if (baseUrl.includes("ark.cn-beijing.volces.com")) return "volcengine";
   if (baseUrl.includes("hunyuan.cloud.tencent.com")) return "tencent_hunyuan";
-  if (baseUrl.includes("minimax.io")) return "minimax";
+  if (baseUrl.includes("minimax.io") || baseUrl.includes("minimaxi.com")) return "minimax";
+  if (baseUrl.includes("siliconflow.cn")) return "siliconflow";
   if (baseUrl.includes("bigmodel.cn")) return "zhipu";
   if (provider === "custom") return "custom_gateway";
   return provider || baseUrl ? "custom_gateway" : "local_openai";
@@ -182,6 +183,7 @@ function resolveImportedModelSecretRef(envValues: Record<string, string>, source
   if (sourceType === "volcengine_coding") return "provider.volcengine-coding.apiKey";
   if (sourceType === "tencent_hunyuan") return "provider.tencent-hunyuan.apiKey";
   if (sourceType === "minimax") return "provider.minimax.apiKey";
+  if (sourceType === "siliconflow") return "provider.siliconflow.apiKey";
   if (sourceType === "zhipu") return "provider.zhipu.apiKey";
   if (sourceType === "local_openai") return "provider.local.apiKey";
   return "provider.custom.apiKey";

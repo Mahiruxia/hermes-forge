@@ -42,13 +42,13 @@ describe("startTaskInputSchema", () => {
 });
 
 describe("runtimeConfigSchema", () => {
-  it("defaults Hermes runtime to Windows mode", () => {
+  it("defaults Hermes runtime to WSL mode", () => {
     const parsed = runtimeConfigSchema.parse({
       modelProfiles: [{ id: "local", provider: "local", model: "mock" }],
     });
 
     expect(parsed.hermesRuntime).toEqual({
-      mode: "windows",
+      mode: "wsl",
       pythonCommand: "python3",
       windowsAgentMode: "hermes_native",
       cliPermissionMode: "yolo",

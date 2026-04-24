@@ -55,6 +55,19 @@ type ProviderPreset = {
 
 const PROVIDERS: ProviderPreset[] = [
   {
+    id: "openai_compatible",
+    label: "OpenAI-compatible",
+    family: "Custom Endpoint 型",
+    authHint: "兼容 /v1/chat/completions",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    modelPlaceholder: "填写兼容网关模型 ID",
+    keyMode: "optional",
+    icon: PlugZap,
+    providerMode: "manual",
+    description: "适合 MiniMax、DeepSeek、通义、Kimi、智谱、硅基流动和各类 OpenAI 兼容网关。",
+    authModeToStore: "optional_api_key",
+  },
+  {
     id: "openrouter_api_key",
     label: "OpenRouter",
     family: "API Key 型",
@@ -232,28 +245,17 @@ const PROVIDERS: ProviderPreset[] = [
     description: "支持自动探测。",
     authModeToStore: "optional_api_key",
   },
-  {
-    id: "openai_compatible",
-    label: "OpenAI-compatible",
-    family: "Custom Endpoint 型",
-    authHint: "兼容 /v1/chat/completions",
-    baseUrl: "http://127.0.0.1:8080/v1",
-    modelPlaceholder: "填写兼容网关模型 ID",
-    keyMode: "optional",
-    icon: PlugZap,
-    providerMode: "manual",
-    description: "适合自建网关、LiteLLM、One API、New API。",
-    authModeToStore: "optional_api_key",
-  },
 ];
 
 const PROVIDER_GROUPS: Array<{ label: string; ids: ModelSourceType[] }> = [
+  { label: "推荐 / 通用", ids: ["openai_compatible"] },
   { label: "API Key 型", ids: ["openrouter_api_key", "anthropic_api_key", "gemini_api_key", "deepseek_api_key", "huggingface_api_key"] },
   { label: "OAuth / 本地凭据型", ids: ["gemini_oauth", "anthropic_local_credentials", "github_copilot", "github_copilot_acp"] },
-  { label: "Custom Endpoint 型", ids: ["ollama", "vllm", "sglang", "lm_studio", "openai_compatible"] },
+  { label: "本地 / 自托管", ids: ["ollama", "vllm", "sglang", "lm_studio"] },
 ];
 
 const MIN_AGENT_CONTEXT = 16000;
+const DEFAULT_MAX_CONTEXT = 256_000;
 
 export function ModelConfigWizard(props: {
   models: OverviewModels;
@@ -268,7 +270,6 @@ export function ModelConfigWizard(props: {
   const [baseUrl, setBaseUrl] = useState(initialDraft.baseUrl);
   const [model, setModel] = useState(initialDraft.model);
   const [secretRef, setSecretRef] = useState(initialDraft.secretRef);
-  const [maxTokens, setMaxTokens] = useState(initialDraft.maxTokens ? String(initialDraft.maxTokens) : "");
   const [apiKey, setApiKey] = useState("");
   const [testResult, setTestResult] = useState<ModelConnectionTestResult | undefined>();
   const [discovery, setDiscovery] = useState<LocalModelDiscoveryResult | undefined>();
@@ -286,7 +287,6 @@ export function ModelConfigWizard(props: {
     setBaseUrl(next.baseUrl);
     setModel(next.model);
     setSecretRef(next.secretRef);
-    setMaxTokens(next.maxTokens ? String(next.maxTokens) : "");
     setApiKey("");
     setTestResult(undefined);
     setDiscovery(undefined);
@@ -300,6 +300,14 @@ export function ModelConfigWizard(props: {
   const testOk = Boolean(testResult?.ok);
   const canUseSavedSecret = hasStoredSecret || Boolean(apiKey.trim()) || !sourceNeedsKey(sourceType);
   const shouldAutoDiscover = ["ollama", "vllm", "sglang", "lm_studio", "openai_compatible"].includes(sourceType);
+  const currentEditingProfile = editingProfileId ? props.models.modelProfiles.find((item) => item.id === editingProfileId) : undefined;
+  const pendingProviderId = providerIdForSource(sourceType);
+  const pendingProfileIsCurrent = Boolean(currentEditingProfile && sameModelIdentity(currentEditingProfile, {
+    provider: pendingProviderId,
+    model: model.trim(),
+    baseUrl: baseUrl.trim(),
+  }));
+  const willCreateNewProfile = !editingProfileId || !pendingProfileIsCurrent;
 
   const modelOptions = useMemo(
     () => {
@@ -316,7 +324,6 @@ export function ModelConfigWizard(props: {
     setBaseUrl(next.baseUrl);
     setModel(next.model);
     setSecretRef(next.secretRef);
-    setMaxTokens(next.maxTokens ? String(next.maxTokens) : "");
     setApiKey("");
     setDiscovery(undefined);
     setTestResult(undefined);
@@ -331,7 +338,6 @@ export function ModelConfigWizard(props: {
     setBaseUrl(next.baseUrl);
     setModel(next.model);
     setSecretRef(next.secretRef);
-    setMaxTokens(next.maxTokens ? String(next.maxTokens) : "");
     setApiKey("");
     setDiscovery(undefined);
     setTestResult(undefined);
@@ -346,7 +352,6 @@ export function ModelConfigWizard(props: {
     setBaseUrl(next.baseUrl);
     setModel(next.model);
     setSecretRef(next.secretRef);
-    setMaxTokens(next.maxTokens ? String(next.maxTokens) : "");
     setApiKey("");
     setDiscovery(undefined);
     setTestResult(undefined);
@@ -391,7 +396,7 @@ export function ModelConfigWizard(props: {
         model: model.trim(),
         baseUrl: baseUrl.trim(),
         secretRef: ref,
-        maxTokens: maxTokens.trim() ? Number(maxTokens.trim()) : undefined,
+        maxTokens: DEFAULT_MAX_CONTEXT,
       });
       setTestResult(result);
     } finally {
@@ -408,11 +413,15 @@ export function ModelConfigWizard(props: {
         model: model.trim(),
         baseUrl: baseUrl.trim(),
         secretRef: ref,
-        maxTokens: maxTokens.trim() ? Number(maxTokens.trim()) : undefined,
+        maxTokens: DEFAULT_MAX_CONTEXT,
       });
       setTestResult(health);
       const nextProviderId = providerIdForSource(sourceType);
-      const profileId = editingProfileId ?? buildProfileId({
+      const profileId = editingProfileId && sameModelIdentity(currentEditingProfile, {
+        provider: nextProviderId,
+        model: model.trim(),
+        baseUrl: baseUrl.trim(),
+      }) ? editingProfileId : buildProfileId({
         provider: nextProviderId,
         model: model.trim(),
         baseUrl: baseUrl.trim(),
@@ -427,11 +436,10 @@ export function ModelConfigWizard(props: {
         model: model.trim(),
         ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
         ...(ref ? { secretRef: ref } : {}),
-        ...(maxTokens.trim() ? { maxTokens: Number(maxTokens.trim()) } : {}),
+        maxTokens: health.contextWindow ?? DEFAULT_MAX_CONTEXT,
         ...(health.agentRole ? { agentRole: health.agentRole } : {}),
         ...(typeof health.supportsTools === "boolean" ? { supportsTools: health.supportsTools } : {}),
         ...(typeof health.supportsVision === "boolean" ? { supportsVision: health.supportsVision } : {}),
-        ...(typeof health.contextWindow === "number" ? { maxTokens: health.contextWindow } : {}),
         lastHealthCheckAt: new Date().toISOString(),
         lastHealthStatus: health.ok ? "ready" : "warning",
         lastHealthSummary: health.message,
@@ -553,6 +561,21 @@ export function ModelConfigWizard(props: {
             <p className="text-[12px] leading-6 text-slate-500">这里用来新增来源、填 API Key、接 OAuth/本地凭据、测试连通性。底部“已保存模型”区域只负责切换默认模型。</p>
           </div>
 
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border border-slate-200 bg-white px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">当前使用模型</p>
+              {currentProfile ? (
+                <>
+                  <p className="mt-1 truncate text-[14px] font-semibold text-slate-950">{currentProfile.name ?? currentProfile.model}</p>
+                  <p className="mt-1 break-all font-mono text-[11px] text-slate-500">{currentProfile.baseUrl ?? providerFor(inferSourceType(currentProfile.provider, currentProfile.baseUrl)).baseUrl ?? "本地/内置来源"}</p>
+                </>
+              ) : (
+                <p className="mt-1 text-[13px] font-semibold text-amber-700">尚未保存模型</p>
+              )}
+            </div>
+            {currentProfile ? <StatusBadge label={currentProfile.id === props.models.defaultProfileId || !props.models.defaultProfileId ? "默认" : "已保存"} tone="default" /> : <StatusBadge label="待配置" tone="warning" />}
+          </div>
+
           <div className="grid gap-3">
             <div className="relative">
               <button
@@ -633,20 +656,34 @@ export function ModelConfigWizard(props: {
               </datalist>
             </div>
 
-            {provider.family === "Custom Endpoint 型" ? (
+            <div className="grid gap-3 md:grid-cols-2">
               <label className="block text-[12px] font-medium text-slate-500">
-                <span className="mb-1.5 block">上下文长度 / Context Length</span>
+                <span className="mb-1.5 block">Base URL</span>
                 <input
-                  value={maxTokens}
-                  onChange={(event) => {
-                    setMaxTokens(event.target.value.replace(/[^\d]/g, ""));
-                    setTestResult(undefined);
-                  }}
+                  value={baseUrl}
+                  onChange={(event) => updateBaseUrl(event.target.value)}
                   className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[13px] text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
-                  placeholder={`至少 ${MIN_AGENT_CONTEXT}；低于此值只建议作为辅助模型`}
+                  placeholder={provider.baseUrl ?? "某些 OAuth / 本地凭据来源不必手填"}
                 />
               </label>
-            ) : null}
+
+              <label className="block text-[12px] font-medium text-slate-500">
+                <span className="mb-1.5 flex items-center justify-between gap-2">
+                  <span>{provider.family === "OAuth / 本地凭据型" ? "凭据 / Token（可选）" : `API Key ${provider.keyMode === "optional" ? "（可选）" : ""}`}</span>
+                  <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold", hasStoredSecret ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>
+                    <KeyRound size={11} />
+                    {hasStoredSecret ? "已保存" : "未保存"}
+                  </span>
+                </span>
+                <input
+                  value={apiKey}
+                  onChange={(event) => updateApiKey(event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
+                  placeholder={provider.family === "OAuth / 本地凭据型" ? "本机已有凭据可留空；若你有 token，也可填" : provider.keyMode === "required" ? "粘贴 API Key" : "本地接口无鉴权可留空；云接口请填写"}
+                  type="password"
+                />
+              </label>
+            </div>
 
             <button
               className="h-12 w-full border border-slate-200 bg-white px-4 text-[15px] font-semibold text-slate-950 transition hover:bg-slate-50"
@@ -655,6 +692,31 @@ export function ModelConfigWizard(props: {
             >
               新增模型草稿
             </button>
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+              <button
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                disabled={busyAction === "test" || (provider.family !== "OAuth / 本地凭据型" && !baseUrl.trim()) || !model.trim() || !canUseSavedSecret}
+                onClick={() => void testConnection()}
+                type="button"
+              >
+                <span className="inline-flex items-center gap-2">
+                  {busyAction === "test" ? <Loader2 size={14} className="animate-spin" /> : null}
+                  {busyAction === "test" ? "测试中..." : "立即测试"}
+                </span>
+              </button>
+              <button
+                className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                disabled={!testOk || busyAction === "save"}
+                onClick={() => void saveModel()}
+                type="button"
+              >
+                <span className="inline-flex items-center gap-2">
+                  {busyAction === "save" ? <Loader2 size={14} className="animate-spin" /> : null}
+                  {busyAction === "save" ? "保存中..." : willCreateNewProfile ? "新增并复检" : "保存并复检"}
+                </span>
+              </button>
+            </div>
           </div>
 
           <p className="mt-5 text-[14px] leading-7 text-slate-500">
@@ -741,33 +803,6 @@ export function ModelConfigWizard(props: {
         </div>
 
         <div className="grid gap-3">
-          <label className="block text-[12px] font-medium text-slate-500">
-            <span className="mb-1.5 block">Base URL</span>
-            <input
-              value={baseUrl}
-              onChange={(event) => updateBaseUrl(event.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[13px] text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
-              placeholder={provider.baseUrl ?? "某些 OAuth / 本地凭据来源不必手填"}
-            />
-          </label>
-
-          <label className="block text-[12px] font-medium text-slate-500">
-            <span className="mb-1.5 flex items-center justify-between gap-2">
-              <span>{provider.family === "OAuth / 本地凭据型" ? "凭据 / Token（可选）" : `API Key ${provider.keyMode === "optional" ? "（可选）" : ""}`}</span>
-              <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold", hasStoredSecret ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>
-                <KeyRound size={11} />
-                {hasStoredSecret ? "已保存" : "未保存"}
-              </span>
-            </span>
-            <input
-              value={apiKey}
-              onChange={(event) => updateApiKey(event.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
-              placeholder={provider.family === "OAuth / 本地凭据型" ? "本机已有凭据可留空；若你有 token，也可填" : provider.keyMode === "required" ? "粘贴 API Key" : "本地接口无鉴权可留空"}
-              type="password"
-            />
-          </label>
-
           <div className="flex flex-wrap gap-2">
             {shouldAutoDiscover ? (
               <button
@@ -803,20 +838,6 @@ export function ModelConfigWizard(props: {
                   placeholder={defaultSecretRefForSource(sourceType)}
                 />
               </label>
-              {provider.family === "Custom Endpoint 型" ? (
-                <label className="block">
-                  <span className="mb-1.5 block">自报上下文长度</span>
-                  <input
-                    value={maxTokens}
-                    onChange={(event) => {
-                      setMaxTokens(event.target.value.replace(/[^\d]/g, ""));
-                      setTestResult(undefined);
-                    }}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 font-mono text-[13px] text-slate-800 outline-none"
-                    placeholder={`推荐至少 ${MIN_AGENT_CONTEXT}`}
-                  />
-                </label>
-              ) : null}
             </div>
           ) : null}
         </div>
@@ -881,30 +902,6 @@ export function ModelConfigWizard(props: {
           </div>
         )}
 
-        <div className="flex flex-wrap justify-end gap-2">
-          <button
-            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-            disabled={busyAction === "test" || (provider.family !== "OAuth / 本地凭据型" && !baseUrl.trim()) || !model.trim() || !canUseSavedSecret}
-            onClick={() => void testConnection()}
-            type="button"
-          >
-            <span className="inline-flex items-center gap-2">
-              {busyAction === "test" ? <Loader2 size={14} className="animate-spin" /> : null}
-              {busyAction === "test" ? "测试中..." : "立即测试"}
-            </span>
-          </button>
-          <button
-            className="rounded-xl bg-slate-950 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-            disabled={!testOk || busyAction === "save"}
-            onClick={() => void saveModel()}
-            type="button"
-          >
-            <span className="inline-flex items-center gap-2">
-              {busyAction === "save" ? <Loader2 size={14} className="animate-spin" /> : null}
-              {busyAction === "save" ? "保存中..." : editingProfileId ? "保存并复检" : "新增并复检"}
-            </span>
-          </button>
-        </div>
       </section>
     </div>
   );
@@ -1017,6 +1014,20 @@ function buildProfileId(input: { provider: ReturnType<typeof providerIdForSource
     }
   }
   return `${base}-${Date.now().toString(36)}`;
+}
+
+function sameModelIdentity(
+  existing: Pick<OverviewModels["modelProfiles"][number], "provider" | "model" | "baseUrl"> | undefined,
+  next: { provider: ReturnType<typeof providerIdForSource>; model: string; baseUrl?: string },
+) {
+  if (!existing) return false;
+  return existing.provider === next.provider &&
+    existing.model.trim() === next.model.trim() &&
+    normalizeIdentityBaseUrl(existing.baseUrl) === normalizeIdentityBaseUrl(next.baseUrl);
+}
+
+function normalizeIdentityBaseUrl(value?: string) {
+  return value?.trim().replace(/\/$/, "") ?? "";
 }
 
 function friendlyProfileName(sourceType: ModelSourceType, model: string) {

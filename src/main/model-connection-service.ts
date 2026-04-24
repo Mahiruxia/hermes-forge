@@ -975,6 +975,14 @@ async function fetchOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Pr
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
+      if (isOptionalModelDiscoveryStatus(response.status)) {
+        return {
+          ok: true,
+          message: `模型列表端点不可用（HTTP ${response.status}），已跳过发现并使用手动模型名继续测试。`,
+          availableModels: [] as string[],
+          authResolved: true,
+        };
+      }
       return {
         ok: false,
         message: httpFailureMessage(response.status, response.statusText, baseUrl),
@@ -1005,6 +1013,10 @@ async function fetchOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Pr
       authResolved: false,
     };
   }
+}
+
+function isOptionalModelDiscoveryStatus(status: number) {
+  return status === 404 || status === 405 || status === 501;
 }
 
 async function testOpenAiCompatibleChat(baseUrl: string, model: string, apiKey?: string) {
@@ -1113,12 +1125,14 @@ async function probeWslReachability(input: {
   }
   for (const candidate of candidates) {
     const script = [
-      "import sys, urllib.request",
+      "import sys, urllib.error, urllib.request",
       "url = sys.argv[1].rstrip('/') + '/models'",
       "req = urllib.request.Request(url, headers={'Authorization': 'Bearer lm-studio'})",
       "try:",
       "    with urllib.request.urlopen(req, timeout=8) as resp:",
       "        sys.exit(0 if resp.status < 500 else 3)",
+      "except urllib.error.HTTPError as exc:",
+      "    sys.exit(0 if exc.code < 500 else 3)",
       "except Exception:",
       "    sys.exit(2)",
     ].join("\n");
@@ -1147,14 +1161,19 @@ async function probeWslReachability(input: {
       };
     }
   }
+  const isLocalhost = LOCALHOST_HOSTS.has(new URL(input.baseUrl).hostname);
   return {
     ok: false,
-    message: "当前 Windows 宿主机上的模型服务，WSL 内 Hermes 访问不到。",
-    detail: "这通常发生在你把模型服务绑在 localhost，但 Hermes 正跑在 WSL 里。",
+    message: isLocalhost
+      ? "当前 Windows 宿主机上的模型服务，WSL 内 Hermes 访问不到。"
+      : "WSL 内 Hermes 暂时访问不到这个模型服务地址。",
+    detail: isLocalhost
+      ? "这通常发生在你把模型服务绑在 localhost，但 Hermes 正跑在 WSL 里。"
+      : "这通常是 WSL 网络、代理、DNS 或证书环境导致的。HTTP 4xx 会被视为服务可达，只有网络异常或 5xx 才会失败。",
     testedUrl: candidates.at(-1),
-    fixHint: LOCALHOST_HOSTS.has(new URL(input.baseUrl).hostname)
+    fixHint: isLocalhost
       ? "请把模型服务绑定到 0.0.0.0，或改用 Windows host IP；若仍失败，请检查防火墙和端口监听。"
-      : "请确认该地址对 WSL 可达，并检查防火墙/端口监听。",
+      : "请确认 WSL 内可访问公网 HTTPS，并检查代理、DNS、证书和防火墙设置。",
   };
 }
 

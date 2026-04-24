@@ -142,7 +142,15 @@ export function SettingsPanel(props: {
     setInstallingHermes(true);
     setInstallEvent(undefined);
     try {
-      const result = await window.workbenchClient.installHermes(rootPath.trim() ? { rootPath: rootPath.trim() } : undefined);
+      const nextRuntime = effectiveRuntime();
+      const saved = await window.workbenchClient.updateHermesConfig({
+        rootPath: nextRuntime.mode === "windows" ? rootPath : undefined,
+        runtime: nextRuntime,
+      });
+      store.setRuntimeConfig(saved);
+      const result = await window.workbenchClient.installHermes(
+        nextRuntime.mode === "windows" && rootPath.trim() ? { rootPath: rootPath.trim() } : undefined,
+      );
       if (result.rootPath) setRootPath(result.rootPath);
       await reloadOverview();
       await props.onRefresh();
@@ -246,8 +254,11 @@ export function SettingsPanel(props: {
   const matrix = permissionOverview.data ? overviewMatrix(permissionOverview.data) : enforcementMatrix(effectiveRuntime(), bridge);
   const policyBlock = permissionOverview.data?.blockReason ?? policyBlockReason(effectiveRuntime());
   const bridgeCapabilities = permissionOverview.data ? overviewBridgeCapabilities(permissionOverview.data) : bridgeCapabilityRows(bridge, effectiveRuntime());
+  const installingWsl = effectiveRuntime().mode === "wsl";
   const installActionLabel = installingHermes
     ? "正在处理..."
+    : installingWsl
+      ? "一键安装 / 修复 WSL Hermes"
     : status.install.state === "missing"
       ? "安装到此位置"
       : status.install.state === "broken"
@@ -354,7 +365,7 @@ export function SettingsPanel(props: {
         {advancedOpen ? (
           <div className="border-t border-slate-100 px-5 py-5">
             <div className="grid gap-4">
-              {runtimeChoice !== "auto" && runtimeChoice === "wsl" ? (
+              {runtimeChoice !== "windows" ? (
                 <div className="grid gap-4 sm:grid-cols-2">
                   <AdvancedTextInput
                     label="WSL 发行版"
@@ -425,7 +436,7 @@ export function SettingsPanel(props: {
               />
 
               {policyBlock ? <PolicyBlockedBanner block={policyBlock} /> : null}
-              {runtimeChoice === "wsl" ? (
+              {runtimeChoice !== "windows" ? (
                 <ManagedWslInstallerPanel
                   title="Managed WSL 安装链路"
                   onAfterAction={props.onRefresh}

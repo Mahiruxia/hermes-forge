@@ -74,22 +74,22 @@ export function StatusBar() {
   ], [apiStatus, clientUpdate, gatewayStatus, hermesStatus, lastChecked, store.hermesProbe, store.hermesStatus]);
 
   return (
-    <div className="hidden items-center gap-1.5 lg:flex">
+    <div className="hidden items-center gap-1 lg:flex">
       {statusItems.map((item) => {
         const Icon = item.icon;
         return (
           <button
             key={item.key}
             className={cn(
-              "hermes-status-chip inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition",
+              "hermes-status-chip inline-flex h-7 items-center gap-1.5 rounded-full border px-2 text-[10px] font-medium transition",
               toneClass(item.tone),
             )}
             title={`${item.detail}${item.lastChecked ? ` · 最后检查 ${item.lastChecked}` : ""}`}
             aria-label={item.detail}
             type="button"
           >
-            <span className={cn("inline-flex h-4 w-4 items-center justify-center", item.spinning && "animate-spin")}>
-              <Icon size={11} />
+            <span className={cn("inline-flex h-3.5 w-3.5 items-center justify-center", item.spinning && "animate-spin")}>
+              <Icon size={10} />
             </span>
             <span>{item.shortLabel}</span>
             <span

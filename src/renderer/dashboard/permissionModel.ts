@@ -221,7 +221,7 @@ export function buildPreflightState(input: {
       || input.overview.cliPermissionMode === "yolo"
       || input.overview.sessionMode === "degraded"
       || input.overview.capabilityProbe?.support === "degraded";
-    const tone: PreflightTone = input.overview.blocked || input.locked ? "red" : risk ? "yellow" : "green";
+    const tone: PreflightTone = input.overview.blocked ? "red" : input.locked || risk ? "yellow" : "green";
     return {
       tone,
       runtime: input.overview.runtime,
@@ -234,11 +234,11 @@ export function buildPreflightState(input: {
       summary: input.overview.blockReason
         ? input.overview.blockReason.summary
         : input.locked
-          ? "工作区当前被任务锁定"
+          ? "当前会话正在处理中"
           : tone === "yellow"
             ? "可运行，但当前策略更接近 CLI 直通或有降级"
             : "可运行",
-      detail: input.overview.blockReason?.detail ?? (input.locked ? "请等待当前任务结束后再发送。" : "任务将按后端 Permission Overview 启动。"),
+      detail: input.overview.blockReason?.detail ?? (input.locked ? "Hermes 正在处理上一条消息，完成后即可继续输入。" : "任务将按后端 Permission Overview 启动。"),
       block: input.overview.blockReason ?? undefined,
     };
   }
@@ -249,7 +249,7 @@ export function buildPreflightState(input: {
   const transport = runtime.mode === "wsl" ? diagnostics.transport ?? "native-arg-env" : "windows-headless";
   const sessionMode = diagnostics.sessionMode ?? (runtime.mode === "wsl" ? "fresh/resume" : "headless");
   const hasRisk = runtime.mode === "wsl" && (runtime.permissionPolicy === "passthrough" || runtime.cliPermissionMode === "yolo");
-  const tone: PreflightTone = block || input.locked ? "red" : hasRisk ? "yellow" : "green";
+  const tone: PreflightTone = block ? "red" : input.locked || hasRisk ? "yellow" : "green";
   return {
     tone,
     runtime: runtime.mode,
@@ -262,11 +262,11 @@ export function buildPreflightState(input: {
     summary: block
       ? block.summary
       : input.locked
-        ? "工作区当前被任务锁定"
+        ? "当前会话正在处理中"
         : tone === "yellow"
           ? "可运行，但当前策略更接近 CLI 直通或 YOLO"
           : "可运行",
-    detail: block?.detail ?? (input.locked ? "请等待当前任务结束后再发送。" : "任务将按当前 runtime 与 permission policy 启动。"),
+    detail: block?.detail ?? (input.locked ? "Hermes 正在处理上一条消息，完成后即可继续输入。" : "任务将按当前 runtime 与 permission policy 启动。"),
     block,
   };
 }

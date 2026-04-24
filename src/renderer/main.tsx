@@ -114,6 +114,7 @@ function SettingsView(props: {
   const [testingBridge, setTestingBridge] = useState(false);
   const [bridgeTest, setBridgeTest] = useState<HermesWindowsBridgeTestResult | undefined>();
   const [oneClickDiagnosticsRunning, setOneClickDiagnosticsRunning] = useState(false);
+  const [diagnosticsExporting, setDiagnosticsExporting] = useState(false);
   const [oneClickDiagnostics, setOneClickDiagnostics] = useState<OneClickDiagnosticsReport | undefined>();
   const [importingHermesConfig, setImportingHermesConfig] = useState(false);
 
@@ -261,12 +262,20 @@ function SettingsView(props: {
   }
 
   async function exportOneClickDiagnostics() {
+    if (diagnosticsExporting) return;
+    setDiagnosticsExporting(true);
     try {
       const workspacePath = useAppStore.getState().workspacePath || undefined;
       const result = await window.workbenchClient.exportOneClickDiagnostics(workspacePath);
       showSaveNotice(result.message);
+      const targetPath = result.diagnosticsPath || result.path;
+      if (result.ok && targetPath) {
+        void window.workbenchClient.openPath(targetPath);
+      }
     } catch (error) {
       showSaveNotice(error instanceof Error ? error.message : "导出诊断报告失败");
+    } finally {
+      setDiagnosticsExporting(false);
     }
   }
 
@@ -438,8 +447,8 @@ function SettingsView(props: {
               <button className="rounded-xl bg-emerald-700 px-4 py-2 text-[13px] font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60" disabled={oneClickDiagnosticsRunning} onClick={() => void runOneClickDiagnostics(true)} type="button">
                 一键修复
               </button>
-              <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void exportOneClickDiagnostics()} type="button">
-                导出诊断报告
+              <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60" disabled={diagnosticsExporting} onClick={() => void exportOneClickDiagnostics()} type="button">
+                {diagnosticsExporting ? "正在导出..." : "导出诊断报告"}
               </button>
               <button className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50" onClick={() => void props.onRefresh()} type="button">
                 重新读取当前状态
@@ -1380,6 +1389,9 @@ function App() {
       engineId: "hermes",
       event,
     });
+    if (result.ok && result.path) {
+      void window.workbenchClient.openPath(result.path);
+    }
   }
 
   function openFixTarget(target: FixTarget) {

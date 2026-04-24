@@ -16,6 +16,7 @@ import { runCommand, streamCommand } from "../../process/command-runner";
 import { validateWslHermesCli, type HermesCliValidationFailureKind } from "../../runtime/hermes-cli-resolver";
 import type { RuntimeAdapterFactory } from "../../runtime/runtime-adapter";
 import { toWslPath as runtimeToWslPath } from "../../runtime/runtime-resolver";
+import { extractHermesCliLifecycleSessionId, isHermesCliLifecycleLine } from "../../shared/hermes-cli-output";
 import { createPermissionBoundaryAudit, createPermissionPolicyBlockReason, type PermissionBoundaryAudit } from "../../shared/permission-audit";
 import type { EngineAdapter, HermesToolLoopMessage } from "../engine-adapter";
 import type {
@@ -1356,7 +1357,11 @@ export class HermesCliAdapter implements EngineAdapter {
 
   private extractSessionId(lines: string[]) {
     for (const line of lines) {
-      const match = line.match(/session_id\s*:\s*([A-Za-z0-9_-]+)/i);
+      const match = line.match(/session_id\s*:\s*([A-Za-z0-9_-]+)/i)
+        ?? extractHermesCliLifecycleSessionId(line);
+      if (typeof match === "string") {
+        return match;
+      }
       if (match?.[1]) {
         return match[1];
       }
@@ -1426,6 +1431,7 @@ export class HermesCliAdapter implements EngineAdapter {
       /^debug\s*:/i.test(text) ||
       /^真实\s*hermes\s*cli\s*已完成/i.test(text) ||
       /^hermes\s*任务完成/i.test(text) ||
+      isHermesCliLifecycleLine(text) ||
       text === HEADLESS_RESULT_START ||
       text === HEADLESS_RESULT_END ||
       /^任务完成[：:]/i.test(text) ||

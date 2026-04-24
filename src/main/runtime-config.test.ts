@@ -21,14 +21,14 @@ afterEach(async () => {
 });
 
 describe("RuntimeConfigStore preferred runtime", () => {
-  it("keeps the startup-safe Windows default unless preferred runtime detection is explicitly enabled", async () => {
+  it("uses WSL as the startup-safe default without probing on first run", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
 
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.mode).toBe("wsl");
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "pinned",
@@ -57,7 +57,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     });
   });
 
-  it("keeps Windows default when WSL is unavailable", async () => {
+  it("keeps WSL default without startup probing when explicit detection is disabled", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
     runCommandMock
@@ -67,7 +67,8 @@ describe("RuntimeConfigStore preferred runtime", () => {
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.mode).toBe("wsl");
+    expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "pinned",
       repoUrl: "https://github.com/Mahiruxia/hermes-agent.git",

@@ -122,6 +122,15 @@ describe("RC smoke matrix", () => {
     expect(preflight.blocked).toBe(false);
   });
 
+  it("treats an active task lock as a professional waiting state instead of an error", () => {
+    const preflight = buildPreflightState({ events: [], overview: overview({}), locked: true });
+    expect(preflight.tone).toBe("yellow");
+    expect(preflight.blocked).toBe(true);
+    expect(preflight.summary).toBe("当前会话正在处理中");
+    expect(preflight.detail).toContain("完成后即可继续输入");
+    expect(preflight.block).toBeUndefined();
+  });
+
   it("sessionMode fresh resumed degraded are surfaced consistently", () => {
     expect(buildPreflightState({ events: [], overview: overview({ sessionMode: "fresh" }) }).sessionMode).toBe("fresh");
     expect(buildPreflightState({ events: [], overview: overview({ sessionMode: "resumed" }) }).sessionMode).toBe("resumed");
@@ -130,4 +139,3 @@ describe("RC smoke matrix", () => {
     expect(degraded.tone).toBe("yellow");
   });
 });
-

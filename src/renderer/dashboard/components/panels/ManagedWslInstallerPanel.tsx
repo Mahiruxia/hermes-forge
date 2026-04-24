@@ -20,7 +20,7 @@ export function ManagedWslInstallerPanel(props: {
   const recommendedActions = useMemo(() => readStringList(report?.lastDoctor, "recommendedActions"), [report?.lastDoctor]);
   const dryRunActions = useMemo(() => readRepairActions(report?.lastDryRunRepair), [report?.lastDryRunRepair]);
   const executeDisabled = loadingAction !== undefined || !report?.lastDryRunRepair;
-  const installDisabled = loadingAction !== undefined || !report;
+  const installDisabled = loadingAction !== undefined;
 
   async function runAction(action: () => Promise<ManagedWslInstallerIpcResult>) {
     const next = await action();

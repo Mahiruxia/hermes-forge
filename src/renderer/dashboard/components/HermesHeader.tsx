@@ -162,15 +162,15 @@ export function HermesHeader(props: {
   ];
 
   return (
-    <header className="hermes-header relative z-40 flex h-[58px] items-center justify-between border-b border-slate-200/70 bg-white/95 px-5 backdrop-blur-md" role="banner">
-      <div className="flex min-w-0 items-center gap-4">
-        <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-[14px] border border-slate-200/80 bg-slate-950 text-white shadow-[0_8px_20px_rgba(15,23,42,0.12)]">
-            <Sparkles size={15} />
+    <header className="hermes-header relative z-40 flex h-12 items-center justify-between border-b border-slate-200/70 bg-white/95 px-4 backdrop-blur-md" role="banner">
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="grid h-8 w-8 place-items-center rounded-xl border border-slate-200/80 bg-slate-950 text-white shadow-[0_6px_16px_rgba(15,23,42,0.10)]">
+            <Sparkles size={14} />
           </div>
           <div className="min-w-0">
-            <span className="block text-[15px] font-semibold tracking-tight text-slate-900">Hermes Forge</span>
-            <span className="block text-[11px] text-slate-400">Quiet workspace for Hermes</span>
+            <span className="block text-[14px] font-semibold tracking-tight text-slate-900">Hermes Forge</span>
+            <span className="block text-[10px] leading-3 text-slate-400">Quiet workspace for Hermes</span>
           </div>
         </div>
 
@@ -195,12 +195,12 @@ export function HermesHeader(props: {
               </button>
             </div>
           ) : (
-            <button className="group flex min-w-0 items-center gap-3 rounded-2xl px-3 py-2 text-left transition hover:bg-slate-50" onClick={startEditing} type="button">
+            <button className="group flex min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition hover:bg-slate-50" onClick={startEditing} type="button">
               <span className="min-w-0">
-                <span className="block truncate text-[14px] font-medium text-slate-900">{activeSession.title}</span>
-                <span className="mt-0.5 block truncate text-[11px] text-slate-400">会话 {activeSession.id}</span>
+                <span className="block truncate text-[13px] font-medium text-slate-900">{activeSession.title}</span>
+                <span className="block truncate text-[10px] leading-3 text-slate-400">会话 {activeSession.id}</span>
               </span>
-              <span className="rounded-full border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-400 transition group-hover:border-slate-300 group-hover:text-slate-600">
+              <span className="rounded-full border border-slate-200 px-1.5 py-0.5 text-[9px] font-medium leading-3 text-slate-400 transition group-hover:border-slate-300 group-hover:text-slate-600">
                 编辑
               </span>
             </button>
@@ -208,7 +208,7 @@ export function HermesHeader(props: {
         ) : null}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         <StatusBar />
 
         <button
@@ -292,7 +292,7 @@ const inputClass = "w-52 rounded-xl border border-slate-200 bg-slate-50 px-3 py-
 
 function headerActionClass(active?: boolean) {
   return cn(
-    "hermes-header-action grid h-9 w-9 place-items-center rounded-xl border border-transparent text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900",
+    "hermes-header-action grid h-8 w-8 place-items-center rounded-xl border border-transparent text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900",
     active && "border-slate-200 bg-slate-100 text-slate-900",
   );
 }

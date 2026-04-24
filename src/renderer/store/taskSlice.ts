@@ -1,4 +1,5 @@
 import { combine } from "zustand/middleware";
+import { stripHermesCliLifecycleLines } from "../../shared/hermes-cli-output";
 import type { ContextBundle, EngineEvent, SessionMessage, StreamEvent, TaskEventEnvelope, TaskRunProjection, TaskRunStatus } from "../../shared/types";
 
 const MAX_EVENT_LOGS = 240;
@@ -100,9 +101,14 @@ function projectionStatusFromLifecycle(stage: Extract<EngineEvent, { type: "life
 }
 
 function contentFromEngineEvent(event: EngineEvent): string | undefined {
-  if (event.type === "stdout") return event.line;
-  if (event.type === "result") return event.detail;
+  if (event.type === "stdout") return displayableAssistantContent(event.line);
+  if (event.type === "result") return displayableAssistantContent(event.detail);
   return undefined;
+}
+
+function displayableAssistantContent(content: string) {
+  const cleaned = stripHermesCliLifecycleLines(content);
+  return cleaned || undefined;
 }
 
 function toolEventFromEngineEvent(event: EngineEvent, taskRunId: string): import("../../shared/types").ToolEvent | undefined {
@@ -195,22 +201,22 @@ function applyEngineEventToProjection(projection: TaskRunProjection, envelope: T
   }
 
   const content = contentFromEngineEvent(event);
+  if (event.type === "result") {
+    const status = event.success ? "complete" : "failed";
+    return {
+      ...base,
+      status,
+      assistantMessage: {
+        ...base.assistantMessage,
+        content: content ?? base.assistantMessage.content,
+        status: statusForMessage(status),
+        createdAt: base.assistantMessage.createdAt || event.at,
+      },
+      updatedAt: event.at,
+      completedAt: event.at,
+    };
+  }
   if (content !== undefined) {
-    if (event.type === "result") {
-      const status = event.success ? "complete" : "failed";
-      return {
-        ...base,
-        status,
-        assistantMessage: {
-          ...base.assistantMessage,
-          content,
-          status: statusForMessage(status),
-          createdAt: base.assistantMessage.createdAt || event.at,
-        },
-        updatedAt: event.at,
-        completedAt: event.at,
-      };
-    }
     return appendAssistantContent(base, content, event.at, "streaming");
   }
 
@@ -451,7 +457,7 @@ export const taskSlice = combine<TaskState, TaskActions>(
           workSessionId: state.runningSessionId ?? (state as TaskState & { activeSessionId?: string }).activeSessionId ?? "local-session",
           createdAt: event.createdAt,
         });
-        const content = parts.filter((part) => part.type === "text").map((part) => part.content ?? "").join("");
+        const content = displayableAssistantContent(parts.filter((part) => part.type === "text").map((part) => part.content ?? "").join("")) ?? "";
         const nextStatus: TaskRunStatus = event.status === "complete" ? "complete" : event.status === "failed" ? "failed" : "streaming";
         const workSessionId = existing.workSessionId;
         const currentOrder = state.taskRunOrderBySession[workSessionId] ?? [];

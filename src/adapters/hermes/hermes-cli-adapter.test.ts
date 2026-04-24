@@ -32,6 +32,20 @@ describe("HermesCliAdapter reply cleanup", () => {
     ].join("\n"))).toBe("我现在运行在 WSL Ubuntu-24.04-Fresh，当前目录是 /root/Hermes-Agent。");
   });
 
+  it("removes CLI session lifecycle lines from displayable replies", () => {
+    const adapter = Object.create(HermesCliAdapter.prototype) as {
+      normalizeReply(reply: string): string;
+      extractSessionId(lines: string[]): string | undefined;
+    };
+
+    const lifecycleLine = "Resumed session 20260424_121414_49cda7 (2 user messages, 4 total messages)";
+    expect(adapter.normalizeReply([
+      lifecycleLine,
+      "已经继续上次会话，我会接着处理。",
+    ].join("\n"))).toBe("已经继续上次会话，我会接着处理。");
+    expect(adapter.extractSessionId([lifecycleLine])).toBe("20260424_121414_49cda7");
+  });
+
   it("extracts the controlled headless runner result without leaking markers", () => {
     const adapter = Object.create(HermesCliAdapter.prototype) as { extractDirectReply(lines: string[]): string };
 

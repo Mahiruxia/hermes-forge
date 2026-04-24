@@ -130,7 +130,7 @@ export const enginePermissionPolicySchema = z.object({
 });
 
 export const hermesRuntimeSchema = z.object({
-  mode: z.enum(["windows", "wsl"]).default("windows"),
+  mode: z.enum(["windows", "wsl"]).default("wsl"),
   distro: z.string().trim().max(120).optional(),
   pythonCommand: z.string().trim().min(1).max(120).default("python3"),
   managedRoot: z.string().trim().max(1000).optional(),
@@ -154,7 +154,7 @@ export const runtimeConfigSchema = z.object({
   startupWarmupMode: z.enum(["off", "cheap", "real_probe"]).default("off"),
   startupGatewayAutoStart: z.boolean().default(false),
   enginePermissions: z.record(z.string(), enginePermissionPolicySchema.partial()).optional(),
-  hermesRuntime: hermesRuntimeSchema.default({ mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native", cliPermissionMode: "yolo", permissionPolicy: "bridge_guarded" }),
+  hermesRuntime: hermesRuntimeSchema.default({ mode: "wsl", pythonCommand: "python3", windowsAgentMode: "hermes_native", cliPermissionMode: "yolo", permissionPolicy: "bridge_guarded" }),
 }).transform((config) => ({
   ...config,
   updateSources: pickHermesRecord(config.updateSources),

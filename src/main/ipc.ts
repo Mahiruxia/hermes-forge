@@ -579,7 +579,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       return installerError("get_last_report", error, services.managedWslInstallerService.getLastInstallReport());
     }
   });
-  ipcMain.handle(IpcChannels.getRuntimeConfig, () => services.configStore.read());
+  ipcMain.handle(IpcChannels.getRuntimeConfig, () => readRuntimeConfigWithModelFallback(services));
   ipcMain.handle(IpcChannels.getPermissionOverview, async () => {
     const config = await services.configStore.read();
     await syncCurrentWindowsBridgeConfig(config).catch((error) => {
@@ -607,7 +607,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.testHermesWindowsBridge, () => services.hermesWindowsBridgeTestService.test());
   ipcMain.handle(IpcChannels.testHermesSystemAudit, () => services.hermesSystemAuditService.test());
   ipcMain.handle(IpcChannels.getConfigOverview, async (_event, workspacePath?: string) => {
-    const runtimeConfig = await services.configStore.read();
+    const runtimeConfig = await readRuntimeConfigWithModelFallback(services);
     const secretRefs = new Set<string>();
     for (const profile of runtimeConfig.modelProfiles) {
       if (profile.secretRef) secretRefs.add(profile.secretRef);
@@ -847,6 +847,26 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     services.oneClickDiagnosticsOrchestrator.exportLatest(workspacePath),
   );
   ipcMain.handle(IpcChannels.oneClickDiagnosticsStatus, () => services.oneClickDiagnosticsOrchestrator.getStatus());
+}
+
+async function readRuntimeConfigWithModelFallback(services: IpcServices) {
+  let runtimeConfig = await services.configStore.read();
+  if (runtimeConfig.modelProfiles.length > 0) {
+    return runtimeConfig;
+  }
+  try {
+    const imported = await importExistingHermesConfig({
+      configStore: services.configStore,
+      secretVault: services.secretVault,
+      hermesConnectorService: services.hermesConnectorService,
+    });
+    if (imported.importedModel) {
+      runtimeConfig = await services.configStore.read();
+    }
+  } catch (error) {
+    console.warn("[Hermes Forge] Failed to import current Hermes model as runtime fallback:", error);
+  }
+  return runtimeConfig;
 }
 
 async function readSponsorOverview(appPaths: AppPaths): Promise<SponsorOverview> {

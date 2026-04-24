@@ -71,7 +71,7 @@ const defaultConfig: RuntimeConfig = {
   startupGatewayAutoStart: false,
   enginePermissions: defaultEnginePermissions,
   hermesRuntime: {
-    mode: "windows",
+    mode: "wsl",
     pythonCommand: "python3",
     managedRoot: undefined,
     windowsAgentMode: "hermes_native",
@@ -99,10 +99,13 @@ export class RuntimeConfigStore {
     }
     const config = parsed.data as RuntimeConfig;
     if (!parsedJson.hermesRuntime?.mode) {
+      const preferred = process.env.HERMES_FORGE_DETECT_PREFERRED_RUNTIME_ON_STARTUP === "1"
+        ? await preferredHermesRuntime()
+        : defaultConfig.hermesRuntime!;
       return {
         ...config,
         hermesRuntime: {
-          ...(await preferredHermesRuntime()),
+          ...preferred,
           ...(config.hermesRuntime ?? {}),
         },
       };

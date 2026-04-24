@@ -55,7 +55,7 @@ export function ChatInput(props: {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, Math.floor(window.innerHeight * 0.35))}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, Math.floor(window.innerHeight * 0.24))}px`;
   }, [store.userInput]);
 
   useEffect(() => {
@@ -496,7 +496,7 @@ export function ChatInput(props: {
 
         <div
           className={cn(
-            "hermes-composer-card relative overflow-hidden rounded-[28px] border border-[var(--hermes-card-border)] bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)] focus-within:hermes-purple-focus",
+            "hermes-composer-card relative overflow-hidden rounded-3xl border border-[var(--hermes-card-border)] bg-white shadow-[0_16px_48px_rgba(15,23,42,0.07)] focus-within:hermes-purple-focus",
             isDraggingAttachment && "ring-2 ring-[var(--hermes-primary-border)]",
           )}
           onDragEnter={handleAttachmentDragEnter}
@@ -545,11 +545,11 @@ export function ChatInput(props: {
                 handleSubmit();
               }
             }}
-            className="max-h-[28vh] min-h-[64px] w-full resize-none bg-transparent px-5 pt-5 text-[15px] leading-7 text-slate-800 outline-none placeholder:text-slate-400"
+            className="max-h-[24vh] min-h-[46px] w-full resize-none bg-transparent px-5 pt-4 text-[15px] leading-6 text-slate-800 outline-none placeholder:text-slate-400"
             placeholder="给 Hermes 发送消息… 需要附件、语音、@ 提及或命令时，点左下角的 +"
           />
 
-          <div className="flex items-center justify-between gap-3 px-4 pb-4 pt-2">
+          <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-1">
             <div className="flex min-w-0 items-center gap-2">
               <div className="relative" ref={plusMenuRef}>
                 <button
@@ -756,7 +756,9 @@ function PreflightStrip(props: { preflight: ReturnType<typeof buildPreflightStat
 }
 
 function preflightChips(preflight: ReturnType<typeof buildPreflightState>) {
-  const sessionChip = preflight.sessionMode === "resumed" || preflight.sessionMode === "continued"
+  const sessionChip = preflight.blocked && preflight.summary === "当前会话正在处理中"
+    ? "等待本轮完成"
+    : preflight.sessionMode === "resumed" || preflight.sessionMode === "continued"
     ? "延续上次会话"
     : preflight.sessionMode === "degraded"
       ? "会话恢复受限"
