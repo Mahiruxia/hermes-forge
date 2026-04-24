@@ -189,6 +189,76 @@ describe("ManagedWslInstallerService", () => {
     ]));
   });
 
+  it("routes wsl.exe missing through the explicit WSL Ubuntu install path", async () => {
+    const wslMissingDoctor: WslDoctorReport = {
+      ...doctorReport(),
+      overallStatus: "unsupported",
+      blockingIssues: [
+        {
+          checkId: "wsl-exe",
+          category: "wsl",
+          status: "failed",
+          code: "wsl_missing",
+          summary: "wsl.exe 不可用。",
+          detail: "WSL command is unavailable",
+          autoFixable: false,
+          fixHint: "请启用 Windows Subsystem for Linux 并重启系统。",
+        },
+      ],
+      recommendedActions: ["请启用 Windows Subsystem for Linux 并重启系统。"],
+    };
+    const createOrAttach = vi.fn(async () => ({
+      requestedAt: new Date().toISOString(),
+      requestedBy: "install",
+      distroName: "Ubuntu",
+      explicitCreate: true,
+      existedBefore: false,
+      createdNow: false,
+      reachableAfterCreate: false,
+      steps: [
+        {
+          phase: "preflight",
+          step: "wsl-bootstrap-install",
+          status: "failed",
+          code: "unsupported",
+          summary: "自动安装 WSL/Ubuntu 未成功。",
+          fixHint: "请按 Windows 提示启用 WSL/虚拟化并重启，然后再次点击安装。",
+        },
+      ],
+      recovery: {
+        failureStage: "create_distro",
+        disposition: "manual_action_required",
+        code: "unsupported",
+        summary: "无法自动安装 WSL/Ubuntu。",
+        fixHint: "请以管理员权限启用 Windows Subsystem for Linux，或手动执行 wsl.exe --install -d Ubuntu；如系统提示重启，请重启后再次点击安装。",
+        nextAction: "manual_create_distro",
+      },
+    }));
+    const install = vi.fn();
+    const service = new ManagedWslInstallerService(
+      new AppPaths(tempRoot),
+      { diagnose: vi.fn(async () => wslMissingDoctor) } as any,
+      {
+        dryRun: vi.fn(async () => ({ ...dryRunResult(), before: wslMissingDoctor })),
+        repair: vi.fn(),
+      } as any,
+      { createOrAttach } as any,
+      { install } as any,
+    );
+
+    const report = await service.install();
+
+    expect(createOrAttach).toHaveBeenCalledWith({ requestedBy: "install", explicitCreate: true });
+    expect(install).not.toHaveBeenCalled();
+    expect(report.finalInstallerState).toBe("doctor_blocked");
+    expect(report.code).toBe("distro_unavailable");
+    expect(report.lastCreateDistro?.distroName).toBe("Ubuntu");
+    expect(report.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ step: "create-or-attach-distro", status: "running" }),
+      expect.objectContaining({ step: "create-or-attach-distro", status: "blocked", code: "distro_unavailable" }),
+    ]));
+  });
+
   it("stops at repair_planned when dependencies still need explicit repair", async () => {
     const repairPlan: WslRepairDryRunResult = {
       ...dryRunResult(),

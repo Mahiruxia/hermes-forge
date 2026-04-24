@@ -39,10 +39,10 @@ export function ManagedWslInstallerPanel(props: {
         <div>
           <div className="flex items-center gap-2">
             <ClipboardList size={16} className="text-slate-500" />
-            <h3 className="text-sm font-semibold text-slate-900">{props.title ?? "Managed WSL 安装器"}</h3>
+            <h3 className="text-sm font-semibold text-slate-900">{props.title ?? "WSL Hermes Agent 安装器"}</h3>
           </div>
           <p className="mt-1 text-xs leading-5 text-slate-500">
-            先做环境检查，再决定是否修复或安装。这里展示的是同一份受管安装报告，不会和实际执行状态脱节。
+            这是独立的 WSL 安装入口，不属于一键修复。用于安装或恢复 Ubuntu 下的 Hermes Agent。
           </p>
         </div>
         <StatusPill
@@ -51,14 +51,35 @@ export function ManagedWslInstallerPanel(props: {
         />
       </div>
 
+      <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-slate-900">安装 WSL 版 Hermes Agent</p>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
+              自动检查 WSL，安装或连接 Ubuntu，修复 Python/Git/Pip/Venv，安装 Hermes Agent，并完成可用性验证。
+            </p>
+          </div>
+          <ActionButton
+            icon={PlayCircle}
+            label="安装 WSL 版 Hermes Agent"
+            busy={loadingAction === "install"}
+            disabled={installDisabled}
+            variant="primary"
+            onClick={() => void runAction(install)}
+          />
+        </div>
+        <p className="mt-3 text-xs leading-5 text-slate-500">
+          首次安装 Ubuntu 时，Windows 可能要求重启或打开 Ubuntu 完成用户名初始化。完成后再次点击本按钮会从可恢复阶段继续。
+        </p>
+      </div>
+
       <div className="mt-4 flex flex-wrap gap-2">
-        <ActionButton icon={ClipboardList} label="获取 Plan" busy={loadingAction === "plan"} disabled={loadingAction !== undefined} onClick={() => void runAction(planInstall)} />
-        <ActionButton icon={Wrench} label="Dry-run Repair" busy={loadingAction === "dry_run_repair"} disabled={loadingAction !== undefined} onClick={() => void runAction(dryRunRepair)} />
-        <ActionButton icon={Hammer} label="Execute Repair" busy={loadingAction === "execute_repair"} disabled={executeDisabled} onClick={() => void runAction(executeRepair)} />
-        <ActionButton icon={PlayCircle} label="Install" busy={loadingAction === "install"} disabled={installDisabled} onClick={() => void runAction(install)} />
-        <ActionButton icon={RefreshCw} label="Last Report" busy={loadingAction === "get_last_report"} disabled={loadingAction !== undefined} onClick={() => void runAction(refreshLastReport)} />
+        <ActionButton icon={ClipboardList} label="检查安装条件" busy={loadingAction === "plan"} disabled={loadingAction !== undefined} onClick={() => void runAction(planInstall)} />
+        <ActionButton icon={Wrench} label="预演修复" busy={loadingAction === "dry_run_repair"} disabled={loadingAction !== undefined} onClick={() => void runAction(dryRunRepair)} />
+        <ActionButton icon={Hammer} label="仅执行修复" busy={loadingAction === "execute_repair"} disabled={executeDisabled} onClick={() => void runAction(executeRepair)} />
+        <ActionButton icon={RefreshCw} label="读取上次结果" busy={loadingAction === "get_last_report"} disabled={loadingAction !== undefined} onClick={() => void runAction(refreshLastReport)} />
         {props.onExportDiagnostics ? (
-          <ActionButton icon={Download} label="导出 Diagnostics" disabled={loadingAction !== undefined} onClick={() => void props.onExportDiagnostics?.()} />
+          <ActionButton icon={Download} label="导出诊断" disabled={loadingAction !== undefined} onClick={() => void props.onExportDiagnostics?.()} />
         ) : null}
       </div>
 
@@ -256,14 +277,18 @@ function ActionButton(props: {
   onClick: () => void;
   busy?: boolean;
   disabled?: boolean;
+  variant?: "default" | "primary";
 }) {
   const Icon = props.icon;
+  const className = props.variant === "primary"
+    ? "inline-flex items-center gap-2 rounded-lg border border-indigo-600 bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+    : "inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60";
   return (
     <button
       type="button"
       onClick={props.onClick}
       disabled={props.disabled}
-      className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+      className={className}
     >
       {props.busy ? <Loader2 size={14} className="animate-spin" /> : <Icon size={14} />}
       {props.label}

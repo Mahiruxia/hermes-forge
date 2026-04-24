@@ -53,12 +53,17 @@ export class WslDistroService {
       }),
     ];
 
-    if (!beforeProbe.wslAvailable) {
+    let createdNow = false;
+    let command = "";
+    let stdoutPreview = "";
+    let stderrPreview = "";
+
+    if (!beforeProbe.wslAvailable && !options.explicitCreate) {
       return this.finalize({
         requestedAt,
         requestedBy,
         distroName,
-        explicitCreate: options.explicitCreate === true,
+        explicitCreate: false,
         existedBefore,
         createdNow: false,
         reachableAfterCreate: false,
@@ -94,12 +99,74 @@ export class WslDistroService {
       });
     }
 
-    let createdNow = false;
-    let command = "";
-    let stdoutPreview = "";
-    let stderrPreview = "";
+    if (!beforeProbe.wslAvailable && options.explicitCreate) {
+      command = `wsl.exe --install -d ${distroName}`;
+      const result = await runCommand("wsl.exe", ["--install", "-d", distroName], {
+        cwd: process.cwd(),
+        timeoutMs: CREATE_TIMEOUT_MS,
+        commandId: "install.wsl.bootstrap-distro",
+        runtimeKind: "wsl",
+      });
+      stdoutPreview = result.diagnostics?.stdoutPreview ?? result.stdout.slice(0, 4000);
+      stderrPreview = result.diagnostics?.stderrPreview ?? result.stderr.slice(0, 4000);
+      if (result.exitCode !== 0) {
+        return this.finalize({
+          requestedAt,
+          requestedBy,
+          distroName,
+          explicitCreate: true,
+          existedBefore,
+          createdNow: false,
+          reachableAfterCreate: false,
+          lastSuccessfulStage: undefined,
+          recovery: {
+            failureStage: "create_distro",
+            disposition: "manual_action_required",
+            code: "unsupported",
+            summary: "无法自动安装 WSL/Ubuntu。",
+            detail: stderrPreview || stdoutPreview || beforeProbe.commands.wsl.message || `exit ${result.exitCode}`,
+            fixHint: "请以管理员权限启用 Windows Subsystem for Linux，或手动执行 wsl.exe --install -d Ubuntu；如系统提示重启，请重启后再次点击安装。",
+            nextAction: "manual_create_distro",
+          },
+          failureArtifacts: {
+            failedCommand: commandSummary(result, command),
+            distroName,
+            lastSuccessfulStage: undefined,
+            recommendedRecoveryAction: "manual_create_distro",
+          },
+          steps: [
+            ...steps,
+            installStep({
+              phase: "preflight",
+              step: "wsl-bootstrap-install",
+              status: "failed",
+              code: "unsupported",
+              summary: "自动安装 WSL/Ubuntu 未成功。",
+              detail: stderrPreview || stdoutPreview || beforeProbe.commands.wsl.message || `exit ${result.exitCode}`,
+              fixHint: "请按 Windows 提示启用 WSL/虚拟化并重启，然后再次点击安装。",
+              debugContext: { command, exitCode: result.exitCode, runtimeProbe: beforeProbe },
+            }),
+          ],
+          command,
+          stdoutPreview,
+          stderrPreview,
+          debugContext: { runtimeProbe: beforeProbe },
+        });
+      }
+      createdNow = true;
+      steps.push(installStep({
+        phase: "preflight",
+        step: "wsl-bootstrap-install",
+        status: "passed",
+        code: "distro_created",
+        summary: `已发起 WSL/Ubuntu 安装：${distroName}。`,
+        detail: stdoutPreview || stderrPreview,
+        fixHint: "如果 Windows 要求重启或 Ubuntu 首次初始化，请完成后再次点击安装按钮继续。",
+        debugContext: { command, runtimeProbe: beforeProbe },
+      }));
+    }
 
-    if (!existedBefore) {
+    if (!existedBefore && !createdNow) {
       if (!options.explicitCreate) {
         return this.finalize({
           requestedAt,
@@ -146,8 +213,8 @@ export class WslDistroService {
         commandId: "install.wsl.create-distro",
         runtimeKind: "wsl",
       });
-          stdoutPreview = result.diagnostics?.stdoutPreview ?? result.stdout.slice(0, 4000);
-          stderrPreview = result.diagnostics?.stderrPreview ?? result.stderr.slice(0, 4000);
+      stdoutPreview = result.diagnostics?.stdoutPreview ?? result.stdout.slice(0, 4000);
+      stderrPreview = result.diagnostics?.stderrPreview ?? result.stderr.slice(0, 4000);
       if (result.exitCode === 0) {
         createdNow = true;
         steps.push(installStep({
@@ -203,7 +270,7 @@ export class WslDistroService {
           debugContext: { runtimeProbe: beforeProbe },
         });
       }
-    } else {
+    } else if (existedBefore) {
       steps.push(installStep({
         phase: "preflight",
         step: "attach-existing-distro",

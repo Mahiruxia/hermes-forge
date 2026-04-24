@@ -216,6 +216,21 @@ export class ManagedWslInstallerService {
     report.lastDryRunRepair = dryRun;
     this.applyDependencyChecks(report, dryRun.dependencyChecks);
 
+    const bootstrapDistro = await this.createOrAttachDistroIfNeeded(report, doctor, publish);
+    if (!bootstrapDistro.ok) {
+      return this.finalize(report);
+    }
+    if (bootstrapDistro.doctor) {
+      doctor = bootstrapDistro.doctor;
+      report.lastDoctor = doctor;
+      report.distroName = doctor.runtime.distro ?? doctor.runtimeProbe.distroName;
+      report.managedRoot = doctor.runtime.managedRoot;
+      report.failureArtifacts = this.baseArtifacts(report, doctor);
+      dryRun = await this.repairService.dryRun(doctor);
+      report.lastDryRunRepair = dryRun;
+      this.applyDependencyChecks(report, dryRun.dependencyChecks);
+    }
+
     const unsupportedBlock = this.resolveDoctorBlock(doctor);
     if (unsupportedBlock) {
       this.fail(report, "doctor_blocked", unsupportedBlock.step, unsupportedBlock.recovery, publish);
@@ -261,41 +276,12 @@ export class ManagedWslInstallerService {
       this.applyDependencyChecks(report, dryRun.dependencyChecks);
     }
 
-    const distroIssue = doctor.blockingIssues.find((issue) => ["wsl_distro_missing", "wsl_distro_unreachable"].includes(issue.code));
-    if (distroIssue) {
-      const create = await this.distroService.createOrAttach({ requestedBy: "install", explicitCreate: true });
-      report.lastCreateDistro = create;
-      report.distroName = create.distroName;
-      report.failureArtifacts = this.mergeArtifacts(report.failureArtifacts, create.failureArtifacts);
-      if (!create.reachableAfterCreate) {
-        this.fail(report, "doctor_blocked", {
-          phase: "distro",
-          step: "create-or-attach-distro",
-          status: "blocked",
-          code: "distro_unavailable",
-          summary: create.steps.at(-1)?.summary ?? "Managed distro 仍不可用。",
-          detail: create.steps.at(-1)?.detail ?? create.stderrPreview ?? create.stdoutPreview,
-          fixHint: create.steps.at(-1)?.fixHint,
-          debugContext: create.debugContext,
-        }, create.recovery ?? {
-          failureStage: "create_distro",
-          disposition: "retryable",
-          code: "distro_unavailable",
-          summary: create.steps.at(-1)?.summary ?? "Create distro 失败。",
-          detail: create.stderrPreview ?? create.stdoutPreview,
-          fixHint: "请检查 WSL/发行版初始化状态后再重试。",
-          nextAction: "retry_create_distro",
-          debugContext: create.debugContext,
-        }, publish);
-        return this.finalize(report);
-      }
-      this.markSuccessful(report, create.lastSuccessfulStage ?? "create_distro");
-      doctor = await this.doctorService.diagnose({
-        runtime: {
-          ...doctor.runtime,
-          distro: create.distroName,
-        },
-      });
+    const postRepairDistro = await this.createOrAttachDistroIfNeeded(report, doctor, publish);
+    if (!postRepairDistro.ok) {
+      return this.finalize(report);
+    }
+    if (postRepairDistro.doctor) {
+      doctor = postRepairDistro.doctor;
       report.lastDoctor = doctor;
       report.distroName = doctor.runtime.distro ?? doctor.runtimeProbe.distroName;
       report.managedRoot = doctor.runtime.managedRoot;
@@ -571,6 +557,66 @@ export class ManagedWslInstallerService {
       fixHint: bridgeBlock.fixHint ?? "Hermes 修复完成后可重启客户端或手动刷新 Bridge 状态。",
       debugContext: bridgeBlock.debugContext,
     }, publish);
+  }
+
+  private async createOrAttachDistroIfNeeded(
+    report: ManagedWslInstallerReport,
+    doctor: WslDoctorReport,
+    publish?: InstallPublisher,
+  ): Promise<{ ok: true; doctor?: WslDoctorReport } | { ok: false }> {
+    const distroIssue = doctor.blockingIssues.find((issue) => ["wsl_missing", "wsl_distro_missing", "wsl_distro_unreachable"].includes(issue.code));
+    if (!distroIssue) {
+      return { ok: true };
+    }
+
+    this.push(report, "distro_ready", {
+      phase: "distro",
+      step: "create-or-attach-distro",
+      status: "running",
+      code: "ok",
+      summary: distroIssue.code === "wsl_missing"
+        ? "正在尝试安装或启用 WSL，并准备 Ubuntu 环境。"
+        : "正在创建或连接 Ubuntu WSL 环境。",
+      detail: distroIssue.summary,
+      fixHint: "首次安装可能需要 Windows 授权、重启或打开 Ubuntu 完成初始化。",
+    }, publish);
+
+    const create = await this.distroService.createOrAttach({ requestedBy: "install", explicitCreate: true });
+    report.lastCreateDistro = create;
+    report.distroName = create.distroName;
+    report.failureArtifacts = this.mergeArtifacts(report.failureArtifacts, create.failureArtifacts);
+    if (!create.reachableAfterCreate) {
+      this.fail(report, "doctor_blocked", {
+        phase: "distro",
+        step: "create-or-attach-distro",
+        status: "blocked",
+        code: "distro_unavailable",
+        summary: create.steps.at(-1)?.summary ?? "Managed distro 仍不可用。",
+        detail: create.steps.at(-1)?.detail ?? create.stderrPreview ?? create.stdoutPreview,
+        fixHint: create.steps.at(-1)?.fixHint ?? create.recovery?.fixHint,
+        debugContext: create.debugContext,
+      }, create.recovery ?? {
+        failureStage: "create_distro",
+        disposition: "retryable",
+        code: "distro_unavailable",
+        summary: create.steps.at(-1)?.summary ?? "Create distro 失败。",
+        detail: create.stderrPreview ?? create.stdoutPreview,
+        fixHint: "请检查 WSL/Ubuntu 初始化状态后再重试。",
+        nextAction: "retry_create_distro",
+        debugContext: create.debugContext,
+      }, publish);
+      return { ok: false };
+    }
+
+    this.markSuccessful(report, create.lastSuccessfulStage ?? "create_distro");
+    const nextDoctor = await this.doctorService.diagnose({
+      runtime: {
+        ...doctor.runtime,
+        mode: "wsl",
+        distro: create.distroName,
+      },
+    });
+    return { ok: true, doctor: nextDoctor };
   }
 
   private resolveRepairFailure(repair: WslRepairResult, report: ManagedWslInstallerReport) {

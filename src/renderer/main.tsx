@@ -253,11 +253,49 @@ function SettingsView(props: {
       const result = await window.workbenchClient.runOneClickDiagnostics({ autoFix, workspacePath });
       setOneClickDiagnostics(result);
       await props.onRefresh();
+      if (autoFix && needsManagedWslHermesInstall(result)) {
+        const confirmed = window.confirm(
+          "一键修复未能完成，原因是当前缺少 WSL 下的 Hermes Agent，或 WSL/Ubuntu 环境尚不可用。\n\n是否现在自动执行“安装 WSL 版 Hermes Agent”？",
+        );
+        if (confirmed) {
+          await runManagedWslHermesInstallFromDiagnostics();
+          return;
+        }
+        showSaveNotice("一键修复未完成：请在 Hermes 设置中点击“安装 WSL 版 Hermes Agent”。");
+        return;
+      }
       showSaveNotice(autoFix ? "一键修复已完成并完成二次验证" : "一键诊断已完成");
     } catch (error) {
       showSaveNotice(error instanceof Error ? error.message : "一键诊断失败");
     } finally {
       setOneClickDiagnosticsRunning(false);
+    }
+  }
+
+  async function runManagedWslHermesInstallFromDiagnostics() {
+    const store = useAppStore.getState();
+    if (store.managedWslInstallerLoadingAction) {
+      showSaveNotice("WSL Hermes Agent 安装正在运行，请等待当前安装完成。");
+      return;
+    }
+    store.setManagedWslInstallerLoadingAction("install");
+    try {
+      setActiveSection("general");
+      showSaveNotice("正在安装 WSL 版 Hermes Agent...");
+      const installResult = await window.workbenchClient.installerInstall();
+      useAppStore.getState().setManagedWslInstaller(installResult);
+      await props.onRefresh();
+      if (installResult.ok) {
+        showSaveNotice("WSL 版 Hermes Agent 已安装并通过验证。");
+        return;
+      }
+      showSaveNotice(
+        `${installResult.summary} ${installResult.fixHint ?? installResult.detail ?? "安装器已保存报告，可在 Hermes 设置的安装器区域查看。"}`,
+      );
+    } catch (error) {
+      showSaveNotice(error instanceof Error ? error.message : "WSL 版 Hermes Agent 安装失败");
+    } finally {
+      useAppStore.getState().setManagedWslInstallerLoadingAction(undefined);
     }
   }
 
@@ -622,6 +660,22 @@ function oneClickStatusLabel(status: OneClickDiagnosticItem["status"]) {
     skipped: "跳过",
   };
   return labels[status];
+}
+
+function needsManagedWslHermesInstall(report: OneClickDiagnosticsReport) {
+  if (!report.summary.failed && !report.summary.unresolved) return false;
+  const installRelatedIds = new Set(["wsl.runtime", "wsl.distro", "wsl.command", "hermes.path", "hermes.cli", "hermes.capabilities"]);
+  return report.items.some((diagnostic) => {
+    if (diagnostic.status !== "fail") return false;
+    const text = [
+      diagnostic.id,
+      diagnostic.title,
+      diagnostic.summary,
+      diagnostic.details,
+      ...(diagnostic.suggestedActions ?? []),
+    ].join("\n");
+    return installRelatedIds.has(diagnostic.id) && /WSL|wsl\.exe|Ubuntu|Hermes Agent|Hermes CLI|Hermes root|hermes_root_missing|hermes_cli_missing|不存在|未安装|不可用|无法找到/i.test(text);
+  });
 }
 
 function setupStatusTone(status: SetupCheck["status"]): "ok" | "warning" | "error" | "neutral" {
