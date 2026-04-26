@@ -1212,7 +1212,7 @@ try:
     from run_agent import AIAgent
     sig = inspect.signature(AIAgent.__init__)
     params = set(sig.parameters.keys())
-    required = {"skip_context_files", "quiet_mode", "session_id", "platform", "ephemeral_system_prompt"}
+    required = {"skip_context_files", "quiet_mode", "session_id", "platform", "ephemeral_system_prompt", "base_url", "api_key", "provider", "model", "max_iterations"}
     missing = sorted(required - params)
     has_run_conversation = hasattr(AIAgent, "run_conversation") and callable(getattr(AIAgent, "run_conversation", None))
     print(json.dumps({

@@ -684,7 +684,7 @@ export class HermesCliAdapter implements EngineAdapter {
       runnerPath,
       "--root-path", rootPath,
       "--query", request.userInput,
-      "--session-id", request.sessionId,
+      "--session-id", request.conversationId || request.sessionId,
       "--source", "zhenghebao-client",
       "--max-turns", "90",
     ];
