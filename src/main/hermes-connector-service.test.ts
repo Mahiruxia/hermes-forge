@@ -231,4 +231,41 @@ describe("HermesConnectorService helpers", () => {
     expect(connector.configured).toBe(true);
     expect(connector.status).toBe("configured");
   });
+
+  it("returns a structured Weixin failure status when Hermes root cannot be resolved", async () => {
+    const service = new HermesConnectorService(
+      {} as never,
+      {} as never,
+      async () => {
+        throw new Error("Hermes Agent 路径未配置。");
+      },
+    );
+
+    const result = await service.startWeixinQrLogin();
+
+    expect(result.ok).toBe(false);
+    expect(result.status.phase).toBe("failed");
+    expect(result.status.failureCode).toBe("hermes_root_unavailable");
+    expect(result.status.message).toContain("Hermes Agent 路径未配置");
+    expect(result.status.recommendedFix).toBeDefined();
+    expect(result.status.failureKind).toBe("manual_fix");
+  });
+
+  it("returns a structured Weixin install failure when Hermes root cannot be resolved", async () => {
+    const service = new HermesConnectorService(
+      {} as never,
+      {} as never,
+      async () => {
+        throw new Error("Hermes Agent 路径未配置。");
+      },
+    );
+
+    const result = await service.installWeixinDependency();
+
+    expect(result.ok).toBe(false);
+    expect(result.status?.phase).toBe("failed");
+    expect(result.status?.failureCode).toBe("hermes_root_unavailable");
+    expect(result.message).toContain("Hermes Agent 路径未配置");
+    expect(result.recommendedFix).toBeDefined();
+  });
 });

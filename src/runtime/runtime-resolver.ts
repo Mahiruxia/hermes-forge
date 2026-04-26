@@ -152,3 +152,66 @@ export function parseWslHost(stdout: string) {
 export function runtimeKindLabel(kind: RuntimeKind) {
   return kind === "wsl" ? "WSL" : "Windows Native";
 }
+
+// Windows-only env variables that must NOT cross into a WSL `env KEY=VALUE … bash -lc` invocation.
+// PATHEXT (.COM;.EXE;.BAT;.CMD;…) and Windows PATH are semicolon-delimited and would be re-interpreted
+// by bash as a sequence of commands, producing the classic "/bin/bash: line 1: .EXE: command not found".
+// Other paths use Windows backslashes that have no meaning in WSL.
+export const WSL_FORWARD_BLOCKLIST: ReadonlyArray<string> = [
+  "Path",
+  "PATH",
+  "PATHEXT",
+  "COMSPEC",
+  "ComSpec",
+  "SystemRoot",
+  "SystemDrive",
+  "windir",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "ProgramW6432",
+  "ProgramData",
+  "CommonProgramFiles",
+  "CommonProgramFiles(x86)",
+  "CommonProgramW6432",
+  "PUBLIC",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "TEMP",
+  "TMP",
+  "OS",
+  "OneDrive",
+  "OneDriveConsumer",
+  "OneDriveCommercial",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "HOSTNAME",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+  "PROCESSOR_IDENTIFIER",
+  "PROCESSOR_LEVEL",
+  "PROCESSOR_REVISION",
+  "USERDOMAIN",
+  "USERDOMAIN_ROAMINGPROFILE",
+  "USERNAME",
+  "SESSIONNAME",
+  "LOGONSERVER",
+  "ALLUSERSPROFILE",
+  "DriverData",
+  "PSModulePath",
+];
+
+const WSL_FORWARD_BLOCKLIST_LOWER = new Set(WSL_FORWARD_BLOCKLIST.map((key) => key.toLowerCase()));
+
+// Filters a NodeJS env so it can be safely passed to `wsl.exe env`.
+// Drops Windows-only variables and any values containing CR/LF that would corrupt the argv encoding.
+export function sanitizeEnvForWsl(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue;
+    if (WSL_FORWARD_BLOCKLIST_LOWER.has(key.toLowerCase())) continue;
+    if (/\r|\n/.test(value)) continue;
+    out[key] = value;
+  }
+  return out;
+}

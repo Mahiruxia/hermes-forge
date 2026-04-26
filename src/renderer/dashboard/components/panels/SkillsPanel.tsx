@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Save, Trash2, Wrench, Tag } from "lucide-react";
+import { Plus, Save, Trash2, Wrench, Tag, Upload } from "lucide-react";
 import type { HermesSkill } from "../../../../shared/types";
 import { useAppStore } from "../../../store";
 import { cn } from "../../DashboardPrimitives";
@@ -38,6 +38,17 @@ export function SkillsPanel() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? `技能保存失败：${err.message}` : "技能保存失败。");
+    }
+  }
+
+  async function uploadSkill() {
+    setError("");
+    try {
+      const skill = await window.workbenchClient.uploadSkill();
+      setMessage(`技能“${skill.name}”已上传。`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? `技能上传失败：${err.message}` : "技能上传失败。");
     }
   }
 
@@ -83,14 +94,24 @@ export function SkillsPanel() {
           <Wrench size={14} />
           <span>读取并编辑当前 Hermes Home 下 `skills/` 目录的 Markdown 技能文件。</span>
         </div>
-        <button
-          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
-          onClick={() => setEditing({ id: "new-skill.md", content: "# New Skill\n\n描述这个技能的用途。\n", isNew: true })}
-          type="button"
-        >
-          <Plus size={14} />
-          新建技能
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-all hover:bg-slate-50 hover:shadow-md active:scale-[0.98]"
+            onClick={() => void uploadSkill()}
+            type="button"
+          >
+            <Upload size={14} />
+            上传技能
+          </button>
+          <button
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
+            onClick={() => setEditing({ id: "new-skill.md", content: "# New Skill\n\n描述这个技能的用途。\n", isNew: true })}
+            type="button"
+          >
+            <Plus size={14} />
+            新建技能
+          </button>
+        </div>
       </div>
 
       {message ? <NoticeCard text={message} onClose={() => setMessage("")} /> : null}
@@ -99,6 +120,11 @@ export function SkillsPanel() {
 
       {editing ? (
         <section className="rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
+          {editing.id.includes("/SKILL.md") ? (
+            <div className="mb-3 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+              目录技能支持编辑 SKILL.md 主文件，子资源（references、scripts 等）请在文件系统中管理。
+            </div>
+          ) : null}
           <div className="mb-3">
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-slate-400">文件路径</label>
             <input
@@ -175,9 +201,14 @@ export function SkillsPanel() {
                     </div>
 
                     <div className="mt-3 flex items-center justify-between">
-                      <div className="flex items-center gap-1">
-                        <Tag size={10} className="text-slate-400" />
-                        <span className="text-xs text-slate-400">{skill.category}</span>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <Tag size={10} className="text-slate-400" />
+                          <span className="text-xs text-slate-400">{skill.category}</span>
+                        </div>
+                        {skill.format === "directory" ? (
+                          <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-600">📦 目录包</span>
+                        ) : null}
                       </div>
                       <div className="flex gap-1">
                         <button

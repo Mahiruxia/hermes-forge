@@ -5,7 +5,7 @@ import type { AppPaths } from "./app-paths";
 import { ensureHermesHomeLayout, resolveActiveHermesHome } from "./hermes-home";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
-import { validateSkillId, validateProfileName, validateCronSchedule } from "../security";
+import { validateSkillId, validateProfileName, validateCronSchedule, validateSkillDirectoryName, validateSkillUploadPath } from "../security";
 import type {
   FilePreviewResult,
   FileBreadcrumbItem,
@@ -154,23 +154,55 @@ export class HermesWebUiService {
   async listSkills(): Promise<HermesSkill[]> {
     const root = path.join(await this.currentHermesHome(), "skills");
     const files = await this.walkFiles(root, 3);
-    const skills = await Promise.all(files.filter((file) => this.isValidSkillFile(file)).map(async (file) => {
-      const stat = await fs.stat(file);
-      const content = await fs.readFile(file, "utf8").catch(() => "");
-      const relativePath = path.relative(root, file);
-      const name = path.basename(file, path.extname(file));
-      return {
-        id: relativePath.replace(/\\/g, "/"),
-        name,
-        path: file,
-        relativePath,
-        category: path.dirname(relativePath) === "." ? "personal" : path.dirname(relativePath).split(/[\\/]/)[0] ?? "personal",
-        summary: firstContentLine(content) || "暂无说明",
-        updatedAt: stat.mtime.toISOString(),
-        size: stat.size,
-      };
-    }));
-    return skills.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+
+    const flatSkills = await Promise.all(
+      files
+        .filter((file) => this.isValidSkillFile(file) && path.basename(file) !== "SKILL.md")
+        .map(async (file) => {
+          const stat = await fs.stat(file);
+          const content = await fs.readFile(file, "utf8").catch(() => "");
+          const relativePath = path.relative(root, file);
+          const name = path.basename(file, path.extname(file));
+          return {
+            id: relativePath.replace(/\\/g, "/"),
+            name,
+            path: file,
+            relativePath,
+            category: path.dirname(relativePath) === "." ? "personal" : path.dirname(relativePath).split(/[\\/]/)[0] ?? "personal",
+            summary: firstContentLine(content) || "暂无说明",
+            updatedAt: stat.mtime.toISOString(),
+            size: stat.size,
+            format: "flat" as const,
+          };
+        }),
+    );
+
+    const directorySkills = await Promise.all(
+      files
+        .filter((file) => path.basename(file) === "SKILL.md" && this.isValidSkillDirectoryPath(file))
+        .map(async (file) => {
+          const stat = await fs.stat(file);
+          const content = await fs.readFile(file, "utf8").catch(() => "");
+          const { frontmatter } = parseFrontmatter(content);
+          const relativePath = path.relative(root, file);
+          const dirName = path.dirname(relativePath);
+          const name = String(frontmatter.name || path.basename(dirName));
+          const category = path.dirname(dirName) === "." ? "personal" : path.dirname(dirName).split(/[\\/]/)[0] ?? "personal";
+          return {
+            id: relativePath.replace(/\\/g, "/"),
+            name,
+            path: file,
+            relativePath,
+            category,
+            summary: String(frontmatter.description || firstContentLine(content) || "暂无说明"),
+            updatedAt: stat.mtime.toISOString(),
+            size: stat.size,
+            format: "directory" as const,
+          };
+        }),
+    );
+
+    return [...flatSkills, ...directorySkills].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   }
 
   private isValidSkillFile(filePath: string): boolean {
@@ -187,19 +219,29 @@ export class HermesWebUiService {
     return true;
   }
 
+  private isValidSkillDirectoryPath(filePath: string): boolean {
+    const dirName = path.dirname(filePath).toLowerCase();
+    if (dirName.includes("__pycache__")) return false;
+    if (dirName.includes(".git")) return false;
+    if (dirName.includes(".github")) return false;
+    if (dirName.includes(".hub")) return false;
+    return true;
+  }
+
   async readSkill(id: string) {
-    const filePath = await this.resolveUnder(path.join(await this.currentHermesHome(), "skills"), id);
+    const skillsRoot = path.join(await this.currentHermesHome(), "skills");
+    const filePath = await this.resolveUnder(skillsRoot, id);
     return { id, path: filePath, content: await fs.readFile(filePath, "utf8") };
   }
 
   async saveSkill(id: string, content: string) {
-    const skillId = id.endsWith(".md") ? id : `${id}.md`;
+    const skillsRoot = path.join(await this.currentHermesHome(), "skills");
+    const isDirectorySkill = id.includes("/SKILL.md") || id.endsWith("\\SKILL.md");
+    const skillId = isDirectorySkill || id.endsWith(".md") ? id : `${id}.md`;
     const validation = validateSkillId(skillId);
     if (!validation.valid) {
       throw new Error(`技能验证失败: ${validation.errors.join(", ")}`);
     }
-    
-    const skillsRoot = path.join(await this.currentHermesHome(), "skills");
     const filePath = await this.resolveUnder(skillsRoot, skillId);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await this.backupPath(filePath);
@@ -208,9 +250,112 @@ export class HermesWebUiService {
   }
 
   async deleteSkill(id: string) {
-    const filePath = await this.resolveUnder(path.join(await this.currentHermesHome(), "skills"), id);
+    const skillsRoot = path.join(await this.currentHermesHome(), "skills");
+    const filePath = await this.resolveUnder(skillsRoot, id);
     await this.moveToTrash(filePath);
     return { ok: true, id };
+  }
+
+  async uploadSkill(sourcePath: string): Promise<HermesSkill> {
+    const validation = validateSkillUploadPath(sourcePath);
+    if (!validation.valid) {
+      throw new Error(`上传路径验证失败: ${validation.errors.join(", ")}`);
+    }
+
+    const stat = await fs.stat(sourcePath).catch(() => undefined);
+    if (!stat) {
+      throw new Error("上传路径不存在或无法访问。");
+    }
+
+    const skillsRoot = path.join(await this.currentHermesHome(), "skills");
+
+    if (stat.isDirectory()) {
+      const skillMdPath = path.join(sourcePath, "SKILL.md");
+      const skillMdStat = await fs.stat(skillMdPath).catch(() => undefined);
+      if (!skillMdStat?.isFile()) {
+        throw new Error("选中的目录不包含 SKILL.md 文件，无法识别为 Hermes 技能包。");
+      }
+      const content = await fs.readFile(skillMdPath, "utf8");
+      const { frontmatter } = parseFrontmatter(content);
+      const name = String(frontmatter.name || path.basename(sourcePath)).trim();
+      const category = String(frontmatter.category || "personal").trim();
+      const dirValidation = validateSkillDirectoryName(name);
+      if (!dirValidation.valid) {
+        throw new Error(`技能名称验证失败: ${dirValidation.errors.join(", ")}`);
+      }
+
+      const targetDir = path.join(skillsRoot, category, name);
+      const targetSkillMd = path.join(targetDir, "SKILL.md");
+      await this.moveToTrash(targetDir);
+      await fs.mkdir(targetDir, { recursive: true });
+
+      const entries = await fs.readdir(sourcePath, { withFileTypes: true });
+      await Promise.all(
+        entries.map(async (entry) => {
+          const src = path.join(sourcePath, entry.name);
+          const dest = path.join(targetDir, entry.name);
+          if (entry.isDirectory()) {
+            await fs.cp(src, dest, { recursive: true });
+          } else if (entry.isFile()) {
+            await fs.copyFile(src, dest);
+          }
+        }),
+      );
+
+      const relativePath = path.relative(skillsRoot, targetSkillMd);
+      return {
+        id: relativePath.replace(/\\/g, "/"),
+        name,
+        path: targetSkillMd,
+        relativePath,
+        category,
+        summary: String(frontmatter.description || firstContentLine(content) || "暂无说明"),
+        updatedAt: new Date().toISOString(),
+        size: (await fs.stat(targetSkillMd)).size,
+        format: "directory",
+      };
+    }
+
+    if (stat.isFile()) {
+      if (!sourcePath.toLowerCase().endsWith(".md")) {
+        throw new Error("只能上传 .md 文件或包含 SKILL.md 的目录。");
+      }
+      const content = await fs.readFile(sourcePath, "utf8");
+      const baseName = path.basename(sourcePath, path.extname(sourcePath));
+      const { frontmatter: existingFm } = parseFrontmatter(content);
+      const name = String(existingFm.name || baseName).trim();
+      const description = String(existingFm.description || firstContentLine(content) || "User uploaded skill").trim();
+      const dirValidation = validateSkillDirectoryName(name);
+      if (!dirValidation.valid) {
+        throw new Error(`技能名称验证失败: ${dirValidation.errors.join(", ")}`);
+      }
+
+      const targetDir = path.join(skillsRoot, "personal", name);
+      const targetSkillMd = path.join(targetDir, "SKILL.md");
+      await this.moveToTrash(targetDir);
+      await fs.mkdir(targetDir, { recursive: true });
+
+      let skillContent = content;
+      if (!content.trimStart().startsWith("---")) {
+        skillContent = `---\nname: ${name}\ndescription: ${description}\n---\n\n${content}`;
+      }
+      await fs.writeFile(targetSkillMd, skillContent, "utf8");
+
+      const relativePath = path.relative(skillsRoot, targetSkillMd);
+      return {
+        id: relativePath.replace(/\\/g, "/"),
+        name,
+        path: targetSkillMd,
+        relativePath,
+        category: "personal",
+        summary: description,
+        updatedAt: new Date().toISOString(),
+        size: (await fs.stat(targetSkillMd)).size,
+        format: "directory",
+      };
+    }
+
+    throw new Error("上传路径既不是文件也不是目录。");
   }
 
   async listMemoryFiles(): Promise<HermesMemoryFile[]> {
@@ -627,6 +772,18 @@ export class HermesWebUiService {
 
 function firstContentLine(content: string) {
   return content.split(/\r?\n/).map((line) => line.replace(/^#+\s*/, "").trim()).find(Boolean);
+}
+
+function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
+  const match = content.trimStart().match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+  if (!match) return { frontmatter: {}, body: content };
+  const lines = match[1].split(/\r?\n/);
+  const frontmatter: Record<string, unknown> = {};
+  for (const line of lines) {
+    const idx = line.indexOf(":");
+    if (idx > 0) frontmatter[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  }
+  return { frontmatter, body: match[2] };
 }
 
 function mimeFromExt(ext: string) {

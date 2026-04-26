@@ -41,6 +41,7 @@ export const IpcChannels = {
   readSkill: "webui:skills:read",
   saveSkill: "webui:skills:save",
   deleteSkill: "webui:skills:delete",
+  uploadSkill: "webui:skills:upload",
   listMemoryFiles: "webui:memory:list",
   saveMemoryFile: "webui:memory:save",
   importMemoryFile: "webui:memory:import",

@@ -11,7 +11,7 @@ export function StatusBar() {
   const store = useAppStore();
   const [apiStatus, setApiStatus] = useState<ConnectionState>(store.clientInfo ? "connected" : "checking");
   const [hermesStatus, setHermesStatus] = useState<ConnectionState>(resolveHermesConnection(store.hermesProbe, store.hermesStatus));
-  const [gatewayStatus] = useState<HermesGatewayStatus | undefined>();
+  const [gatewayStatus, setGatewayStatus] = useState<HermesGatewayStatus | undefined>();
   const [clientUpdate, setClientUpdate] = useState<ClientUpdateEvent | undefined>();
   const [lastChecked] = useState<string | null>(null);
 
@@ -29,6 +29,24 @@ export function StatusBar() {
   }, [store.hermesProbe, store.hermesStatus]);
 
   useEffect(() => window.workbenchClient?.onClientUpdateEvent?.((event) => setClientUpdate(event)), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const status = await window.workbenchClient.getGatewayStatus();
+        if (!cancelled) setGatewayStatus(status);
+      } catch {
+        if (!cancelled) setGatewayStatus(undefined);
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const statusItems = useMemo(() => [
     makeStatusItem({

@@ -49,6 +49,35 @@ export function validateSkillId(id: string): ValidationResult {
   return { valid: errors.length === 0, errors };
 }
 
+export function validateSkillDirectoryName(name: string): ValidationResult {
+  const errors: string[] = [];
+
+  if (!name || name.trim() === "") {
+    errors.push("技能名称不能为空");
+  }
+
+  if (name.length > 64) {
+    errors.push("技能名称不能超过 64 个字符");
+  }
+
+  const invalidChars = /[^a-zA-Z0-9_\-/]/;
+  if (invalidChars.test(name)) {
+    errors.push("技能名称只能包含字母、数字、下划线、连字符和正斜杠");
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+export function validateSkillUploadPath(sourcePath: string): ValidationResult {
+  const errors: string[] = [];
+
+  if (!sourcePath || sourcePath.trim() === "") {
+    errors.push("上传路径不能为空");
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
 export function validateMemoryContent(content: string): ValidationResult {
   const errors: string[] = [];
   

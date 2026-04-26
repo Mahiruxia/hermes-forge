@@ -463,6 +463,20 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     return services.hermesWebUiService.saveSkill(parsed.id, parsed.content);
   });
   ipcMain.handle(IpcChannels.deleteSkill, (_event, id: string) => services.hermesWebUiService.deleteSkill(id));
+  ipcMain.handle(IpcChannels.uploadSkill, async () => {
+    const result = await dialog.showOpenDialog({
+      title: "选择要上传的技能",
+      properties: ["openFile", "openDirectory"],
+      filters: [
+        { name: "Markdown 技能文件", extensions: ["md"] },
+        { name: "所有文件", extensions: ["*"] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      throw new Error("用户取消了上传。");
+    }
+    return services.hermesWebUiService.uploadSkill(result.filePaths[0]);
+  });
   ipcMain.handle(IpcChannels.listMemoryFiles, () => services.hermesWebUiService.listMemoryFiles());
   ipcMain.handle(IpcChannels.saveMemoryFile, (_event, input) => {
     const parsed = z.object({ id: z.enum(["USER.md", "MEMORY.md"]), content: z.string().max(300000) }).parse(input);

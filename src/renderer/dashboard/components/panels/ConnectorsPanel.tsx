@@ -900,7 +900,14 @@ function WeixinQrWizard(props: {
                   <div className="text-center">
                     <QrCode size={56} className="mx-auto text-slate-400" />
                     <p className="mt-3 text-sm text-slate-500">二维码图片生成失败，可复制链接后用微信扫码。</p>
-                    <p className="mt-3 max-w-sm break-all font-mono text-xs text-slate-400">{status.qrUrl}</p>
+                    <a
+                      className="mt-3 max-w-sm break-all font-mono text-xs text-indigo-600 hover:underline"
+                      href={status.qrUrl}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      {status.qrUrl}
+                    </a>
                   </div>
                 ) : status.phase === "idle" ? (
                   <div className="text-center">

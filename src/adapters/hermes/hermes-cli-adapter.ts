@@ -17,7 +17,7 @@ import { runCommand, streamCommand } from "../../process/command-runner";
 import type { CommandLineEvent } from "../../process/command-runner";
 import { validateWslHermesCli, type HermesCliValidationFailureKind } from "../../runtime/hermes-cli-resolver";
 import type { RuntimeAdapterFactory } from "../../runtime/runtime-adapter";
-import { toWslPath as runtimeToWslPath } from "../../runtime/runtime-resolver";
+import { toWslPath as runtimeToWslPath, sanitizeEnvForWsl } from "../../runtime/runtime-resolver";
 import { extractHermesCliLifecycleSessionId, isHermesCliLifecycleLine } from "../../shared/hermes-cli-output";
 import { mapSourceTypeToHermesProvider, resolveHermesProvider } from "../../shared/model-config";
 import { createPermissionBoundaryAudit, createPermissionPolicyBlockReason, type PermissionBoundaryAudit } from "../../shared/permission-audit";
@@ -1604,7 +1604,7 @@ export class HermesCliAdapter implements EngineAdapter {
   }
 
   private envArgs(env: NodeJS.ProcessEnv) {
-    return Object.entries(env)
+    return Object.entries(sanitizeEnvForWsl(env))
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
       .map(([key, value]) => `${key}=${value}`);
   }

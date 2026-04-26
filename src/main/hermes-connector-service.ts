@@ -199,6 +199,8 @@ export class HermesConnectorService {
   private gatewayAutoStartState: HermesGatewayStatus["autoStartState"] = "idle";
   private gatewayAutoStartMessage = "等待自动启动。";
   private gatewayStartPromise?: Promise<HermesGatewayActionResult>;
+  private gatewayUserStopped = false;
+  private gatewayAutoRestartTimer?: NodeJS.Timeout;
   private weixinQrProcess?: ChildProcessWithoutNullStreams;
   private weixinQrStatus: WeixinQrLoginStatus = { running: false, phase: "idle", message: "请点击开始扫码获取微信二维码。" };
   private weixinQrLineBuffer = "";
@@ -417,6 +419,11 @@ export class HermesConnectorService {
   }
 
   private async startInternal(options: { forceReplace?: boolean } = {}): Promise<HermesGatewayActionResult> {
+    this.gatewayUserStopped = false;
+    if (this.gatewayAutoRestartTimer) {
+      clearTimeout(this.gatewayAutoRestartTimer);
+      this.gatewayAutoRestartTimer = undefined;
+    }
     const current = await this.status();
     if (current.running && !options.forceReplace) {
       this.gatewayAutoStartState = "running";
@@ -503,6 +510,7 @@ export class HermesConnectorService {
       this.gatewayError = trimLog(`${this.gatewayError}\n${error.message}`);
     });
     child.on("close", (exitCode) => {
+      const wasRunning = this.gatewayAutoStartState === "running" || this.gatewayAutoStartState === "starting";
       this.gatewayLastExitCode = exitCode;
       this.gatewayLastExitAt = new Date().toISOString();
       this.gatewayExitMessage = `Gateway 已退出，退出码：${exitCode ?? "unknown"}`;
@@ -517,6 +525,9 @@ export class HermesConnectorService {
       }
       this.gatewayProcess = undefined;
       this.gatewayStartedAt = undefined;
+      if (wasRunning && !this.gatewayUserStopped && (exitCode ?? 0) !== 0) {
+        this.scheduleAutoRestart();
+      }
     });
     await this.sleep(1200);
     const status = await this.status();
@@ -537,6 +548,11 @@ export class HermesConnectorService {
   async stop(): Promise<HermesGatewayActionResult> {
     if (!this.gatewayProcess?.pid) {
       return { ok: true, status: await this.status(), message: "没有桌面端托管的 Gateway 进程。" };
+    }
+    this.gatewayUserStopped = true;
+    if (this.gatewayAutoRestartTimer) {
+      clearTimeout(this.gatewayAutoRestartTimer);
+      this.gatewayAutoRestartTimer = undefined;
     }
     await killProcessTree(this.gatewayProcess.pid);
     this.gatewayProcess = undefined;
@@ -589,19 +605,121 @@ export class HermesConnectorService {
     this.gatewayAutoStartMessage = "连接器尚未配置完整，已跳过自动启动。";
   }
 
+  private scheduleAutoRestart() {
+    if (this.gatewayAutoRestartTimer) {
+      clearTimeout(this.gatewayAutoRestartTimer);
+    }
+    const maxRetries = 10;
+    if (this.gatewayRestartCount > maxRetries) {
+      this.gatewayAutoStartMessage = `Gateway 已连续崩溃 ${maxRetries} 次，自动重启已停止。请检查日志或手动启动。`;
+      return;
+    }
+    const backoffMs = this.gatewayRestartCount <= 1
+      ? 5_000
+      : this.gatewayRestartCount <= 3
+        ? 15_000
+        : this.gatewayRestartCount <= 5
+          ? 60_000
+          : 300_000;
+    this.gatewayBackoffUntil = new Date(Date.now() + backoffMs).toISOString();
+    this.gatewayAutoStartMessage = `Gateway 异常退出，将在 ${Math.round(backoffMs / 1000)} 秒后自动重启（第 ${this.gatewayRestartCount} 次）...`;
+    this.gatewayAutoRestartTimer = setTimeout(() => {
+      void (async () => {
+        try {
+          await this.autoStartIfConfigured();
+        } catch (error) {
+          console.warn("[Hermes Forge] Gateway auto-restart failed:", error);
+        }
+      })();
+    }, backoffMs);
+  }
+
   getWeixinQrStatus(): WeixinQrLoginStatus {
     return { ...this.weixinQrStatus };
+  }
+
+  private failWeixinQrStart(error: unknown, failureCode: string, recommendedFix: string): WeixinQrLoginResult {
+    const message = error instanceof Error ? error.message : String(error);
+    const status: WeixinQrLoginStatus = {
+      ...this.weixinQrStatus,
+      running: false,
+      phase: "failed",
+      completedAt: new Date().toISOString(),
+      success: false,
+      failureCode,
+      lastHeartbeatAt: new Date().toISOString(),
+      message,
+      recoveryAction: undefined,
+      recoveryCommand: undefined,
+      failureKind: "manual_fix",
+      recommendedFix,
+    };
+    this.weixinQrStatus = status;
+    return { ok: false, status: this.getWeixinQrStatus(), message };
+  }
+
+  private failWeixinDependencyInstall(
+    error: unknown,
+    command: string,
+    failureCode: string,
+    recommendedFix: string,
+  ): WeixinDependencyInstallResult {
+    const message = error instanceof Error ? error.message : String(error);
+    const status: WeixinQrLoginStatus = {
+      ...this.weixinQrStatus,
+      running: false,
+      phase: "failed",
+      completedAt: new Date().toISOString(),
+      success: false,
+      failureCode,
+      lastHeartbeatAt: new Date().toISOString(),
+      message,
+      recoveryAction: undefined,
+      recoveryCommand: undefined,
+      failureKind: "manual_fix",
+      recommendedFix,
+    };
+    this.weixinQrStatus = status;
+    return {
+      ok: false,
+      message,
+      command,
+      stdout: "",
+      stderr: "",
+      failureCategory: "unknown",
+      recommendedFix,
+      status,
+    };
   }
 
   async startWeixinQrLogin(): Promise<WeixinQrLoginResult> {
     if (this.weixinQrProcess && !this.weixinQrProcess.killed) {
       return { ok: true, status: this.getWeixinQrStatus(), message: "微信扫码登录已在进行中。" };
     }
-    const root = await this.resolveHermesRoot();
+    let root: string;
+    try {
+      root = await this.resolveHermesRoot();
+    } catch (error) {
+      return this.failWeixinQrStart(error, "hermes_root_unavailable", "无法定位 Hermes Agent 安装位置。请到「设置 → Hermes 运行时」中检查 Hermes Agent 安装状态，或运行一键诊断。");
+    }
     const runtime = await this.runtimeContext(root);
-    const dependencyStatus = runtime.ok
-      ? await this.preflightWeixinDependenciesWithRuntime(runtime)
-      : await this.preflightWeixinDependencies(root, await this.resolvePythonCommand(root));
+    if (!runtime.ok && runtime.debugContext?.preflight) {
+      // Preflight definitively failed (Hermes/Python missing). Surface that as the user-facing reason
+      // rather than silently retrying the legacy fallback, which would just throw a less actionable error.
+      return this.failWeixinQrStart(
+        new Error(runtime.message),
+        "runtime_preflight_failed",
+        "请到「设置 → Hermes 运行时」中检查 Hermes Agent 安装状态，或运行一键诊断。",
+      );
+    }
+    let dependencyStatus: WeixinQrLoginStatus | undefined;
+    try {
+      dependencyStatus = runtime.ok
+        ? await this.preflightWeixinDependenciesWithRuntime(runtime)
+        : await this.preflightWeixinDependencies(root, await this.resolvePythonCommand(root));
+    } catch (error) {
+      return this.failWeixinQrStart(error, "python_unavailable", "请在「设置 → Hermes 运行时」配置可用的 Python 命令（例如 py -3 或 python.exe 完整路径），并确认 Hermes Agent 已安装。");
+    }
     if (dependencyStatus) {
       this.weixinQrStatus = dependencyStatus;
       return { ok: false, status: this.getWeixinQrStatus(), message: dependencyStatus.message };
@@ -625,9 +743,6 @@ export class HermesConnectorService {
       "async def main():",
       "    if not wx.AIOHTTP_AVAILABLE:",
       "        emit({'type': 'error', 'code': 'missing_aiohttp', 'message': '缺少 Weixin 扫码依赖 aiohttp。'})",
-      "        return 2",
-      "    if not wx.CRYPTO_AVAILABLE:",
-      "        emit({'type': 'error', 'code': 'missing_crypto', 'message': '缺少 Weixin 扫码依赖 cryptography。'})",
       "        return 2",
       "    bot_type = '3'",
       "    timeout_seconds = 480",
@@ -717,21 +832,33 @@ export class HermesConnectorService {
     };
     const runId = ++this.weixinQrRunCounter;
     this.activeWeixinQrRunId = runId;
-    const launch = runtime.ok
-      ? await runtime.adapter.buildPythonLaunch({
-        runtime: runtime.runtime,
-        rootPath: runtime.adapter.toRuntimePath(root),
-        pythonArgs: ["-c", script],
-        cwd: root,
-        env: { ...process.env, ...PYTHON_ENV, PYTHONPATH: runtime.adapter.toRuntimePath(root) },
-      })
-      : await this.legacyPythonLaunch(root, ["-c", script]);
-    const child = spawn(launch.command, launch.args, {
-      cwd: launch.cwd,
-      env: launch.env,
-      windowsHide: true,
-      shell: false,
-    });
+    let launch: { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv };
+    try {
+      launch = runtime.ok
+        ? await runtime.adapter.buildPythonLaunch({
+          runtime: runtime.runtime,
+          rootPath: runtime.adapter.toRuntimePath(root),
+          pythonArgs: ["-c", script],
+          cwd: root,
+          env: { ...process.env, ...PYTHON_ENV, PYTHONPATH: runtime.adapter.toRuntimePath(root) },
+        })
+        : await this.legacyPythonLaunch(root, ["-c", script]);
+    } catch (error) {
+      this.activeWeixinQrRunId = undefined;
+      return this.failWeixinQrStart(error, "launch_build_failed", "请在「设置 → Hermes 运行时」配置可用的 Python 命令，并确认 Hermes Agent 已正确安装。");
+    }
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(launch.command, launch.args, {
+        cwd: launch.cwd,
+        env: launch.env,
+        windowsHide: true,
+        shell: false,
+      });
+    } catch (error) {
+      this.activeWeixinQrRunId = undefined;
+      return this.failWeixinQrStart(error, "spawn_failed", "无法启动微信扫码进程。请确认 Python 可执行文件存在并具有运行权限。");
+    }
     this.weixinQrProcess = child;
     child.stdout.on("data", (chunk: Buffer) => this.handleWeixinQrOutput(runId, chunk.toString("utf8")));
     child.stderr.on("data", (chunk: Buffer) => this.handleWeixinQrStderr(runId, chunk.toString("utf8")));
@@ -765,13 +892,38 @@ export class HermesConnectorService {
   }
 
   async installWeixinDependency(): Promise<WeixinDependencyInstallResult> {
-    const root = await this.resolveHermesRoot();
+    let root: string;
+    try {
+      root = await this.resolveHermesRoot();
+    } catch (error) {
+      return this.failWeixinDependencyInstall(error, "(unavailable)", "hermes_root_unavailable", "请到「设置 → Hermes 运行时」中检查 Hermes Agent 安装状态。");
+    }
     const runtime = await this.runtimeContext(root);
-    const python = runtime.ok ? undefined : await this.resolvePythonCommand(root);
-    const dependencyStatus = runtime.ok
-      ? await this.preflightWeixinDependenciesWithRuntime(runtime)
-      : await this.preflightWeixinDependencies(root, python!);
+    if (!runtime.ok && runtime.debugContext?.preflight) {
+      return this.failWeixinDependencyInstall(
+        new Error(runtime.message),
+        "(unavailable)",
+        "runtime_preflight_failed",
+        "请到「设置 → Hermes 运行时」中检查 Hermes Agent 安装状态，或运行一键诊断。",
+      );
+    }
+    let python: PythonCommand | undefined;
+    if (!runtime.ok) {
+      try {
+        python = await this.resolvePythonCommand(root);
+      } catch (error) {
+        return this.failWeixinDependencyInstall(error, "(unavailable)", "python_unavailable", "请在「设置 → Hermes 运行时」配置可用的 Python 命令。");
+      }
+    }
     const command = runtime.ok ? `${runtime.label} -m pip install aiohttp` : `${python!.label} -m pip install aiohttp`;
+    let dependencyStatus: WeixinQrLoginStatus | undefined;
+    try {
+      dependencyStatus = runtime.ok
+        ? await this.preflightWeixinDependenciesWithRuntime(runtime)
+        : await this.preflightWeixinDependencies(root, python!);
+    } catch (error) {
+      return this.failWeixinDependencyInstall(error, command, "preflight_failed", "请确认 Python 与 Hermes Agent 安装路径正确，并具有执行权限。");
+    }
     if (!dependencyStatus) {
       const status = this.getWeixinQrStatus();
       return {
@@ -784,15 +936,20 @@ export class HermesConnectorService {
       };
     }
 
-    const launch = runtime.ok
-      ? await runtime.adapter.buildPythonLaunch({
-        runtime: runtime.runtime,
-        rootPath: runtime.adapter.toRuntimePath(root),
-        pythonArgs: ["-m", "pip", "install", "aiohttp"],
-        cwd: root,
-        env: { ...PYTHON_ENV, PYTHONPATH: runtime.adapter.toRuntimePath(root) },
-      })
-      : await this.legacyPythonLaunch(root, ["-m", "pip", "install", "aiohttp"], python!.command, python!.args);
+    let launch: { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv };
+    try {
+      launch = runtime.ok
+        ? await runtime.adapter.buildPythonLaunch({
+          runtime: runtime.runtime,
+          rootPath: runtime.adapter.toRuntimePath(root),
+          pythonArgs: ["-m", "pip", "install", "aiohttp"],
+          cwd: root,
+          env: { ...PYTHON_ENV, PYTHONPATH: runtime.adapter.toRuntimePath(root) },
+        })
+        : await this.legacyPythonLaunch(root, ["-m", "pip", "install", "aiohttp"], python!.command, python!.args);
+    } catch (error) {
+      return this.failWeixinDependencyInstall(error, command, "launch_build_failed", "请在「设置 → Hermes 运行时」检查 Python 命令配置。");
+    }
     const result = await runCommand(launch.command, launch.args, {
       cwd: launch.cwd,
       timeoutMs: 120000,
@@ -920,6 +1077,12 @@ export class HermesConnectorService {
         };
         continue;
       }
+      // Confirmed: move to saving immediately so handleWeixinQrProcessClose does not race
+      // and overwrite the status with failed/timeout before completeWeixinQrLogin finishes.
+      this.weixinQrStatus = {
+        ...this.weixinQrStatus,
+        phase: "saving",
+      };
       void this.completeWeixinQrLogin(runId, event);
     }
   }
@@ -970,7 +1133,7 @@ export class HermesConnectorService {
     // Legacy fallback: dependency probing uses the same result parser as runtime-backed probing.
     const result = await runCommand(
       python.command,
-      [...python.args, "-c", "import importlib.util, json; print(json.dumps({'aiohttp': bool(importlib.util.find_spec('aiohttp')), 'cryptography': bool(importlib.util.find_spec('cryptography'))}))"],
+      [...python.args, "-c", "import importlib.util, json; print(json.dumps({'aiohttp': bool(importlib.util.find_spec('aiohttp'))}))"],
       {
         cwd: root,
         timeoutMs: 10000,
@@ -999,12 +1162,9 @@ export class HermesConnectorService {
         recommendedFix: "请先在设置里确认 Hermes Python 命令可执行，再重新尝试扫码。",
       };
     }
-    const payload = JSON.parse(result.stdout.trim() || "{}") as { aiohttp?: boolean; cryptography?: boolean };
+    const payload = JSON.parse(result.stdout.trim() || "{}") as { aiohttp?: boolean };
     if (!payload.aiohttp) {
       return decorateWeixinFailure("missing_aiohttp", "缺少 aiohttp，微信扫码运行环境不完整。", runtimePythonLabel);
-    }
-    if (!payload.cryptography) {
-      return decorateWeixinFailure("missing_crypto", "缺少 cryptography，微信扫码环境还不完整。", runtimePythonLabel);
     }
     return undefined;
   }
@@ -1037,7 +1197,7 @@ export class HermesConnectorService {
           ...(credentials.baseUrl ? { baseUrl: credentials.baseUrl } : {}),
           cdnBaseUrl: "https://novac2c.cdn.weixin.qq.com/c2c",
           dmPolicy: "pairing",
-          allowAllUsers: false,
+          allowAllUsers: !credentials.userId,
           ...(credentials.userId ? { allowedUsers: credentials.userId } : {}),
           groupPolicy: "disabled",
           ...(credentials.userId ? { homeChannel: credentials.userId } : {}),
@@ -1050,7 +1210,7 @@ export class HermesConnectorService {
       if (!setPhase("syncing", "凭据已保存，正在同步 Hermes .env...")) return;
       await this.syncEnv();
       if (!setPhase("starting_gateway", "配置已同步，正在启动 Gateway...")) return;
-      const gatewayResult = await this.start();
+      const gatewayResult = await this.start({ forceReplace: true });
       const gatewayStarted = gatewayResult.ok && gatewayResult.status.running;
       if (!this.isActiveWeixinQrRun(runId)) return;
       this.activeWeixinQrRunId = undefined;
@@ -1396,7 +1556,7 @@ export class HermesConnectorService {
   }
 
   private async preflightWeixinDependenciesWithRuntime(runtime: Extract<ConnectorRuntimeContext, { ok: true }>): Promise<WeixinQrLoginStatus | undefined> {
-    const script = "import importlib.util, json; print(json.dumps({'aiohttp': bool(importlib.util.find_spec('aiohttp')), 'cryptography': bool(importlib.util.find_spec('cryptography'))}))";
+    const script = "import importlib.util, json; print(json.dumps({'aiohttp': bool(importlib.util.find_spec('aiohttp'))}))";
     const root = runtime.root;
     const runtimeRoot = runtime.adapter.toRuntimePath(root);
     const launch = await runtime.adapter.buildPythonLaunch({

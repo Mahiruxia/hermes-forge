@@ -388,6 +388,7 @@ export type HermesSkill = {
   summary: string;
   updatedAt?: string;
   size: number;
+  format?: "flat" | "directory";
 };
 
 export type HermesMemoryFile = {

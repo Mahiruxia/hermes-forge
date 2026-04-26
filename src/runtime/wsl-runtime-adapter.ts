@@ -1,4 +1,4 @@
-import { RuntimeResolver, parseWslHost, toWslPath } from "./runtime-resolver";
+import { RuntimeResolver, parseWslHost, sanitizeEnvForWsl, toWslPath } from "./runtime-resolver";
 import { runCommand } from "../process/command-runner";
 import type { HermesRuntimeConfig } from "../shared/types";
 import type { RuntimeProbeService } from "./runtime-probe-service";
@@ -120,7 +120,7 @@ export class WslRuntimeAdapter implements RuntimeAdapter {
   }
 
   private envArgs(env: NodeJS.ProcessEnv) {
-    return Object.entries(env)
+    return Object.entries(sanitizeEnvForWsl(env))
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
       .map(([key, value]) => `${key}=${value}`);
   }

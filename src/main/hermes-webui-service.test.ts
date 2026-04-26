@@ -163,4 +163,72 @@ describe("HermesWebUiService", () => {
       expect.objectContaining({ timeoutMs: 10 * 60 * 1000 }),
     );
   });
+
+  it("lists both flat and directory skills in the same overview", async () => {
+    const appPaths = new AppPaths(tempRoot);
+    await appPaths.ensureBaseLayout();
+    const service = new HermesWebUiService(appPaths, async () => path.join(tempRoot, "Hermes Agent"));
+
+    await service.saveSkill("review.md", "# review\n\nAlways summarize findings.");
+    await fs.mkdir(path.join(appPaths.hermesDir(), "skills", "software-development", "plan"), { recursive: true });
+    await fs.writeFile(
+      path.join(appPaths.hermesDir(), "skills", "software-development", "plan", "SKILL.md"),
+      "---\nname: plan\ndescription: Plan mode for Hermes.\n---\n\n# Plan\n\nUse this skill to plan.",
+      "utf8",
+    );
+
+    const skills = await service.listSkills();
+    const flat = skills.find((s) => s.id === "review.md");
+    const directory = skills.find((s) => s.id === "software-development/plan/SKILL.md");
+
+    expect(flat).toMatchObject({ name: "review", format: "flat", category: "personal" });
+    expect(directory).toMatchObject({ name: "plan", format: "directory", category: "software-development", summary: "Plan mode for Hermes." });
+  });
+
+  it("uploads a directory skill and lists it as directory format", async () => {
+    const appPaths = new AppPaths(tempRoot);
+    await appPaths.ensureBaseLayout();
+    const service = new HermesWebUiService(appPaths, async () => path.join(tempRoot, "Hermes Agent"));
+
+    const sourceDir = path.join(tempRoot, "source-skill");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, "SKILL.md"),
+      "---\nname: my-skill\ndescription: A test skill.\n---\n\n# My Skill\n\nContent here.",
+      "utf8",
+    );
+    await fs.mkdir(path.join(sourceDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "references", "note.md"), "Note", "utf8");
+
+    const uploaded = await service.uploadSkill(sourceDir);
+    expect(uploaded).toMatchObject({ name: "my-skill", format: "directory", category: "personal" });
+
+    const targetSkillMd = path.join(appPaths.hermesDir(), "skills", "personal", "my-skill", "SKILL.md");
+    await expect(fs.readFile(targetSkillMd, "utf8")).resolves.toContain("My Skill");
+    await expect(fs.readFile(path.join(appPaths.hermesDir(), "skills", "personal", "my-skill", "references", "note.md"), "utf8")).resolves.toBe("Note");
+
+    const skills = await service.listSkills();
+    expect(skills.some((s) => s.id === "personal/my-skill/SKILL.md" && s.format === "directory")).toBe(true);
+  });
+
+  it("uploads a single markdown file and wraps it into a directory skill", async () => {
+    const appPaths = new AppPaths(tempRoot);
+    await appPaths.ensureBaseLayout();
+    const service = new HermesWebUiService(appPaths, async () => path.join(tempRoot, "Hermes Agent"));
+
+    const sourceFile = path.join(tempRoot, "legacy-skill.md");
+    await fs.writeFile(sourceFile, "# Legacy Skill\n\nSome content.", "utf8");
+
+    const uploaded = await service.uploadSkill(sourceFile);
+    expect(uploaded).toMatchObject({ name: "legacy-skill", format: "directory", category: "personal" });
+
+    const targetSkillMd = path.join(appPaths.hermesDir(), "skills", "personal", "legacy-skill", "SKILL.md");
+    const content = await fs.readFile(targetSkillMd, "utf8");
+    expect(content).toContain("---");
+    expect(content).toContain("name: legacy-skill");
+    expect(content).toContain("Some content.");
+
+    const skills = await service.listSkills();
+    expect(skills.some((s) => s.id === "personal/legacy-skill/SKILL.md" && s.format === "directory")).toBe(true);
+  });
 });

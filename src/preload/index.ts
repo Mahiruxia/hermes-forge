@@ -159,6 +159,7 @@ const api = {
   readSkill: (id: string) => ipcRenderer.invoke(IpcChannels.readSkill, id) as Promise<{ id: string; path: string; content: string }>,
   saveSkill: (input: { id: string; content: string }) => ipcRenderer.invoke(IpcChannels.saveSkill, input) as Promise<{ id: string; path: string; content: string }>,
   deleteSkill: (id: string) => ipcRenderer.invoke(IpcChannels.deleteSkill, id) as Promise<{ ok: boolean; id: string }>,
+  uploadSkill: () => ipcRenderer.invoke(IpcChannels.uploadSkill) as Promise<HermesSkill>,
   listMemoryFiles: () => ipcRenderer.invoke(IpcChannels.listMemoryFiles) as Promise<HermesMemoryFile[]>,
   saveMemoryFile: (input: { id: HermesMemoryFile["id"]; content: string }) =>
     ipcRenderer.invoke(IpcChannels.saveMemoryFile, input) as Promise<HermesMemoryFile | undefined>,

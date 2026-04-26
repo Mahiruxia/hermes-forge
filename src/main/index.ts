@@ -345,6 +345,17 @@ app.whenReady().then(async () => {
 
   scheduleStartupWarmup();
 
+  // 启动后尝试自动启动 Gateway（如果已配置连接器）
+  setTimeout(() => {
+    void (async () => {
+      try {
+        await hermesConnectorService.autoStartIfConfigured();
+      } catch (error) {
+        console.warn("[Hermes Forge] Gateway auto-start failed:", error);
+      }
+    })();
+  }, 3000);
+
   // 启动后延迟检查 Hermes Agent 与 Forge v0.2.0+ 的兼容性（仅 Windows 原生模式）
   setTimeout(() => {
     void (async () => {

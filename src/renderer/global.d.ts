@@ -165,6 +165,7 @@ declare global {
       readSkill(id: string): Promise<{ id: string; path: string; content: string }>;
       saveSkill(input: { id: string; content: string }): Promise<{ id: string; path: string; content: string }>;
       deleteSkill(id: string): Promise<{ ok: boolean; id: string }>;
+      uploadSkill(): Promise<HermesSkill>;
       listMemoryFiles(): Promise<HermesMemoryFile[]>;
       saveMemoryFile(input: { id: HermesMemoryFile["id"]; content: string }): Promise<HermesMemoryFile | undefined>;
       importMemoryFile(input: { sourcePath: string; targetId: HermesMemoryFile["id"] }): Promise<HermesMemoryFile | undefined>;

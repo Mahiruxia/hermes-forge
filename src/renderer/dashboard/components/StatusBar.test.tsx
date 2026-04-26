@@ -62,7 +62,7 @@ describe("StatusBar", () => {
     expect(screen.getByTestId("status-light-api")).toHaveClass("hermes-status-light--ok");
     expect(screen.getByTestId("status-light-hermes")).toHaveClass("hermes-status-light--ok");
     expect(screen.getByTestId("status-light-gateway")).toHaveClass("hermes-status-light--idle");
-    expect(getGatewayStatus).not.toHaveBeenCalled();
+    expect(getGatewayStatus).toHaveBeenCalledTimes(1);
     expect(getHermesProbe).not.toHaveBeenCalled();
   });
 
@@ -96,7 +96,7 @@ describe("StatusBar", () => {
     expect(screen.getByTestId("status-light-api")).toHaveClass("hermes-status-light--warn");
     expect(screen.getByTestId("status-light-hermes")).toHaveClass("hermes-status-light--warn");
     expect(screen.getByTestId("status-light-gateway")).toHaveClass("hermes-status-light--idle");
-    expect(getGatewayStatus).not.toHaveBeenCalled();
+    expect(getGatewayStatus).toHaveBeenCalledTimes(1);
     expect(getHermesProbe).not.toHaveBeenCalled();
   });
 });
