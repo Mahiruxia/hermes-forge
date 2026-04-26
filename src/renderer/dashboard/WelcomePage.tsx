@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench } from "lucide-react";
+import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen } from "lucide-react";
 import { useAppStore } from "../store";
 import type { HermesInstallEvent, SetupCheck, SetupDependencyRepairId } from "../../shared/types";
 
@@ -236,6 +236,15 @@ export function WelcomePage(props: { onComplete: () => void }) {
                     <Sparkles size={16} /> 重新自动安装 Hermes
                   </span>
                 </button>
+
+                <a
+                  href="https://hermesagent.org.cn/docs/getting-started/windows-installation"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"
+                >
+                  <BookOpen size={16} /> 查看手动安装教程
+                </a>
 
                 <button
                   className="w-full rounded-xl border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"

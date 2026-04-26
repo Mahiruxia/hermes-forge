@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, ClipboardList, Hammer, Loader2, PlayCircle, RefreshCw, Wrench } from "lucide-react";
+import { AlertCircle, BookOpen, CheckCircle2, ClipboardList, Hammer, Loader2, PlayCircle, RefreshCw, Wrench } from "lucide-react";
 import type {
   ManagedWslInstallerDependencyResult,
   ManagedWslInstallerIpcResult,
@@ -69,6 +69,16 @@ export function ManagedWslInstallerPanel(props: {
         </div>
         <p className="mt-3 text-xs leading-5 text-slate-500">
           首次安装 Ubuntu 时，Windows 可能要求重启或打开 Ubuntu 完成用户名初始化。完成后再次点击本按钮会从可恢复阶段继续。
+          如果自动安装反复失败，可
+          <a
+            href="https://hermesagent.org.cn/docs/getting-started/windows-installation"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-indigo-600 underline hover:text-indigo-700"
+          >
+            查看手动安装教程
+          </a>
+          。
         </p>
       </div>
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
   Folder,
@@ -284,6 +285,21 @@ export function SettingsPanel(props: {
         secondaryLoading={refreshing}
         onSecondary={refreshAll}
       />
+
+      {status.summaryTone === "danger" ? (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          <BookOpen size={14} />
+          <span>自动安装遇到问题？</span>
+          <a
+            href="https://hermesagent.org.cn/docs/getting-started/windows-installation"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold underline hover:text-amber-800"
+          >
+            查看手动安装教程
+          </a>
+        </div>
+      ) : null}
 
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <StatusCard title="运行环境" value={status.runtime.value} detail={status.runtime.detail} tone={status.runtime.tone} />
