@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen } from "lucide-react";
 import { useAppStore } from "../store";
 import type { HermesInstallEvent, SetupCheck, SetupDependencyRepairId } from "../../shared/types";
@@ -264,6 +265,8 @@ export function WelcomePage(props: { onComplete: () => void }) {
                   </span>
                 </button>
               </div>
+
+              <ManualInstallGuide />
             </div>
           )}
 
@@ -361,4 +364,79 @@ function welcomeSetupFixLabel(id: SetupDependencyRepairId) {
   if (id === "python") return "装 Python";
   if (id === "hermes_pyyaml") return "修 Hermes";
   return "修微信";
+}
+
+function ManualInstallGuide() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 text-left">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-4 py-3 text-sm font-semibold text-slate-700"
+      >
+        <span className="flex items-center gap-2">
+          <BookOpen size={16} />
+          手动安装向导（推荐自动安装失败时使用）
+        </span>
+        <span className="text-xs text-slate-400">{open ? "收起" : "展开"}</span>
+      </button>
+      {open ? (
+        <div className="space-y-4 px-4 pb-4">
+          <Step number={1} title="在管理员 PowerShell 中安装 WSL2">
+            <p className="text-xs text-slate-600">如果你还没装过 WSL，建议先参考网上的 Windows 10/11 安装 WSL2 指南，然后再执行：</p>
+            <CodeBlock>wsl --install -d Ubuntu</CodeBlock>
+            <p className="text-xs text-slate-600">执行后按提示重启电脑。重启完成后，打开 Ubuntu，设置 Linux 用户名和密码。</p>
+          </Step>
+
+          <Step number={2} title="在 WSL2 终端里运行 Linux 安装命令">
+            <CodeBlock>{`curl -fsSL https://res1.hermesagent.org.cn/install.sh | bash`}</CodeBlock>
+            <p className="text-xs text-slate-600">安装完成后，重新加载 shell：</p>
+            <CodeBlock>{`source ~/.bashrc   # 或：source ~/.zshrc
+hermes`}</CodeBlock>
+          </Step>
+
+          <Step number={3} title="继续配置模型">
+            <CodeBlock>{`hermes model
+hermes setup`}</CodeBlock>
+            <p className="text-xs text-slate-600">按提示选择模型提供商、填写 API Key 并保存为默认模型。</p>
+          </Step>
+
+          <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+            更详细的图文教程请参考
+            <a
+              href="https://hermesagent.org.cn/docs/getting-started/windows-installation"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-1 font-semibold underline hover:text-indigo-800"
+            >
+              官方文档 — Windows 安装指南
+            </a>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Step(props: { number: number; title: string; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">
+          {props.number}
+        </span>
+        <p className="text-xs font-semibold text-slate-800">{props.title}</p>
+      </div>
+      <div className="pl-7">{props.children}</div>
+    </div>
+  );
+}
+
+function CodeBlock(props: { children: string }) {
+  return (
+    <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-900 px-3 py-2 text-[11px] leading-5 text-slate-100">
+      <code>{props.children}</code>
+    </pre>
+  );
 }
