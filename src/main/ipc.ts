@@ -719,9 +719,13 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     }), true);
   });
   ipcMain.handle(IpcChannels.setDefaultModel, async (_event, input) => {
-    const parsed = z.object({ modelId: z.string().trim().max(120).optional() }).parse(input);
+    const schema = z.union([
+      z.string().trim().max(120),
+      z.object({ modelId: z.string().trim().max(120).optional() }),
+    ]);
+    const parsed = schema.parse(input);
     const previous = migrateRuntimeConfigModels(await services.configStore.read());
-    const clicked = parsed.modelId;
+    const clicked = typeof parsed === "string" ? parsed : parsed.modelId;
     const configPath = services.configStore.getConfigPath();
     console.info("[Hermes Forge] set default model clicked", {
       clickedModelId: clicked,

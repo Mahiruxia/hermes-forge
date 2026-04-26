@@ -1,7 +1,7 @@
 import { AlertCircle, ChevronDown, Copy, Ellipsis, Loader2, RefreshCcw, Sparkles, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { TaskRunProjection, ToolEvent } from "../../shared/types";
+import type { EngineEvent, TaskRunProjection, ToolEvent } from "../../shared/types";
 import { StreamingMarkdown } from "../markdown/StreamingMarkdown";
 import { useAppStore } from "../store";
 import { ChatInput } from "./ChatInput";
@@ -36,9 +36,10 @@ export function PureChatContainer(props: {
       }),
     [props.runs],
   );
-  const latestRunSignature = visibleRuns
-    .map((run) => `${run.taskRunId}:${run.status}:${run.toolEvents.length}`)
-    .join("|");
+  const lastRun = visibleRuns[visibleRuns.length - 1];
+  const latestRunSignature = lastRun
+    ? `${lastRun.taskRunId}:${lastRun.status}:${lastRun.assistantMessage.content.length}:${lastRun.toolEvents.length}`
+    : "";
 
   const scrollFrameRef = useRef<number | null>(null);
   useEffect(() => {
@@ -221,7 +222,13 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
   const { run } = props;
   const store = useAppStore();
   const content = run.assistantMessage.content.trim();
-  const usage = [...store.events].reverse().find((event) => event.taskRunId === run.taskRunId && event.event.type === "usage")?.event;
+  const usage = useMemo(() => {
+    const eventsForRun = store.taskEventsByRunId[run.taskRunId] || [];
+    for (let i = eventsForRun.length - 1; i >= 0; i--) {
+      if (eventsForRun[i].event.type === "usage") return eventsForRun[i].event as Extract<EngineEvent, { type: "usage" }>;
+    }
+    return undefined;
+  }, [store.taskEventsByRunId, run.taskRunId]);
   const waiting = !content && (run.status === "pending" || run.status === "routing" || run.status === "running" || run.status === "streaming");
   const softStreaming = Boolean(content) && run.status === "streaming";
   const completed = run.status === "complete";

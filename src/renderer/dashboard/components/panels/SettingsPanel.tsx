@@ -144,10 +144,11 @@ export function SettingsPanel(props: {
     setInstallEvent(undefined);
     try {
       const nextRuntime = effectiveRuntime();
-      const saved = await window.workbenchClient.updateHermesConfig({
-        rootPath: nextRuntime.mode === "windows" ? rootPath : undefined,
-        runtime: nextRuntime,
-      });
+      const saved = await window.workbenchClient.updateHermesConfig(
+        nextRuntime.mode === "windows"
+          ? { rootPath, runtime: nextRuntime }
+          : { runtime: nextRuntime },
+      );
       store.setRuntimeConfig(saved);
       const result = await window.workbenchClient.installHermes(
         nextRuntime.mode === "windows" && rootPath.trim() ? { rootPath: rootPath.trim() } : undefined,

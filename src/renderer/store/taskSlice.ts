@@ -324,17 +324,29 @@ export const taskSlice = combine<TaskState, TaskActions>(
         ),
       })),
     beginTaskRun: (input: { workSessionId: string; taskRunId: string; userInput: string; createdAt?: string }) =>
-      set((state) => ({
-        runningTaskRunId: input.taskRunId,
-        taskRunProjectionsById: {
-          ...state.taskRunProjectionsById,
-          [input.taskRunId]: createTaskProjection(input),
-        },
-        taskRunOrderBySession: {
-          ...state.taskRunOrderBySession,
-          [input.workSessionId]: [input.taskRunId, ...(state.taskRunOrderBySession[input.workSessionId] || []).filter((id) => id !== input.taskRunId)],
-        },
-      })),
+      set((state) => {
+        const projections = { ...state.taskRunProjectionsById };
+        const keys = Object.keys(projections);
+        if (keys.length > 200) {
+          const sorted = keys
+            .map((k) => ({ k, startedAt: projections[k].startedAt }))
+            .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+          const toRemove = sorted.slice(0, keys.length - 200).map((x) => x.k);
+          toRemove.forEach((k) => delete projections[k]);
+        }
+        const currentOrder = state.taskRunOrderBySession[input.workSessionId] || [];
+        return {
+          runningTaskRunId: input.taskRunId,
+          taskRunProjectionsById: {
+            ...projections,
+            [input.taskRunId]: createTaskProjection(input),
+          },
+          taskRunOrderBySession: {
+            ...state.taskRunOrderBySession,
+            [input.workSessionId]: [input.taskRunId, ...currentOrder.filter((id) => id !== input.taskRunId)].slice(0, 200),
+          },
+        };
+      }),
     updateTaskRunMeta: (taskRunId: string, patch: Partial<Pick<TaskRunProjection, "engineId" | "actualEngine" | "runtimeMode" | "providerId" | "modelId" | "status">>) =>
       set((state) => ({
         taskRunProjectionsById: {
