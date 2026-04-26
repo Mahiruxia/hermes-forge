@@ -34,14 +34,16 @@ Hermes Forge 主要解决三个问题：
 
 ## 当前状态
 
-当前公开版本为 **v0.1.9**，已经具备可安装、可演示、可继续开发的主链路：
+当前公开版本为 **v0.2.3**，已经具备可安装、可演示、可继续开发的主链路：
 
 - Windows 安装包已通过 GitHub Releases 发布。
 - GitHub Actions 可在 tag 发布时自动构建 Windows 和 macOS 资产。
 - `electron-updater` 已接入 GitHub Releases，支持启动后后台检查、右上角手动检查更新、下载进度和重启安装提示。
 - 核心架构已收口为 Hermes 单引擎，不再保留多引擎分叉复杂度。
 - 任务事件统一通过 `task:event` 总线传递，便于 UI、日志和审批联动。
-- v0.1.9 继续打磨深色模式，让聊天区、会话栏、Agent 面板、支持页和通用控制台模块进入统一的深色设计系统。
+- v0.2.3 进一步强化了一键诊断能力，覆盖 WSL Python3、pip、venv、Git 等基础依赖的自动检测与修复。
+- v0.2.2 新增 Skill 上传功能，支持目录包和单文件上传，实现 Forge 与 Hermes Agent 的技能双向可见。
+- v0.2.1 引入 Coding Plan 集成，支持在聊天中生成、执行和跟踪结构化编码计划。
 
 它仍然是早期社区版本，不建议当作完全成熟的生产软件看待。尤其是 macOS 包尚未签名，Windows 物理机兼容性、微信真实账号场景、非微信连接器 runtime、安装器签名和 Electron 冒烟测试仍需要继续打磨。
 
@@ -52,6 +54,7 @@ Hermes Forge 主要解决三个问题：
 - 首次运行自动检测 Hermes、Git、Python、winget、模型配置、微信 `aiohttp` 依赖和用户数据目录权限。
 - 未检测到 Hermes 时，可在应用内自动克隆 Hermes Agent、安装 Python 依赖并进行健康检查。
 - Git、Python、微信依赖缺失时，系统状态页和欢迎页会给出原因、建议和一键修复入口。
+- **一键诊断**：覆盖 WSL 基础依赖（python3、git、pip、venv）、Hermes CLI、模型连接和系统能力的完整检测链；支持自动修复缺失依赖，并智能分类 pip 失败原因（权限、PEP 668、网络、ensurepip）。
 - 设置页和运行环境面板支持选择 Hermes 安装目录、打开当前路径，并把自动安装部署到指定路径。
 - Hermes 自动安装过程会通过 IPC 推送阶段和百分比进度，欢迎页、设置页和控制中心都可以显示安装进度。
 - 自动安装过程会写入诊断日志，失败时不会导致客户端崩溃。
@@ -64,6 +67,14 @@ Hermes Forge 主要解决三个问题：
 - Windows headless worker 带有单轮超时和队列恢复保护，避免一次模型或网络卡住拖慢后续回复。
 - 大工作区写入任务会对启动前快照设置预算，减少发送后长时间停在快照阶段的体感。
 - 支持拖拽上传文件或图片，让用户把本地资料直接带入任务上下文。
+
+### Skill 管理与上传
+
+- 支持创建、编辑、删除本地 Skill，按分类浏览和搜索。
+- **Skill 上传**：支持上传标准 Hermes 格式目录包（含 `SKILL.md` + `references/` + `scripts/`）和单个 `.md` 文件。
+- 上传单文件时会自动生成最小 YAML frontmatter，并转换为 Hermes 兼容的目录格式存入 `~/.hermes/skills/personal/`。
+- `listSkills` 采用双模发现：同时扫描 Forge 原有扁平 `.md` 技能和 Hermes 目录包技能，实现 Forge 与 Hermes Agent 的双向可见。
+- Skill 编辑支持目录包主文件（`SKILL.md`）的在线修改，子资源请在文件系统中管理。
 
 ### 模型配置与同步
 
@@ -234,6 +245,7 @@ assets/
 - 非微信连接器大多仍停留在配置层，缺少完整的 runtime adapter。
 - Windows 桥接能力已经接入审批，但 UI 审计、命令预览和长期策略管理仍需优化。
 - 缺少 Electron 端到端 smoke test，目前主要依赖 TypeScript 检查和 Vitest 单元/集成测试。
+- Skill 上传已支持标准目录包，但 `.zip` 压缩包上传、Skill 市场浏览和版本管理仍在路线图中。
 
 更细的当前能力边界见 [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md)，后续计划见 [ROADMAP.md](ROADMAP.md)。
 
