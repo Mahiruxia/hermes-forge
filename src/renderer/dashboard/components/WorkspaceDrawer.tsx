@@ -64,9 +64,9 @@ export function WorkspaceDrawer(props: {
         </p>
       </div>
 
-      <div className="custom-scrollbar flex-1 overflow-y-auto">
+      <div className="custom-scrollbar flex-1 overflow-y-auto overflow-x-hidden">
         {store.workspacePath ? (
-          <div className="p-2">
+          <div className="overflow-hidden p-2">
             {store.selectedFiles.length ? (
               <div className="mb-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] text-indigo-700">
                 已选 {store.selectedFiles.length} 个文件，将随本轮任务一起提供给 Hermes。
@@ -110,12 +110,12 @@ const primaryActionClass = "inline-flex items-center gap-1.5 rounded-lg bg-indig
 function FileTree(props: { entries: FileTreeEntry[]; onPreview: (path: string) => void; previewPath?: string; selectedFiles: string[] }) {
   const store = useAppStore();
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-0.5 overflow-hidden">
       {props.entries.map((entry) => (
         <div key={entry.path}>
           <div
             className={cn(
-              "flex items-center gap-1 rounded-md px-2 py-1 text-[12px] transition-colors",
+              "flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] transition-colors",
               props.previewPath === entry.path && "bg-indigo-50 text-indigo-700",
               props.selectedFiles.includes(entry.path) && "bg-emerald-50 text-emerald-700",
             )}
@@ -135,7 +135,7 @@ function FileTree(props: { entries: FileTreeEntry[]; onPreview: (path: string) =
             ) : (
               <File size={12} className="text-slate-400" />
             )}
-            <span className="truncate">{entry.name}</span>
+            <span className="min-w-0 flex-1 truncate">{entry.name}</span>
             {props.selectedFiles.includes(entry.path) ? (
               <Check size={10} className="ml-auto text-emerald-600" />
             ) : null}
