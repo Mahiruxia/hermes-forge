@@ -5,6 +5,7 @@ import { runtimeConfigSchema } from "../shared/schemas";
 import { migrateRuntimeConfigModels } from "../shared/model-config";
 import { defaultEnginePermissions } from "../shared/types";
 import type { EngineId, RuntimeConfig } from "../shared/types";
+import { DEFAULT_PINNED_HERMES_SOURCE } from "../install/install-source";
 
 const defaultHermesHome = path.join(process.env.USERPROFILE ?? process.cwd(), "Hermes Agent");
 const hermesPathCandidates = [
@@ -16,18 +17,6 @@ const hermesPathCandidates = [
 
 const ENGINE_PATH_CANDIDATES: Record<EngineId, string[]> = {
   hermes: hermesPathCandidates,
-};
-
-/**
- * Pinned fork source: Mahiruxia/hermes-agent@codex/launch-metadata-capabilities
- * See src/install/wsl-hermes-install-service.ts for full rationale.
- * Official v0.11.0 lacks `capabilities --json` and `--launch-metadata` support.
- */
-const DEFAULT_PINNED_HERMES_SOURCE = {
-  repoUrl: "https://github.com/Mahiruxia/hermes-agent.git",
-  branch: "codex/launch-metadata-capabilities",
-  commit: "0537bad534a7ce43d683f06f8ebdf7ff9dfb4816",
-  sourceLabel: "pinned" as const,
 };
 
 let preferredRuntimeCache: Promise<NonNullable<RuntimeConfig["hermesRuntime"]>> | undefined;

@@ -16,29 +16,11 @@ import {
   type ManagedWslInstallerRecoveryAction,
   type ManagedWslInstallerResumeStage,
 } from "./managed-wsl-recovery-types";
+import { DEFAULT_PINNED_HERMES_SOURCE } from "./install-source";
+import { isAtLeastVersion } from "./hermes-version";
+import { applyV011Fallback, parseCapabilityProbe } from "./hermes-capabilities";
 
 const DEFAULT_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
-/**
- * Pinned fork source: Mahiruxia/hermes-agent@codex/launch-metadata-capabilities
- *
- * Reason: Official NousResearch/hermes-agent v0.11.0 does NOT support:
- *   - `hermes capabilities --json`
- *   - `--launch-metadata <path>` CLI arg
- *   - `HERMES_FORGE_LAUNCH_METADATA` env var
- *
- * These capabilities are required for Forge WSL integration (workspace context,
- * selected files, attachments, session resume). The fork rebases v0.11.0
- * features on top of the launch-metadata patch.
- *
- * To upgrade: rebase the `codex/launch-metadata-capabilities` branch onto
- * the latest official v0.11.0 tag, then update this commit hash.
- */
-const DEFAULT_PINNED_SOURCE = {
-  repoUrl: "https://github.com/Mahiruxia/hermes-agent.git",
-  branch: "codex/launch-metadata-capabilities",
-  commit: "0537bad534a7ce43d683f06f8ebdf7ff9dfb4816",
-  sourceLabel: "pinned" as const,
-};
 
 type PythonCheckResult = {
   ok: boolean;
@@ -599,7 +581,7 @@ export class WslHermesInstallService {
       const python = await this.resolveExistingHermesPython(runtime, rootPath, basePython);
       const version = await this.runInDistro(runtime, `cd ${shellQuote(rootPath)} && ${shellQuote(python)} ${shellQuote(cliPath)} --version`, "install.wsl.existing-hermes-version");
       const capabilities = await this.runInDistro(runtime, `cd ${shellQuote(rootPath)} && ${shellQuote(python)} ${shellQuote(cliPath)} capabilities --json`, "install.wsl.existing-hermes-capabilities");
-      const capabilityProbe = this.parseCapabilityProbe(capabilities);
+      const capabilityProbe = parseCapabilityProbe(capabilities);
       if (version.exitCode === 0 && capabilityProbe.minimumSatisfied) {
         return {
           ok: true,
@@ -625,7 +607,7 @@ export class WslHermesInstallService {
         if (repaired.ok) {
           const repairedVersion = await this.runInDistro(runtime, `cd ${shellQuote(repaired.rootPath)} && ${shellQuote(repaired.python)} ${shellQuote(repaired.cliPath)} --version`, "install.wsl.repaired-existing-hermes-version");
           const repairedCapabilities = await this.runInDistro(runtime, `cd ${shellQuote(repaired.rootPath)} && ${shellQuote(repaired.python)} ${shellQuote(repaired.cliPath)} capabilities --json`, "install.wsl.repaired-existing-hermes-capabilities");
-          const repairedCapabilityProbe = this.parseCapabilityProbe(repairedCapabilities);
+          const repairedCapabilityProbe = parseCapabilityProbe(repairedCapabilities);
           if (repairedVersion.exitCode === 0 && repairedCapabilityProbe.minimumSatisfied) {
             return {
               ok: true,
@@ -660,7 +642,7 @@ export class WslHermesInstallService {
       }
       const directVersion = await this.runInDistro(runtime, `cd ${shellQuote(rootPath)} && ${shellQuote(cliPath)} --version`, "install.wsl.existing-hermes-direct-version");
       const directCapabilities = await this.runInDistro(runtime, `cd ${shellQuote(rootPath)} && ${shellQuote(cliPath)} capabilities --json`, "install.wsl.existing-hermes-direct-capabilities");
-      const directCapabilityProbe = this.parseCapabilityProbe(directCapabilities);
+      const directCapabilityProbe = parseCapabilityProbe(directCapabilities);
       if (directVersion.exitCode === 0 && directCapabilityProbe.minimumSatisfied) {
         const wrapper = await this.createAttachedHermesWrapper(runtime, cliPath, basePython);
         if (wrapper.ok) {
@@ -1087,20 +1069,9 @@ export class WslHermesInstallService {
   private async verifyHermesInstall(runtime: WslDoctorReport["runtime"], hermesRoot: string, python: string): Promise<VerifyResult> {
     const version = await this.runInDistro(runtime, `${python} ${shellQuote(`${hermesRoot}/hermes`)} --version`, "install.wsl.hermes-version");
     const capabilities = await this.runInDistro(runtime, `${python} ${shellQuote(`${hermesRoot}/hermes`)} capabilities --json`, "install.wsl.hermes-capabilities");
-    let capabilityProbe = this.parseCapabilityProbe(capabilities);
-    // Detect official v0.11.0+ which lacks capabilities --json but supports --resume
-    if (!capabilityProbe.minimumSatisfied && version.exitCode === 0) {
-      const detectedVersion = parseHermesVersion(version.stdout);
-      if (detectedVersion && isAtLeastVersion(detectedVersion, "0.11.0")) {
-        capabilityProbe = {
-          minimumSatisfied: false,
-          cliVersion: detectedVersion,
-          supportsLaunchMetadataArg: false,
-          supportsLaunchMetadataEnv: false,
-          supportsResume: true,
-          missing: ["supportsLaunchMetadataArg", "supportsLaunchMetadataEnv"],
-        };
-      }
+    let capabilityProbe = parseCapabilityProbe(capabilities);
+    if (version.exitCode === 0) {
+      capabilityProbe = applyV011Fallback(capabilityProbe, version.stdout);
     }
     const isV011 = capabilityProbe.cliVersion && isAtLeastVersion(capabilityProbe.cliVersion, "0.11.0") && !capabilityProbe.supportsLaunchMetadataArg;
     return {
@@ -1126,7 +1097,7 @@ export class WslHermesInstallService {
 
   private async resolveInstallSource() {
     const config = await this.configStore.read();
-    return config.hermesRuntime?.installSource ?? DEFAULT_PINNED_SOURCE;
+    return config.hermesRuntime?.installSource ?? DEFAULT_PINNED_HERMES_SOURCE;
   }
 
   private async repoSyncScript(hermesRoot: string, source: { repoUrl: string; branch?: string; commit?: string; sourceLabel: string }, existing: boolean) {
@@ -1141,47 +1112,6 @@ export class WslHermesInstallService {
     return existing
       ? `git -C ${root} remote set-url origin ${repo} && git -C ${root} fetch --depth 1 origin ${branch} && git -C ${root} checkout ${branch} && git -C ${root} reset --hard FETCH_HEAD`
       : `git clone --branch ${branch} --depth 1 ${repo} ${root}`;
-  }
-
-  private parseCapabilityProbe(result: CommandResult) {
-    const base = {
-      cliVersion: undefined as string | undefined,
-      supportsLaunchMetadataArg: false,
-      supportsLaunchMetadataEnv: false,
-      supportsResume: false,
-      missing: [] as string[],
-    };
-    if (result.exitCode !== 0) {
-      return { ...base, minimumSatisfied: false, missing: ["capabilities --json"] };
-    }
-    try {
-      const parsed = JSON.parse(result.stdout) as {
-        cliVersion?: string;
-        capabilities?: {
-          supportsLaunchMetadataArg?: boolean;
-          supportsLaunchMetadataEnv?: boolean;
-          supportsResume?: boolean;
-        };
-      };
-      const probe = {
-        minimumSatisfied: Boolean(parsed.cliVersion)
-          && parsed.capabilities?.supportsLaunchMetadataArg === true
-          && parsed.capabilities?.supportsLaunchMetadataEnv === true
-          && parsed.capabilities?.supportsResume === true,
-        cliVersion: parsed.cliVersion,
-        supportsLaunchMetadataArg: parsed.capabilities?.supportsLaunchMetadataArg === true,
-        supportsLaunchMetadataEnv: parsed.capabilities?.supportsLaunchMetadataEnv === true,
-        supportsResume: parsed.capabilities?.supportsResume === true,
-        missing: [] as string[],
-      };
-      if (!probe.cliVersion) probe.missing.push("cliVersion");
-      if (!probe.supportsLaunchMetadataArg) probe.missing.push("supportsLaunchMetadataArg");
-      if (!probe.supportsLaunchMetadataEnv) probe.missing.push("supportsLaunchMetadataEnv");
-      if (!probe.supportsResume) probe.missing.push("supportsResume");
-      return probe;
-    } catch {
-      return { ...base, minimumSatisfied: false, missing: ["capability_json_parse"] };
-    }
   }
 
   private async persistManagedRoot(hermesRoot: string) {
@@ -1247,7 +1177,7 @@ export class WslHermesInstallService {
   }
 
   private async finalize(result: WslHermesInstallResult) {
-    const source = await this.resolveInstallSource().catch(() => DEFAULT_PINNED_SOURCE);
+    const source = await this.resolveInstallSource().catch(() => DEFAULT_PINNED_HERMES_SOURCE);
     result.hermesSource ??= source;
     if (result.repoReady && result.hermesRoot) {
       const runtime = (await this.configStore.read()).hermesRuntime;
@@ -1285,27 +1215,6 @@ function dirnamePosix(inputPath: string) {
   const normalized = inputPath.replace(/\/+$/, "");
   const index = normalized.lastIndexOf("/");
   return index > 0 ? normalized.slice(0, index) : "/";
-}
-
-function parseHermesVersion(output: string): string | undefined {
-  const match = output.trim().match(/(?:hermes\s+v?|v?)(\d+\.\d+(?:\.\d+(?:[-+.]?\w+)?)?)/i);
-  return match?.[1];
-}
-
-function isAtLeastVersion(version: string, min: string): boolean {
-  const parse = (v: string) => v.split(/[.-]/).map((n) => {
-    const int = parseInt(n, 10);
-    return Number.isNaN(int) ? 0 : int;
-  });
-  const a = parse(version);
-  const b = parse(min);
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const ai = a[i] ?? 0;
-    const bi = b[i] ?? 0;
-    if (ai > bi) return true;
-    if (ai < bi) return false;
-  }
-  return true;
 }
 
 function shellQuote(value: string) {

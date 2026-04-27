@@ -2,6 +2,7 @@ import path from "node:path";
 import { runCommand, type CommandResult } from "../process/command-runner";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { HermesRuntimeConfig, RuntimeConfig } from "../shared/types";
+import { isAtLeastVersion, parseHermesVersion } from "../install/hermes-version";
 import { toWslPath } from "./runtime-resolver";
 
 const WSL_TIMEOUT_MS = 12_000;
@@ -425,25 +426,4 @@ async function probeHermesVersionAsFallback(
     result: versionResult,
     message: `检测到 Hermes CLI ${version}（官方 v0.11.0+），但该版本不支持 Forge 所需的 launch metadata 能力（--launch-metadata / HERMES_FORGE_LAUNCH_METADATA）。请使用兼容版本（Mahiruxia/hermes-agent fork 或打了 patch 的 v0.11.0）。`,
   };
-}
-
-function parseHermesVersion(output: string): string | undefined {
-  const match = output.trim().match(/(?:hermes\s+v?|v?)(\d+\.\d+(?:\.\d+(?:[-+.]?\w+)?)?)/i);
-  return match?.[1];
-}
-
-function isAtLeastVersion(version: string, min: string): boolean {
-  const parse = (v: string) => v.split(/[.-]/).map((n) => {
-    const int = parseInt(n, 10);
-    return Number.isNaN(int) ? 0 : int;
-  });
-  const a = parse(version);
-  const b = parse(min);
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const ai = a[i] ?? 0;
-    const bi = b[i] ?? 0;
-    if (ai > bi) return true;
-    if (ai < bi) return false;
-  }
-  return true;
 }
