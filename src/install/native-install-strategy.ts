@@ -7,6 +7,7 @@ import type { RuntimeConfigStore } from "../main/runtime-config";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
+import { validateNativeHermesCli } from "../runtime/hermes-cli-resolver";
 import type { RuntimeConfig, SetupDependencyRepairId } from "../shared/types";
 import type { InstallStrategy } from "./install-strategy";
 import type {
@@ -519,7 +520,25 @@ export class NativeInstallStrategy implements InstallStrategy {
       });
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
       log.push(`Install health via ${candidate.command}: ${output || `exit ${result.exitCode ?? "unknown"}`}`);
-      if (result.exitCode === 0) return { available: true, message: output || "Hermes CLI 可启动。" };
+      if (result.exitCode === 0) {
+        if (this.runtimeAdapterFactory) {
+          const adapter = this.runtimeAdapterFactory({
+            mode: "windows",
+            pythonCommand: preferredPython?.command ?? "python3",
+            windowsAgentMode: "hermes_native",
+          });
+          const validation = await validateNativeHermesCli(adapter, cliPath);
+          if (!validation.ok) {
+            log.push(`Capability check failed: ${validation.message}`);
+            return {
+              available: false,
+              message: `已安装 Hermes 但缺少 Forge 所需 launch-metadata/resume capability。${validation.message}`,
+            };
+          }
+          log.push(`Capability check passed: ${validation.capabilities.cliVersion ?? "unknown"}`);
+        }
+        return { available: true, message: output || "Hermes CLI 可启动。" };
+      }
       lastMessage = output || `${candidate.command} 退出码 ${result.exitCode ?? "unknown"}`;
     }
     return { available: false, message: lastMessage };

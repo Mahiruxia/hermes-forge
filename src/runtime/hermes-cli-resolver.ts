@@ -4,6 +4,7 @@ import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { HermesRuntimeConfig, RuntimeConfig } from "../shared/types";
 import { isAtLeastVersion, parseHermesVersion } from "../install/hermes-version";
 import { toWslPath } from "./runtime-resolver";
+import type { RuntimeAdapter } from "./runtime-adapter";
 
 const WSL_TIMEOUT_MS = 12_000;
 const RESOLVED_WSL_CLI_CACHE_MS = 60_000;
@@ -124,17 +125,122 @@ function resolvedWslCliCacheKey(config: RuntimeConfig, runtime: HermesRuntimeCon
   ].join("\0");
 }
 
+export async function validateHermesCli(input: {
+  runtime: HermesRuntimeConfig;
+  cliPath: string;
+  runtimeAdapter?: RuntimeAdapter;
+}): Promise<HermesCliValidationResult> {
+  if (input.runtime.mode === "wsl") {
+    return validateWslHermesCli(input.runtime, input.cliPath);
+  }
+  if (!input.runtimeAdapter) {
+    return {
+      ok: false,
+      kind: "capability_failed",
+      message: "Native Hermes CLI 校验需要提供 RuntimeAdapter。",
+    };
+  }
+  return validateNativeHermesCli(input.runtimeAdapter, input.cliPath);
+}
+
+export async function validateNativeHermesCli(
+  adapter: RuntimeAdapter,
+  cliPath: string,
+): Promise<HermesCliValidationResult> {
+  const rootPath = path.dirname(cliPath);
+  const launch = await adapter.buildHermesLaunch({
+    runtime: { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" },
+    rootPath,
+    pythonArgs: [cliPath, "capabilities", "--json"],
+    cwd: rootPath,
+    env: {
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUNBUFFERED: "1",
+      PYTHONPATH: rootPath,
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+    },
+  });
+  const result = await runCommand(launch.command, launch.args, {
+    cwd: launch.cwd,
+    timeoutMs: 20_000,
+    env: launch.env,
+    commandId: "hermes-cli.validate.capabilities.native",
+    runtimeKind: "windows",
+  });
+  const command = `${launch.command} ${launch.args.join(" ")}`;
+  if (result.exitCode !== 0) {
+    const output = (result.stderr || result.stdout || "").trim();
+    const fallback = await probeNativeHermesVersionAsFallback(adapter, cliPath, rootPath);
+    if (fallback) {
+      return {
+        ok: false,
+        kind: "capability_unsupported",
+        message: fallback.message,
+        command: fallback.command,
+        result: fallback.result,
+        capabilities: fallback.capabilities,
+      };
+    }
+    return {
+      ok: false,
+      kind: "capability_failed",
+      message: formatCapabilityFailureMessage(result.exitCode, output),
+      command,
+      result,
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as {
+      cliVersion?: unknown;
+      capabilities?: {
+        supportsLaunchMetadataArg?: unknown;
+        supportsLaunchMetadataEnv?: unknown;
+        supportsResume?: unknown;
+      };
+    };
+    const capabilities = {
+      cliVersion: typeof parsed.cliVersion === "string" ? parsed.cliVersion : undefined,
+      supportsLaunchMetadataArg: parsed.capabilities?.supportsLaunchMetadataArg === true,
+      supportsLaunchMetadataEnv: parsed.capabilities?.supportsLaunchMetadataEnv === true,
+      supportsResume: parsed.capabilities?.supportsResume === true,
+      raw: result.stdout,
+    };
+    if (!capabilities.cliVersion || !capabilities.supportsLaunchMetadataArg || !capabilities.supportsLaunchMetadataEnv || !capabilities.supportsResume) {
+      return {
+        ok: false,
+        kind: "capability_unsupported",
+        message: [
+          "Hermes CLI 存在，但版本 / capability 不满足 Forge 最低能力门槛。",
+          `缺失: ${[
+            capabilities.cliVersion ? undefined : "cliVersion",
+            capabilities.supportsLaunchMetadataArg ? undefined : "supportsLaunchMetadataArg",
+            capabilities.supportsLaunchMetadataEnv ? undefined : "supportsLaunchMetadataEnv",
+            capabilities.supportsResume ? undefined : "supportsResume",
+          ].filter(Boolean).join(", ")}`,
+        ].join(" "),
+        command,
+        result,
+        capabilities,
+      };
+    }
+    return { ok: true, capabilities, command, result };
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "capability_failed",
+      message: `capabilities --json 返回内容不是有效 JSON：${error instanceof Error ? error.message : String(error)}`,
+      command,
+      result,
+    };
+  }
+}
+
 export async function validateWslHermesCli(
   runtime: HermesRuntimeConfig,
   cliPath: string,
 ): Promise<HermesCliValidationResult> {
-  if (runtime.mode !== "wsl") {
-    return {
-      ok: false,
-      kind: "capability_failed",
-      message: "capabilities 校验仅用于 WSL Hermes CLI。",
-    };
-  }
   const fileCheck = await wslPathTest(runtime, cliPath, "-f");
   if (!fileCheck.ok) {
     return {
@@ -172,7 +278,7 @@ export async function validateWslHermesCli(
   const command = `wsl.exe ${args.join(" ")}`;
   if (result.exitCode !== 0) {
     const output = (result.stderr || result.stdout || "").trim();
-    const fallback = await probeHermesVersionAsFallback(runtime, cliPath, pythonCommand, rootPath);
+    const fallback = await probeWslHermesVersionAsFallback(runtime, cliPath, pythonCommand, rootPath);
     if (fallback) {
       return {
         ok: false,
@@ -388,12 +494,12 @@ function detectMissingPythonModule(output: string) {
   return match?.[1];
 }
 
-async function probeHermesVersionAsFallback(
+async function probeWslHermesVersionAsFallback(
   runtime: HermesRuntimeConfig,
   cliPath: string,
   pythonCommand: string,
   rootPath: string,
-): Promise<{ capabilities: NonNullable<ResolvedHermesCli["capabilities"]>; command: string; result: CommandResult; message: string } | undefined> {
+): Promise<ReturnType<typeof classifyVersionFallback>> {
   const versionArgs = [
     ...wslDistroArgs(runtime),
     "--",
@@ -407,6 +513,43 @@ async function probeHermesVersionAsFallback(
     commandId: "hermes-cli.validate.version-fallback",
     runtimeKind: "wsl",
   });
+  return classifyVersionFallback(versionResult, `wsl.exe ${versionArgs.join(" ")}`);
+}
+
+async function probeNativeHermesVersionAsFallback(
+  adapter: RuntimeAdapter,
+  cliPath: string,
+  rootPath: string,
+): Promise<ReturnType<typeof classifyVersionFallback>> {
+  const launch = await adapter.buildHermesLaunch({
+    runtime: { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" },
+    rootPath,
+    pythonArgs: [cliPath, "--version"],
+    cwd: rootPath,
+    env: {
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUNBUFFERED: "1",
+      PYTHONPATH: rootPath,
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+    },
+  });
+  const versionResult = await runCommand(launch.command, launch.args, {
+    cwd: launch.cwd,
+    timeoutMs: 20_000,
+    env: launch.env,
+    commandId: "hermes-cli.validate.version-fallback.native",
+    runtimeKind: "windows",
+  });
+  const command = `${launch.command} ${launch.args.join(" ")}`;
+  return classifyVersionFallback(versionResult, command);
+}
+
+function classifyVersionFallback(
+  versionResult: CommandResult,
+  command: string,
+): { capabilities: NonNullable<ResolvedHermesCli["capabilities"]>; command: string; result: CommandResult; message: string } | undefined {
   if (versionResult.exitCode !== 0) {
     return undefined;
   }
@@ -422,7 +565,7 @@ async function probeHermesVersionAsFallback(
       supportsResume: true,
       raw: versionResult.stdout,
     },
-    command: `wsl.exe ${versionArgs.join(" ")}`,
+    command,
     result: versionResult,
     message: `检测到 Hermes CLI ${version}（官方 v0.11.0+），但该版本不支持 Forge 所需的 launch metadata 能力（--launch-metadata / HERMES_FORGE_LAUNCH_METADATA）。请使用兼容版本（Mahiruxia/hermes-agent fork 或打了 patch 的 v0.11.0）。`,
   };
