@@ -469,6 +469,102 @@ export function SettingsPanel(props: {
                 ]}
               />
 
+              <div className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-700">Hermes 源（高级）</span>
+                  <SecondaryButton
+                    icon={RotateCcw}
+                    label="重置为推荐值"
+                    onClick={() => {
+                      const next = { ...runtime, installSource: undefined };
+                      setRuntime(next);
+                      void saveRuntime(next);
+                    }}
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <AdvancedTextInput
+                    label="仓库地址"
+                    tooltip="Hermes Agent Git 仓库地址。留空则使用默认源。"
+                    value={runtime.installSource?.repoUrl ?? ""}
+                    placeholder="https://github.com/..."
+                    onChange={(value) => {
+                      const trimmed = value.trim();
+                      if (!trimmed) {
+                        setRuntime({ ...runtime, installSource: undefined });
+                        return;
+                      }
+                      setRuntime({
+                        ...runtime,
+                        installSource: {
+                          ...(runtime.installSource ?? { sourceLabel: "fork" as const }),
+                          repoUrl: trimmed,
+                        },
+                      });
+                    }}
+                  />
+                  <AdvancedTextInput
+                    label="分支"
+                    tooltip="要拉取的分支名称。留空则使用 main。"
+                    value={runtime.installSource?.branch ?? ""}
+                    placeholder="main"
+                    onChange={(value) => {
+                      if (!runtime.installSource) return;
+                      setRuntime({
+                        ...runtime,
+                        installSource: {
+                          ...runtime.installSource,
+                          branch: value.trim() || undefined,
+                        },
+                      });
+                    }}
+                  />
+                  <AdvancedTextInput
+                    label="Commit"
+                    tooltip="精确commit hash（7-40位十六进制）。留空则按分支拉取最新。"
+                    value={runtime.installSource?.commit ?? ""}
+                    placeholder="0537bad..."
+                    monospace
+                    onChange={(value) => {
+                      if (!runtime.installSource) return;
+                      setRuntime({
+                        ...runtime,
+                        installSource: {
+                          ...runtime.installSource,
+                          commit: value.trim() || undefined,
+                        },
+                      });
+                    }}
+                  />
+                  <AdvancedSelect
+                    label="源标签"
+                    tooltip="仅作标记，不影响行为。"
+                    value={runtime.installSource?.sourceLabel ?? "fork"}
+                    onChange={(value) => {
+                      if (!runtime.installSource) return;
+                      setRuntime({
+                        ...runtime,
+                        installSource: {
+                          ...runtime.installSource,
+                          sourceLabel: value as "official" | "fork" | "pinned",
+                        },
+                      });
+                    }}
+                    options={[
+                      { value: "official", label: "official" },
+                      { value: "fork", label: "fork" },
+                      { value: "pinned", label: "pinned" },
+                    ]}
+                  />
+                </div>
+                {runtime.installSource?.commit && !/^[0-9a-fA-F]{7,40}$/.test(runtime.installSource.commit) ? (
+                  <p className="mt-2 text-xs text-red-600">Commit 应为 7-40 位十六进制字符串。</p>
+                ) : null}
+                <p className="mt-2 text-xs text-slate-500">
+                  这里改完后，下次“更新 Hermes”或“一键修复”会切到新源。WSL 与 Windows 共用此设置。
+                </p>
+              </div>
+
               {policyBlock ? <PolicyBlockedBanner block={policyBlock} /> : null}
               {runtimeChoice !== "windows" ? (
                 <ManagedWslInstallerPanel
