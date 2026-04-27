@@ -9,6 +9,51 @@ export interface InstallSource {
   sourceLabel: InstallSourceLabel;
 }
 
+export interface RepoSyncStep {
+  program: string;
+  args: string[];
+  cwd?: string;
+}
+
+/**
+ * Build a sequence of git commands to sync the Hermes repo to the desired
+ * commit/branch. Works for both Native (runCommand) and WSL (shell script).
+ */
+export function buildRepoSyncSteps(options: {
+  root: string;
+  repoUrl: string;
+  branch?: string;
+  commit?: string;
+  existing: boolean;
+}): RepoSyncStep[] {
+  const { root, repoUrl, branch, commit, existing } = options;
+  if (commit) {
+    if (existing) {
+      return [
+        { program: "git", args: ["-C", root, "remote", "set-url", "origin", repoUrl] },
+        { program: "git", args: ["-C", root, "fetch", "--depth", "1", "origin", commit] },
+        { program: "git", args: ["-C", root, "checkout", "--detach", "FETCH_HEAD"] },
+      ];
+    }
+    return [
+      { program: "git", args: ["init", root] },
+      { program: "git", args: ["-C", root, "remote", "add", "origin", repoUrl] },
+      { program: "git", args: ["-C", root, "fetch", "--depth", "1", "origin", commit] },
+      { program: "git", args: ["-C", root, "checkout", "--detach", "FETCH_HEAD"] },
+    ];
+  }
+  const b = branch?.trim() || "main";
+  if (existing) {
+    return [
+      { program: "git", args: ["-C", root, "remote", "set-url", "origin", repoUrl] },
+      { program: "git", args: ["-C", root, "fetch", "--depth", "1", "origin", b] },
+      { program: "git", args: ["-C", root, "checkout", b] },
+      { program: "git", args: ["-C", root, "reset", "--hard", "FETCH_HEAD"] },
+    ];
+  }
+  return [{ program: "git", args: ["clone", "--branch", b, "--depth", "1", repoUrl, root] }];
+}
+
 /**
  * Pinned fork source: Mahiruxia/hermes-agent@codex/launch-metadata-capabilities
  *

@@ -18,8 +18,9 @@ import type {
   InstallStrategyUpdateResult,
 } from "./install-types";
 import { installStep } from "./install-types";
+import { buildRepoSyncSteps, resolveInstallSource } from "./install-source";
+import type { InstallSource } from "./install-source";
 
-const DEFAULT_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
 const DEFAULT_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 type PythonLauncher = { command: string; argsPrefix: string[]; label: string };
@@ -204,12 +205,12 @@ export class NativeInstallStrategy implements InstallStrategy {
         return await finish({ ok: true, rootPath, message: `已检测到可用 Hermes：${rootPath}` }, "completed");
       }
 
-      const repoUrl = process.env.HERMES_INSTALL_REPO_URL?.trim() || DEFAULT_HERMES_REPO_URL;
+      const source = resolveInstallSource(await this.configStore.read());
       const rootPath = options.rootPath?.trim() || process.env.HERMES_INSTALL_DIR?.trim() || this.defaultInstallRoot();
       const parentDir = path.dirname(rootPath);
       const managedDefaultPath = this.samePath(rootPath, this.defaultInstallRoot());
       log.push(`Install target: ${rootPath}`);
-      log.push(`Repository: ${repoUrl}`);
+      log.push(`Source: ${source.sourceLabel} ${source.commit ?? source.branch ?? source.repoUrl}`);
 
       await this.assertWritableDirectory(logDir, "安装日志目录", log);
       await this.assertWritableDirectory(parentDir, "Hermes 安装父目录", log);
@@ -240,15 +241,18 @@ export class NativeInstallStrategy implements InstallStrategy {
           log.push(`Removed empty target directory ${rootPath} before staging install.`);
         }
 
-        emit("cloning", 32, "正在下载 Hermes 核心文件。", repoUrl);
+        emit("cloning", 32, "正在下载 Hermes 核心文件。", source.repoUrl);
         stagingPath = path.join(parentDir, `.hermes-install-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-        const clone = await this.runLogged("git", ["clone", "--depth", "1", repoUrl, stagingPath], parentDir, log, DEFAULT_INSTALL_TIMEOUT_MS, {
-          heartbeatMs: 15_000,
-          onHeartbeat: (elapsedSeconds) => emit("cloning", 34, "仍在下载 Hermes 核心文件，请保持网络连接。", `已等待 ${elapsedSeconds} 秒，源：${repoUrl}`),
-        });
-        if (clone.exitCode !== 0) {
-          await this.cleanupDirectory(stagingPath, log);
-          return await finish({ ok: false, rootPath, message: `Hermes 下载失败，详情见安装日志：${logPath}` }, "failed");
+        const syncSteps = buildRepoSyncSteps({ root: stagingPath, repoUrl: source.repoUrl, branch: source.branch, commit: source.commit, existing: false });
+        for (const step of syncSteps) {
+          const result = await this.runLogged(step.program, step.args, step.cwd ?? parentDir, log, DEFAULT_INSTALL_TIMEOUT_MS, {
+            heartbeatMs: 15_000,
+            onHeartbeat: (elapsedSeconds) => emit("cloning", 34, "仍在下载 Hermes 核心文件，请保持网络连接。", `已等待 ${elapsedSeconds} 秒，源：${source.repoUrl}`),
+          });
+          if (result.exitCode !== 0) {
+            await this.cleanupDirectory(stagingPath, log);
+            return await finish({ ok: false, rootPath, message: `Hermes 下载失败，详情见安装日志：${logPath}` }, "failed");
+          }
         }
         await fs.rename(stagingPath, rootPath);
         log.push(`Promoted staged install from ${stagingPath} to ${rootPath}`);
@@ -270,7 +274,7 @@ export class NativeInstallStrategy implements InstallStrategy {
         }, "failed");
       }
 
-      await this.writeManagedMarker(rootPath, repoUrl);
+      await this.writeManagedMarker(rootPath, source);
       const previousHermesRoot = (await this.configStore.read()).enginePaths?.hermes;
       await this.saveHermesRoot(rootPath);
 
@@ -521,9 +525,16 @@ export class NativeInstallStrategy implements InstallStrategy {
     return { available: false, message: lastMessage };
   }
 
-  private async writeManagedMarker(rootPath: string, repoUrl: string) {
+  private async writeManagedMarker(rootPath: string, source: InstallSource) {
     const markerPath = path.join(rootPath, ".zhenghebao-managed-install.json");
-    await fs.writeFile(markerPath, JSON.stringify({ source: "zhenghebao", repoUrl, installedAt: new Date().toISOString() }, null, 2), "utf8");
+    await fs.writeFile(markerPath, JSON.stringify({
+      source: "zhenghebao",
+      repoUrl: source.repoUrl,
+      branch: source.branch,
+      commit: source.commit,
+      sourceLabel: source.sourceLabel,
+      installedAt: new Date().toISOString(),
+    }, null, 2), "utf8");
   }
 
   private async writeInstallLog(logDir: string, logPath: string, message: string, log: string[]) {

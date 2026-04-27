@@ -16,7 +16,7 @@ import {
   type ManagedWslInstallerRecoveryAction,
   type ManagedWslInstallerResumeStage,
 } from "./managed-wsl-recovery-types";
-import { DEFAULT_PINNED_HERMES_SOURCE } from "./install-source";
+import { buildRepoSyncSteps, DEFAULT_PINNED_HERMES_SOURCE } from "./install-source";
 import { isAtLeastVersion } from "./hermes-version";
 import { applyV011Fallback, parseCapabilityProbe } from "./hermes-capabilities";
 
@@ -1101,17 +1101,11 @@ export class WslHermesInstallService {
   }
 
   private async repoSyncScript(hermesRoot: string, source: { repoUrl: string; branch?: string; commit?: string; sourceLabel: string }, existing: boolean) {
-    const root = shellQuote(hermesRoot);
-    const repo = shellQuote(source.repoUrl);
-    if (source.commit) {
-      return existing
-        ? `git -C ${root} remote set-url origin ${repo} && git -C ${root} fetch --depth 1 origin ${shellQuote(source.commit)} && git -C ${root} checkout --detach FETCH_HEAD`
-        : `mkdir -p ${root} && git init ${root} && git -C ${root} remote add origin ${repo} && git -C ${root} fetch --depth 1 origin ${shellQuote(source.commit)} && git -C ${root} checkout --detach FETCH_HEAD`;
-    }
-    const branch = shellQuote(source.branch?.trim() || "main");
-    return existing
-      ? `git -C ${root} remote set-url origin ${repo} && git -C ${root} fetch --depth 1 origin ${branch} && git -C ${root} checkout ${branch} && git -C ${root} reset --hard FETCH_HEAD`
-      : `git clone --branch ${branch} --depth 1 ${repo} ${root}`;
+    const steps = buildRepoSyncSteps({ root: hermesRoot, repoUrl: source.repoUrl, branch: source.branch, commit: source.commit, existing });
+    return steps.map((step) => {
+      const args = step.args.map(shellQuote).join(" ");
+      return `${shellQuote(step.program)} ${args}`;
+    }).join(" && ");
   }
 
   private async persistManagedRoot(hermesRoot: string) {
