@@ -696,7 +696,7 @@ export class WslHermesInstallService {
       "printf '%s\\n' \"$HOME/hermes-agent/hermes\"",
       "printf '%s\\n' \"$HOME/Hermes Agent/hermes\"",
       "command -v hermes 2>/dev/null || true",
-      "find \"$HOME\" -maxdepth 4 -type f -name hermes 2>/dev/null | head -20",
+      "find \"$HOME\" -maxdepth 4 -type f -name hermes -execdir test -f pyproject.toml \\; -print 2>/dev/null | head -20",
       "} | awk 'NF && !seen[$0]++'",
     ].join("\n");
     const result = await this.runInDistro(runtime, script, "install.wsl.find-existing-hermes");
@@ -1126,7 +1126,7 @@ export class WslHermesInstallService {
   }
 
   private async runInDistro(runtime: WslDoctorReport["runtime"], script: string, commandId: string) {
-    return runCommand("wsl.exe", [...(runtime.distro ? ["-d", runtime.distro] : []), "sh", "-lc", script], {
+    return runCommand("wsl.exe", [...(runtime.distro ? ["-d", runtime.distro] : []), "bash", "-lc", script], {
       cwd: process.cwd(),
       timeoutMs: 10 * 60 * 1000,
       commandId,
