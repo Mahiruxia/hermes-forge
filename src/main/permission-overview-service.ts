@@ -92,7 +92,7 @@ function runtimeWithDefaults(runtime: RuntimeConfig["hermesRuntime"]): HermesRun
   permissionPolicy: HermesPermissionPolicyMode;
 } {
   return {
-    mode: runtime?.mode ?? "windows",
+    mode: runtime?.mode ?? "wsl",
     distro: runtime?.distro,
     managedRoot: runtime?.managedRoot,
     pythonCommand: runtime?.pythonCommand ?? "python3",
