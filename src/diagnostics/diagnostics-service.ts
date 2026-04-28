@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import type { AppPaths } from "../main/app-paths";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { SessionLog } from "../main/session-log";
@@ -13,6 +14,8 @@ import type { ManagedWslInstallerReport, PermissionOverview } from "../shared/ty
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import type { WslDoctorReportService } from "../install/wsl-doctor-report-service";
 import { redactSensitiveValue } from "../shared/redaction";
+
+const diagnosticsSessionMappingSchema = z.record(z.string(), z.unknown());
 
 export class DiagnosticsService {
   constructor(
@@ -148,13 +151,14 @@ export class DiagnosticsService {
           const raw = await fs.readFile(mappingPath, "utf8").catch(() => "");
           if (!raw) return undefined;
           try {
-            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            const parsed = diagnosticsSessionMappingSchema.parse(JSON.parse(raw));
             return {
               sessionId: entry.name,
               mappingPath,
               ...parsed,
             };
           } catch {
+            await quarantineInvalidJson(mappingPath);
             return {
               sessionId: entry.name,
               mappingPath,
@@ -165,4 +169,9 @@ export class DiagnosticsService {
     );
     return mappings.filter(Boolean);
   }
+}
+
+async function quarantineInvalidJson(filePath: string) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await fs.rename(filePath, `${filePath}.invalid.${timestamp}`).catch(() => undefined);
 }

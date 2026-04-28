@@ -173,18 +173,7 @@ export const hermesRuntimeSchema = z.object({
 export const runtimeConfigSchema = z.object({
   defaultModelProfileId: z.string().max(120).optional(),
   modelRoleAssignments: z.partialRecord(modelRoleSchema, z.string().trim().min(1).max(120)).optional(),
-  modelProfiles: z.array(z.any()).transform((arr) => {
-    const valid: Array<z.infer<typeof modelProfileSchema>> = [];
-    for (const item of arr) {
-      const parsed = modelProfileSchema.safeParse(item);
-      if (parsed.success) {
-        valid.push(parsed.data);
-      } else {
-        console.warn("[RuntimeConfigSchema] Dropped invalid model profile:", parsed.error.flatten(), item);
-      }
-    }
-    return valid;
-  }),
+  modelProfiles: z.array(modelProfileSchema).default([]),
   providerProfiles: z.array(modelProviderProfileSchema).optional(),
   updateSources: z.record(z.string(), z.string().url()).default({}),
   enginePaths: z.record(z.string(), z.string().trim().min(1).max(1000)).optional(),

@@ -32,6 +32,7 @@ import type {
   OneClickDiagnosticsReport,
   OneClickDiagnosticsRunOptions,
   OneClickDiagnosticsStatus,
+  ModelConnectionTestResult,
   RuntimeConfig,
 } from "../../shared/types";
 
@@ -59,6 +60,7 @@ export class OneClickDiagnosticsOrchestrator {
     private readonly diagnosticsService: DiagnosticsService,
     private readonly workspaceLock: WorkspaceLock,
     private readonly taskRunner: TaskRunner,
+    private readonly testModelConnection?: (config: RuntimeConfig) => Promise<ModelConnectionTestResult>,
   ) {}
 
   getStatus(): OneClickDiagnosticsStatus {
@@ -241,11 +243,6 @@ export class OneClickDiagnosticsOrchestrator {
       runtime,
       persistResolvedHermesPath: Boolean(options.autoFix),
     });
-    const doctor = await this.wslDoctorService.diagnose({
-      workspacePath: options.workspacePath,
-      runtime,
-      persistResolvedHermesPath: Boolean(options.autoFix),
-    }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
 
     if (runtime.mode !== "wsl") {
       items.push(item({
@@ -254,7 +251,7 @@ export class OneClickDiagnosticsOrchestrator {
         status: "warn",
         severity: "warning",
         summary: "当前 Hermes 运行环境不是 WSL，本轮不会把 Windows Hermes 路径作为 WSL 主流程成功条件。",
-        evidence: { runtimeMode: runtime.mode, probe: wslProbeEvidence(probe), doctor },
+        evidence: { runtimeMode: runtime.mode, probe: wslProbeEvidence(probe) },
         autoFixable: false,
         userActionRequired: true,
         suggestedActions: ["在 Hermes 设置中把运行环境改为“自动选择（推荐）”或 WSL。"],
@@ -264,6 +261,12 @@ export class OneClickDiagnosticsOrchestrator {
       items.push(skippedItem("wsl.command", "WSL 命令执行", "当前未启用 WSL runtime，跳过 bash 命令执行检查。", "runtime-probe-service"));
       return;
     }
+
+    const doctor = await this.wslDoctorService.diagnose({
+      workspacePath: options.workspacePath,
+      runtime,
+      persistResolvedHermesPath: Boolean(options.autoFix),
+    }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
 
     items.push(item({
       id: "wsl.runtime",
@@ -655,6 +658,45 @@ export class OneClickDiagnosticsOrchestrator {
       userActionRequired: !defaultExists && !defaultFixed,
       suggestedActions: defaultExists || defaultFixed ? [] : ["点击“一键修复”自动选择第一个可用模型作为默认模型。"],
       source: "runtime-config",
+    }));
+
+    if (!defaultExists && !defaultFixed) {
+      items.push(skippedItem("model.connection", "模型真实连接", "默认模型无效，跳过真实模型连通性测试。", "model-connection-service"));
+      return;
+    }
+
+    if (!this.testModelConnection) {
+      items.push(skippedItem("model.connection", "模型真实连接", "当前运行环境未注入模型连通性测试器，跳过真实模型 API 检查。", "model-connection-service"));
+      return;
+    }
+
+    const healthConfig = saved ?? {
+      ...config,
+      modelProfiles: normalizedProfiles,
+      providerProfiles: migrated.providerProfiles ?? config.providerProfiles,
+      defaultModelProfileId: defaultFixed ? verified?.defaultModelProfileId : currentDefault,
+    };
+    const health = await this.testModelConnection(healthConfig);
+    items.push(item({
+      id: "model.connection",
+      title: "模型真实连接",
+      status: health.ok ? "pass" : "fail",
+      severity: health.ok ? "info" : "error",
+      summary: health.ok ? "默认模型真实连接测试通过。" : `默认模型真实连接失败：${health.message}`,
+      details: health.recommendedFix,
+      evidence: {
+        ok: health.ok,
+        providerFamily: health.providerFamily,
+        sourceType: health.sourceType,
+        profileId: health.profileId,
+        normalizedBaseUrl: health.normalizedBaseUrl,
+        failureCategory: health.failureCategory,
+        healthChecks: health.healthChecks,
+      },
+      autoFixable: false,
+      userActionRequired: !health.ok,
+      suggestedActions: health.ok ? [] : [health.recommendedFix || "打开模型设置，重新测试密钥、Base URL 和模型名。"],
+      source: "model-connection-service",
     }));
   }
 

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { LocalModelDiscoveryResult } from "../../../../../shared/types";
 import { cn } from "../../../DashboardPrimitives";
-import { defaultSecretRefForSource } from "./modelConfigUtils";
+import { defaultSecretRefForSource, isCodingPlanSourceType } from "./modelConfigUtils";
 import type { BusyAction, ConnectionDraft } from "./types";
 
 type InputMode = "json" | "form";
@@ -41,6 +41,7 @@ export function ModelConfigForm(props: {
   const [jsonText, setJsonText] = useState(() => buildJsonTemplate(props.draft));
   const [jsonError, setJsonError] = useState<string | undefined>();
   const isBaidu = props.draft.sourceType === "baidu_wenxin_api_key";
+  const isCodingPlan = isCodingPlanSourceType(props.draft.sourceType);
   const canDiscover = ["ollama", "vllm", "sglang", "lm_studio", "openai_compatible"].includes(props.draft.sourceType);
   const modelSuggestions = useMemo(() => props.draft.modelOptions.slice(0, 12), [props.draft.modelOptions]);
 
@@ -124,8 +125,9 @@ export function ModelConfigForm(props: {
         ) : (
           <div className="grid gap-4">
             {props.draft.provider.badge === "Coding Plan" ? (
-              <div className="rounded-2xl bg-slate-50 px-4 py-3 text-[12px] leading-5 text-slate-600 ring-1 ring-slate-200/70">
-                请填入 Coding Plan API Key 和 endpoint ID。保存后会写入 Hermes 的 Coding Plan 专用环境变量。
+              <div className="rounded-2xl bg-amber-50/80 px-4 py-3 text-[12px] leading-5 text-amber-800 ring-1 ring-amber-200/70">
+                <p className="font-semibold">Forge 不会直接测试此 provider 的连接。</p>
+                <p className="mt-1">请填入 Coding Plan API Key 和模型 ID。保存后会同步到 Hermes 的 Coding Plan 专用环境变量，实际可用性由 Hermes 在运行时直接验证。</p>
               </div>
             ) : null}
 
@@ -182,7 +184,7 @@ export function ModelConfigForm(props: {
             className="h-12 rounded-2xl bg-slate-900 text-[15px] font-semibold text-white shadow-[0_16px_38px_rgba(15,23,42,0.18)] transition hover:bg-slate-800 active:translate-y-px disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
             disabled={!props.canSaveModel}
             onClick={saveFromCurrentMode}
-            title={props.canSaveModel ? (props.testPassed ? "" : "会先自动执行连接测试，通过后再保存。") : "请填写必填字段后再保存。"}
+            title={props.canSaveModel ? (props.testPassed ? "" : isCodingPlan ? "保存后会将配置同步到 Hermes，由 Hermes 在运行时直接验证。" : "会先自动执行连接测试，通过后再保存。") : "请填写必填字段后再保存。"}
             type="button"
           >
             {props.busyAction === "save"
@@ -190,7 +192,9 @@ export function ModelConfigForm(props: {
               : props.busyAction === "test"
                 ? "测试中..."
                 : props.canSaveModel && !props.testPassed
-                  ? "测试并添加为默认"
+                  ? isCodingPlan
+                    ? "保存并同步到 Hermes"
+                    : "测试并添加为默认"
                   : "添加为默认"}
           </button>
           {props.canSaveAsAuxiliary && props.onSaveAsAuxiliary ? (

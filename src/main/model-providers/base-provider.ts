@@ -25,6 +25,10 @@ type OpenAiToolProbeAttemptResult = {
   status?: number;
 };
 
+type NormalizedBaseUrlResult =
+  | { ok: true; url: string }
+  | { ok: false; message: string };
+
 /**
  * Base template for model provider connection tests.
  *
@@ -51,11 +55,20 @@ export abstract class BaseProvider {
     const auth = await this.resolveAuth({ ...input, profile });
     if (!auth.ok) return auth.result;
 
-    const baseUrl = this.normalizeBaseUrl(profile.baseUrl);
-    if (!baseUrl) {
-      return this.fail(profile, "invalid_url", "还没有填写模型服务地址。", "请先填写 Base URL。", [
-        step("models", false, "Base URL 为空"),
+    const baseUrlResult = this.normalizeBaseUrl(profile.baseUrl);
+    if (!baseUrlResult.ok) {
+      return this.fail(profile, "invalid_url", baseUrlResult.message, "请填写有效的 Base URL，例如 http://127.0.0.1:1234/v1。", [
+        step("models", false, baseUrlResult.message),
       ]);
+    }
+    const baseUrl = baseUrlResult.url;
+    const outboundValidation = validateProviderOutboundBaseUrl(baseUrl, {
+      allowPrivateNetwork: allowsPrivateNetwork(this.sourceType, auth.auth),
+    });
+    if (!outboundValidation.ok) {
+      return this.fail(profile, "invalid_url", outboundValidation.message, outboundValidation.message, [
+        step("models", false, outboundValidation.message),
+      ], { normalizedBaseUrl: baseUrl, authResolved: Boolean(auth.auth) });
     }
 
     if (this.shouldDelegateToHermesRuntime()) {
@@ -187,7 +200,10 @@ export abstract class BaseProvider {
     }
 
     if (!toolCheck.ok) {
-      return this.fail(profile, "tool_calling_unavailable", "模型可以正常对话，但不支持「工具调用」功能。Hermes 需要工具调用才能自动执行命令、读写文件。如果你确认不需要这些功能，可以把它保存为「辅助模型」；否则请换一个支持 tool calling 的模型。", toolCheck.recommendedFix ?? "请开启工具调用能力，或把它只作为辅助模型保存。", steps, {
+      const toolFailureMessage = /HTTP 429|限流|额度/.test(toolCheck.message)
+        ? toolCheck.message
+        : "模型可以正常对话，但不支持「工具调用」功能。Hermes 需要工具调用才能自动执行命令、读写文件。如果你确认不需要这些功能，可以把它保存为「辅助模型」；否则请换一个支持 tool calling 的模型。";
+      return this.fail(profile, "tool_calling_unavailable", toolFailureMessage, toolCheck.recommendedFix ?? "请开启工具调用能力，或把它只作为辅助模型保存。", steps, {
         normalizedBaseUrl: baseUrl,
         availableModels: modelInfo.availableModels,
         authResolved: modelInfo.authResolved,
@@ -350,6 +366,7 @@ export abstract class BaseProvider {
   protected async testToolCalling(input: ProviderTestContext, baseUrl: string, auth?: string): Promise<ToolCheckResult> {
     const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
     const results: OpenAiToolProbeAttemptResult[] = [];
+    let rateLimited = false;
     try {
       for (const attempt of this.buildOpenAiToolProbeAttempts(input.profile.model)) {
         const response = await fetchWithRetry(url, {
@@ -360,11 +377,23 @@ export abstract class BaseProvider {
         if (!response.ok) {
           const preview = await response.text().catch(() => "");
           results.push({ label: attempt.label, ok: false, status: response.status, message: `HTTP ${response.status}${preview ? `：${compactPreview(preview)}` : ""}` });
+          if (response.status === 429) {
+            rateLimited = true;
+            break;
+          }
           continue;
         }
         const parsed = this.parseOpenAiToolProbePayload(await response.json().catch(() => undefined));
         results.push({ label: attempt.label, ok: parsed.ok, message: parsed.message });
         if (parsed.ok) return { ok: true, message: parsed.message, detail: this.toolProbeDetail(results) };
+      }
+      if (rateLimited) {
+        return {
+          ok: false,
+          message: "模型可以正常对话，但 tool calling 探测被服务端限流/额度拦截（HTTP 429）。",
+          detail: this.toolProbeDetail(results),
+          recommendedFix: "中转站已返回 429，请等待小时额度恢复、降低测试频率，或换用有剩余额度且支持 tools/tool_choice 透传的中转站。Forge 已停止后续工具探针，避免继续消耗额度。",
+        };
       }
       return { ok: false, message: "接口能返回 chat，但所有标准 tool calling 探测都没有返回可执行工具调用。", detail: this.toolProbeDetail(results), recommendedFix: "请确认模型服务端开启了 function/tool calling、选择了支持工具的模型，并检查代理/网关没有移除 tools 或 tool_choice 参数。" };
     } catch (error) {
@@ -376,11 +405,16 @@ export abstract class BaseProvider {
     return { authorization: `Bearer ${auth || "lm-studio"}` };
   }
 
-  protected normalizeBaseUrl(baseUrl?: string) {
+  protected normalizeBaseUrl(baseUrl?: string): NormalizedBaseUrlResult {
     try {
-      return normalizeOpenAiCompatibleBaseUrl(baseUrl) ?? "";
-    } catch {
-      return "";
+      const url = normalizeOpenAiCompatibleBaseUrl(baseUrl) ?? "";
+      return url
+        ? { ok: true, url }
+        : { ok: false, message: "还没有填写模型服务地址。" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "URL 格式非法。";
+      console.warn("[Hermes Forge] Invalid model provider Base URL:", { baseUrl, message });
+      return { ok: false, message: `Base URL 格式不正确：${message}` };
     }
   }
 
@@ -404,8 +438,6 @@ export abstract class BaseProvider {
     const messages = [{ role: "user", content: "Call the ping tool now with message \"ok\". Do not answer in text." }];
     const base = { model, messages, max_tokens: 32, temperature: 0 };
     return [
-      { id: "tools_forced_nested", label: "标准 tools + 指定函数", body: { ...base, tools: [tool], tool_choice: { type: "function", function: { name: "ping" } } } },
-      { id: "tools_forced_flat", label: "兼容 tools + 平铺指定函数", body: { ...base, tools: [tool], tool_choice: { type: "function", name: "ping" } } },
       { id: "tools_required", label: "标准 tools + required", body: { ...base, tools: [tool], tool_choice: "required" } },
       { id: "tools_auto", label: "标准 tools + auto", body: { ...base, tools: [tool], tool_choice: "auto" } },
       { id: "legacy_functions_forced", label: "旧版 functions + function_call", body: { ...base, functions: [tool.function], function_call: { name: "ping" } } },
@@ -472,3 +504,49 @@ type ProviderHealthExtra = {
   wslProbeUrl?: string;
   fixSteps?: string[];
 };
+
+function validateProviderOutboundBaseUrl(baseUrl: string, options: { allowPrivateNetwork?: boolean } = {}): { ok: boolean; message: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return { ok: false, message: `Base URL 格式不正确：${baseUrl}` };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { ok: false, message: "Base URL 只支持 http 或 https。" };
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!options.allowPrivateNetwork && isPrivateOrInternalHost(hostname)) {
+    return {
+      ok: false,
+      message: `检测到内网或本机地址 ${hostname}。为避免把 API Key 发送到不受信任的本地/内网服务，Forge 已取消本次连接测试。`,
+    };
+  }
+  return { ok: true, message: "ok" };
+}
+
+function allowsPrivateNetwork(sourceType: ModelSourceDefinition["sourceType"], auth?: string) {
+  if (["ollama", "vllm", "sglang", "lm_studio", "legacy"].includes(sourceType)) return true;
+  return sourceType === "openai_compatible" && !auth;
+}
+
+function isPrivateOrInternalHost(hostname: string) {
+  if (!hostname) return true;
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) return true;
+  if (!hostname.includes(".") && !isIpv4(hostname) && !hostname.includes(":")) return true;
+  if (hostname === "::1" || hostname.startsWith("fe80:") || hostname.startsWith("fd")) return true;
+  if (!isIpv4(hostname)) return false;
+  const parts = hostname.split(".").map((part) => Number(part));
+  const [a, b] = parts;
+  return a === 10
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || a === 0;
+}
+
+function isIpv4(hostname: string) {
+  const parts = hostname.split(".");
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}

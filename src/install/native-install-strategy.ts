@@ -8,7 +8,7 @@ import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { validateNativeHermesCli } from "../runtime/hermes-cli-resolver";
-import type { RuntimeConfig, SetupDependencyRepairId } from "../shared/types";
+import type { HermesRuntimeConfig, RuntimeConfig, SetupDependencyRepairId } from "../shared/types";
 import type { InstallStrategy } from "./install-strategy";
 import type {
   InstallOptions,
@@ -370,15 +370,43 @@ export class NativeInstallStrategy implements InstallStrategy {
     const startedAt = new Date().toISOString();
     const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
     const logPath = path.join(logDir, `dependency-${id}-${startedAt.replace(/[:.]/g, "-")}.log`);
-    const candidates: Array<{ command: string; args: string[] }> = [
+    const config = await this.configStore.read().catch(() => undefined);
+    const rootPath = await this.configStore.getEnginePath("hermes").catch(() => this.defaultInstallRoot());
+    const runtime: HermesRuntimeConfig = {
+      mode: "windows" as const,
+      pythonCommand: config?.hermesRuntime?.pythonCommand?.trim() || "python3",
+      windowsAgentMode: config?.hermesRuntime?.windowsAgentMode ?? "hermes_native",
+    };
+    const probe = await this.runtimeProbeService?.probe({ runtime }).catch(() => undefined);
+    const candidates: Array<{ command: string; args: string[]; label: string }> = [];
+    const addCandidate = (command: string | undefined, argsPrefix: string[] | undefined, label: string) => {
+      if (!command?.trim()) return;
+      const args = [...(argsPrefix ?? []), "-m", "pip", "install", "--upgrade", packageName];
+      if (!candidates.some((candidate) => candidate.command === command && candidate.args.join("\0") === args.join("\0"))) {
+        candidates.push({ command, args, label });
+      }
+    };
+    addCandidate(probe?.commands.python.command, probe?.commands.python.args, probe?.commands.python.label ?? "RuntimeProbe Python");
+    addCandidate(runtime.pythonCommand, undefined, runtime.pythonCommand ?? "python3");
+    addCandidate(path.join(rootPath, ".venv", "Scripts", "python.exe"), undefined, ".venv Python");
+    addCandidate(path.join(rootPath, "venv", "Scripts", "python.exe"), undefined, "venv Python");
+    for (const fallback of [
       { command: "python", args: ["-m", "pip", "install", "--upgrade", packageName] },
       { command: "py", args: ["-3", "-m", "pip", "install", "--upgrade", packageName] },
-    ];
+    ]) {
+      if (!candidates.some((candidate) => candidate.command === fallback.command && candidate.args.join("\0") === fallback.args.join("\0"))) {
+        candidates.push({ ...fallback, label: fallback.command === "py" ? "py -3" : fallback.command });
+      }
+    }
     let lastResult: Awaited<ReturnType<typeof runCommand>> | undefined;
     let lastCommand = "";
     for (const candidate of candidates) {
+      if (looksLikeFilePath(candidate.command) && !(await this.exists(candidate.command))) {
+        log.push(`${candidate.label}: 文件不存在，跳过。`);
+        continue;
+      }
       lastCommand = `${candidate.command} ${candidate.args.join(" ")}`;
-      const result = await this.runLogged(candidate.command, candidate.args, process.cwd(), log, DEFAULT_INSTALL_TIMEOUT_MS);
+      const result = await this.runLogged(candidate.command, candidate.args, rootPath, log, DEFAULT_INSTALL_TIMEOUT_MS);
       lastResult = result;
       if (result.exitCode === 0) {
         const message = `${label} 已安装或更新完成。`;
@@ -638,4 +666,8 @@ export class NativeInstallStrategy implements InstallStrategy {
       return false;
     }
   }
+}
+
+function looksLikeFilePath(value: string) {
+  return path.isAbsolute(value) || /[\\/]/.test(value);
 }

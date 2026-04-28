@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { z } from "zod";
 import type { AppPaths } from "./app-paths";
 import type { ApprovalChoice, ApprovalRequest, EngineEvent } from "../shared/types";
 
@@ -12,6 +13,10 @@ type ApprovalPublish = (event: EngineEvent) => Promise<void>;
 type PersistentPolicy = {
   patternKeys: string[];
 };
+
+const persistentPolicySchema = z.object({
+  patternKeys: z.array(z.string().trim().min(1).max(500)).default([]),
+});
 
 type ApprovalPending = {
   request: ApprovalRequest;
@@ -188,9 +193,10 @@ export class ApprovalService {
     const raw = await fs.readFile(this.policyPath(), "utf8").catch(() => "");
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as PersistentPolicy;
-      this.persistentApproved = new Set(parsed.patternKeys ?? []);
+      const parsed = persistentPolicySchema.parse(JSON.parse(raw));
+      this.persistentApproved = new Set(parsed.patternKeys);
     } catch {
+      await quarantineInvalidJson(this.policyPath());
       this.persistentApproved = new Set();
     }
   }
@@ -206,4 +212,9 @@ export class ApprovalService {
   private policyPath() {
     return path.join(this.appPaths.baseDir(), "approval-policy.json");
   }
+}
+
+async function quarantineInvalidJson(filePath: string) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await fs.rename(filePath, `${filePath}.invalid.${timestamp}`).catch(() => undefined);
 }

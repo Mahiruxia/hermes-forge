@@ -64,6 +64,25 @@ describe("ApprovalService", () => {
     }, publish)).resolves.toMatchObject({ approved: false, choice: "deny" });
     expect(publish).toHaveBeenCalled();
   });
+
+  it("ignores and quarantines malformed persistent approval policy", async () => {
+    await fs.writeFile(path.join(tempRoot, "approval-policy.json"), JSON.stringify({ patternKeys: [123] }), "utf8");
+    const service = new ApprovalService(new AppPaths(tempRoot));
+    const publish = vi.fn(async (_event: EngineEvent) => undefined);
+
+    const pending = service.request({
+      taskRunId: "task-bad-policy",
+      title: "需要重新审批",
+      patternKey: "file:demo",
+      actionKind: "file_write",
+      risk: "high",
+      timeoutMs: 10,
+    }, publish);
+
+    await expect(pending).resolves.toMatchObject({ approved: false, choice: "deny" });
+    const files = await fs.readdir(tempRoot);
+    expect(files.some((file) => file.startsWith("approval-policy.json.invalid."))).toBe(true);
+  });
 });
 
 async function waitForApprovalEvent(events: EngineEvent[], outcome: "requested" | "auto_approved", timeoutMs = 250) {

@@ -1,8 +1,12 @@
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import type { AppPaths } from "./app-paths";
 import type { EngineEvent, SessionAgentInsightUsage, TaskEventEnvelope } from "../shared/types";
 import { redactSensitiveValue } from "../shared/redaction";
+
+const RECENT_LOG_TAIL_BYTES = 2 * 1024 * 1024;
 
 export class SessionLog {
   constructor(private readonly appPaths: AppPaths) {}
@@ -19,7 +23,7 @@ export class SessionLog {
     const events: TaskEventEnvelope[] = [];
 
     for (const file of files.filter((name) => name.endsWith(".jsonl"))) {
-      const text = await fs.readFile(path.join(dir, file), "utf8").catch(() => "");
+      const text = await readFileTail(path.join(dir, file), RECENT_LOG_TAIL_BYTES).catch(() => "");
       for (const line of text.split(/\r?\n/).filter(Boolean)) {
         try {
           const event = JSON.parse(line) as TaskEventEnvelope;
@@ -75,8 +79,7 @@ export class SessionLog {
     let updatedAt = "";
 
     for (const file of files.filter((name) => name.endsWith(".jsonl"))) {
-      const text = await fs.readFile(path.join(dir, file), "utf8").catch(() => "");
-      for (const line of text.split(/\r?\n/).filter(Boolean)) {
+      for await (const line of readJsonlLines(path.join(dir, file))) {
         try {
           const event = JSON.parse(line) as TaskEventEnvelope;
           if (event.workSessionId !== workSessionId || event.event.type !== "usage") {
@@ -137,5 +140,39 @@ export class SessionLog {
 
   redact<T>(value: T): T {
     return redactSensitiveValue(value);
+  }
+}
+
+async function readFileTail(filePath: string, maxBytes: number) {
+  const stat = await fs.stat(filePath);
+  if (stat.size <= maxBytes) {
+    return await fs.readFile(filePath, "utf8");
+  }
+  const handle = await fs.open(filePath, "r");
+  try {
+    const start = Math.max(0, stat.size - maxBytes);
+    const length = stat.size - start;
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    const text = buffer.toString("utf8");
+    const firstLineBreak = text.search(/\r?\n/);
+    return firstLineBreak >= 0 ? text.slice(firstLineBreak + (text[firstLineBreak] === "\r" && text[firstLineBreak + 1] === "\n" ? 2 : 1)) : text;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function* readJsonlLines(filePath: string): AsyncGenerator<string> {
+  const stream = createReadStream(filePath, { encoding: "utf8" });
+  stream.on("error", () => undefined);
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      if (line) yield line;
+    }
+  } catch {
+    // Ignore unreadable diagnostic files.
+  } finally {
+    reader.close();
   }
 }

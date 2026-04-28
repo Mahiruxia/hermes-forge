@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, dialog } from "electron";
 import path from "node:path";
 import { IpcChannels } from "../shared/ipc";
 import { AppPaths } from "./app-paths";
@@ -19,6 +19,7 @@ import { FileTreeService } from "../file-manager/file-tree-service";
 import { HermesConnectorService } from "./hermes-connector-service";
 import { HermesModelSyncService } from "./hermes-model-sync";
 import { HermesWebUiService } from "./hermes-webui-service";
+import { testModelConnection } from "./model-connection-service";
 import { ModelRuntimeProxyService } from "./model-runtime-proxy";
 import { MemoryBudgeter } from "../memory/memory-budgeter";
 import { SnapshotManager } from "../process/snapshot-manager";
@@ -231,16 +232,16 @@ app.whenReady().then(async () => {
         preload: path.join(__dirname, "..", "preload", "index.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
       },
     });
 
-    mainWindow.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
-      if (permission === "media") {
+    mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (permission === "media" && isTrustedAppUrl(webContents.getURL())) {
         callback(true);
-      } else {
-        callback(false);
+        return;
       }
+      callback(false);
     });
 
     const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -263,6 +264,21 @@ app.whenReady().then(async () => {
 
   if (!mainWindow) {
     throw new Error("主窗口创建失败");
+  }
+
+  await configStore.read();
+  const recovery = configStore.consumeLastRecovery();
+  if (recovery) {
+    void dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      title: "配置已自动恢复",
+      message: "Hermes Forge 检测到运行时配置损坏，已备份原文件并重置为默认配置。",
+      detail: [
+        `配置文件：${recovery.configPath}`,
+        recovery.backupPath ? `备份文件：${recovery.backupPath}` : "备份文件：创建失败，请查看日志。",
+        `原因：${recovery.reason === "invalid_json" ? "JSON 格式无效" : "配置结构校验失败"}`,
+      ].join("\n"),
+    });
   }
 
   const taskRunner = new TaskRunner(
@@ -288,6 +304,12 @@ app.whenReady().then(async () => {
     diagnosticsService,
     workspaceLock,
     taskRunner,
+    (config) => testModelConnection({
+      config,
+      secretVault,
+      runtimeAdapterFactory,
+      resolveHermesRoot,
+    }),
   );
 
   registerIpcHandlers(mainWindow, {
@@ -420,4 +442,16 @@ function resolveAppIconPath() {
   return isDevMode
     ? path.join(process.cwd(), "assets", "icons", iconName)
     : path.join(process.resourcesPath, "icons", iconName);
+}
+
+function isTrustedAppUrl(value: string) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol === "file:") return true;
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    return devServerUrl ? url.origin === new URL(devServerUrl).origin : false;
+  } catch {
+    return false;
+  }
 }

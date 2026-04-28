@@ -65,8 +65,8 @@ const builtinDefinitions = {
     label: "DeepSeek",
     provider: "deepseek",
     baseUrl: "https://api.deepseek.com/v1",
-    modelPlaceholder: "deepseek-chat 或 deepseek-reasoner",
-    presetModels: ["deepseek-chat", "deepseek-reasoner"],
+    modelPlaceholder: "deepseek-v4-pro 或 deepseek-v4-flash",
+    presetModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
   },
   huggingface_api_key: {
     sourceType: "huggingface_api_key",

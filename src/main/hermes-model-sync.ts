@@ -62,7 +62,7 @@ export class HermesModelSyncService {
         provider,
         baseUrl: modelConfig.baseUrl,
         consumedByHermes: true,
-        ...(await this.probeWslRole(config, hermesHome, modelConfig.baseUrl)),
+        ...(await this.probeWslRole(config, hermesHome, modelConfig.baseUrl, resolveRuntimeApiKey(chatRuntimeEnv))),
       },
     };
     const envBlocks = [await this.buildRoleEnv(config, "chat", chatRuntimeEnv, provider)];
@@ -79,7 +79,7 @@ export class HermesModelSyncService {
         baseUrl: codingEnv.HERMES_CODING_PLAN_BASE_URL ?? codingRuntimeEnv.baseUrl,
         consumedByHermes: false,
         syncNote: "已写入 Hermes Forge 托管配置；当前 Hermes Agent 未读取 HERMES_CODING_PLAN_*，不会自动切换 Coding Plan runtime。",
-        ...(await this.probeWslRole(config, hermesHome, codingEnv.HERMES_CODING_PLAN_BASE_URL ?? codingRuntimeEnv.baseUrl)),
+        ...(await this.probeWslRole(config, hermesHome, codingEnv.HERMES_CODING_PLAN_BASE_URL ?? codingRuntimeEnv.baseUrl, resolveCodingPlanApiKey(codingRuntimeEnv))),
       };
     }
     const modelEnv = Object.assign({}, ...envBlocks);
@@ -95,6 +95,9 @@ export class HermesModelSyncService {
     const nextEnv = upsertManagedEnvBlock(existingEnv, modelEnv);
     if (nextEnv !== existingEnv) {
       await fs.writeFile(envPath, nextEnv, "utf8");
+      await fs.chmod(envPath, 0o600).catch((error) => {
+        console.warn("[Hermes Forge] Failed to apply strict permissions to Hermes .env:", error);
+      });
     }
 
     return {
@@ -128,14 +131,15 @@ export class HermesModelSyncService {
     return parsed.toString().replace(/\/$/, "");
   }
 
-  private async probeWslRole(config: RuntimeConfig, hermesHome: string, baseUrl?: string) {
+  private async probeWslRole(config: RuntimeConfig, hermesHome: string, baseUrl?: string, apiKey?: string) {
     if (!baseUrl || config.hermesRuntime?.mode !== "wsl" || !this.runtimeAdapterFactory) return {};
     const adapter = this.runtimeAdapterFactory(config.hermesRuntime);
     const rootPath = adapter.toRuntimePath(hermesHome);
     const script = [
       "import sys, urllib.error, urllib.request",
       "url = sys.argv[1].rstrip('/') + '/models'",
-      "req = urllib.request.Request(url, headers={'Authorization': 'Bearer hermes-forge-local-proxy-key'})",
+      "api_key = sys.argv[2] if len(sys.argv) > 2 else 'lm-studio'",
+      "req = urllib.request.Request(url, headers={'Authorization': 'Bearer %s' % api_key})",
       "try:",
       "    with urllib.request.urlopen(req, timeout=8) as resp:",
       "        sys.exit(0 if 200 <= resp.status < 300 else 3)",
@@ -151,7 +155,7 @@ export class HermesModelSyncService {
         runtime: config.hermesRuntime,
         rootPath,
         cwd: rootPath,
-        pythonArgs: ["-c", script, baseUrl],
+        pythonArgs: ["-c", script, baseUrl, apiKey ?? "lm-studio"],
         env: {
           PYTHONUTF8: "1",
           PYTHONIOENCODING: "utf-8",
@@ -198,7 +202,7 @@ function buildModelEnv(runtimeEnv: EngineRuntimeEnv, hermesProvider: string, rol
       HERMES_CODING_PLAN_PROVIDER: hermesProvider,
       HERMES_CODING_PLAN_MODEL: runtimeEnv.model,
       HERMES_CODING_PLAN_BASE_URL: runtimeEnv.baseUrl ?? "",
-      HERMES_CODING_PLAN_API_KEY: runtimeEnv.env.OPENAI_API_KEY ?? runtimeEnv.env.AI_API_KEY ?? runtimeEnv.env.ANTHROPIC_API_KEY ?? "",
+      HERMES_CODING_PLAN_API_KEY: resolveCodingPlanApiKey(runtimeEnv),
     };
     return Object.fromEntries(
       Object.entries(env).filter((entry): entry is [string, string] => Boolean(entry[1]?.trim())),
@@ -220,6 +224,30 @@ function buildModelEnv(runtimeEnv: EngineRuntimeEnv, hermesProvider: string, rol
   return Object.fromEntries(
     Object.entries(env).filter((entry): entry is [string, string] => Boolean(entry[1]?.trim())),
   );
+}
+
+function resolveRuntimeApiKey(runtimeEnv: EngineRuntimeEnv) {
+  return runtimeEnv.env.OPENAI_API_KEY
+    ?? runtimeEnv.env.AI_API_KEY
+    ?? runtimeEnv.env.ANTHROPIC_API_KEY
+    ?? undefined;
+}
+
+function resolveCodingPlanApiKey(runtimeEnv: EngineRuntimeEnv) {
+  return resolveRuntimeApiKey(runtimeEnv)
+    ?? runtimeEnv.env.KIMI_API_KEY
+    ?? runtimeEnv.env.VOLCENGINE_API_KEY
+    ?? runtimeEnv.env.DASHSCOPE_API_KEY
+    ?? runtimeEnv.env.ZHIPU_API_KEY
+    ?? runtimeEnv.env.ZAI_API_KEY
+    ?? runtimeEnv.env.GLM_API_KEY
+    ?? runtimeEnv.env.QIANFAN_API_KEY
+    ?? runtimeEnv.env.MINIMAX_API_KEY
+    ?? runtimeEnv.env.TENCENT_API_KEY
+    ?? runtimeEnv.env.TENCENT_CODING_PLAN_API_KEY
+    ?? runtimeEnv.env.TENCENT_HY_API_KEY
+    ?? runtimeEnv.env.TENCENT_TOKENHUB_API_KEY
+    ?? "";
 }
 
 function upsertModelBlock(content: string, model: HermesModelConfig) {
@@ -311,4 +339,5 @@ export const testOnly = {
   toHermesProvider,
   upsertManagedEnvBlock,
   upsertModelBlock,
+  resolveCodingPlanApiKey,
 };

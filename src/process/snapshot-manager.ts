@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import type { AppPaths } from "../main/app-paths";
 import type { SnapshotRecord, SnapshotRestoreResult } from "../shared/types";
 
@@ -14,6 +15,22 @@ const EXCLUDED_DIRS = new Set([
 ]);
 
 type SnapshotManifest = SnapshotRecord;
+const snapshotManifestSchema = z.object({
+  snapshotId: z.string().trim().min(1),
+  workspaceId: z.string().trim().min(1),
+  workspacePath: z.string().trim().min(1),
+  createdAt: z.string().trim().min(1),
+  copiedFiles: z.number().int().nonnegative(),
+  skippedFiles: z.number().int().nonnegative(),
+  copiedBytes: z.number().nonnegative().optional(),
+  maxFiles: z.number().int().nonnegative().optional(),
+  maxBytes: z.number().nonnegative().optional(),
+  truncated: z.boolean().optional(),
+  limitReason: z.string().optional(),
+  mode: z.enum(["full", "scoped", "manifest"]).optional(),
+  manifestOnly: z.boolean().optional(),
+  scopedPaths: z.array(z.string()).optional(),
+}).passthrough();
 type SnapshotOptions = {
   markLatest?: boolean;
   manifestOnly?: boolean;
@@ -69,7 +86,10 @@ export class SnapshotManager {
 
     const snapshotDir = this.snapshotDir(workspaceId, snapshotId);
     const manifestPath = path.join(snapshotDir, "snapshot.manifest.json");
-    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as SnapshotManifest;
+    const manifest = await readSnapshotManifest(manifestPath);
+    if (!manifest) {
+      return { restored: false, message: "快照清单已损坏，已跳过恢复并隔离坏文件。" };
+    }
     await this.createSnapshot(workspaceId, manifest.workspacePath, "before-restore", { markLatest: false });
     await this.copyTree(snapshotDir, manifest.workspacePath, {
       ...manifest,
@@ -101,7 +121,7 @@ export class SnapshotManager {
           if (!raw) {
             return undefined;
           }
-          return JSON.parse(raw) as SnapshotRecord;
+          return parseSnapshotManifest(raw, manifestPath);
         }),
     );
 
@@ -243,4 +263,26 @@ function formatBytes(bytes: number) {
   const kib = bytes / 1024;
   if (kib < 1024) return `${Math.round(kib)}KB`;
   return `${Math.round(kib / 1024)}MB`;
+}
+
+async function readSnapshotManifest(manifestPath: string): Promise<SnapshotManifest | undefined> {
+  const raw = await fs.readFile(manifestPath, "utf8").catch(() => "");
+  if (!raw) return undefined;
+  const parsed = parseSnapshotManifest(raw, manifestPath);
+  if (!parsed) await quarantineInvalidJson(manifestPath);
+  return parsed;
+}
+
+function parseSnapshotManifest(raw: string, manifestPath: string): SnapshotManifest | undefined {
+  try {
+    return snapshotManifestSchema.parse(JSON.parse(raw)) as SnapshotManifest;
+  } catch {
+    void quarantineInvalidJson(manifestPath);
+    return undefined;
+  }
+}
+
+async function quarantineInvalidJson(filePath: string) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await fs.rename(filePath, `${filePath}.invalid.${timestamp}`).catch(() => undefined);
 }

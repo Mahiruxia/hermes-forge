@@ -137,7 +137,7 @@ describe("ModelConfigWizard", () => {
     fireEvent.click(screen.getByRole("button", { name: "表单输入" }));
     fireEvent.change(screen.getByPlaceholderText("your-api-key-here"), { target: { value: "ark-coding-key" } });
     fireEvent.change(screen.getByLabelText("添加模型名称"), { target: { value: "doubao-coding-endpoint" } });
-    fireEvent.click(screen.getByRole("button", { name: "测试并添加为默认" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并同步到 Hermes" }));
 
     await waitFor(() => {
       expect(updateModelConfig).toHaveBeenCalledWith(expect.objectContaining({

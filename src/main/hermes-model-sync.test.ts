@@ -196,4 +196,19 @@ describe("HermesModelSyncService", () => {
     expect(env).toContain("HERMES_CODING_PLAN_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3");
     expect(env).toContain("HERMES_CODING_PLAN_API_KEY=coding-key");
   });
+
+  it("uses provider-specific Coding Plan API keys when generic keys are absent", () => {
+    expect(testOnly.resolveCodingPlanApiKey({
+      profileId: "coding",
+      provider: "custom",
+      model: "doubao",
+      env: { VOLCENGINE_API_KEY: "volc-key" },
+    })).toBe("volc-key");
+    expect(testOnly.resolveCodingPlanApiKey({
+      profileId: "coding",
+      provider: "custom",
+      model: "kimi",
+      env: { KIMI_API_KEY: "kimi-key" },
+    })).toBe("kimi-key");
+  });
 });

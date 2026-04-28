@@ -2,7 +2,7 @@ import { AlertCircle, CheckCircle2, ChevronDown, Loader2, ShieldCheck } from "lu
 import { useState } from "react";
 import type { ModelConnectionTestResult } from "../../../../../shared/types";
 import { cn } from "../../../DashboardPrimitives";
-import { healthStepLabel, MIN_AGENT_CONTEXT, roleLabel } from "./modelConfigUtils";
+import { healthStepLabel, isCodingPlanSourceType, MIN_AGENT_CONTEXT, roleLabel } from "./modelConfigUtils";
 import { StatusBadge } from "./StatusBadge";
 import type { BusyAction, OperationNotice } from "./types";
 
@@ -43,7 +43,7 @@ export function ConnectionTestResult(props: {
 
       {props.testResult ? (
         <div className="mt-3 flex flex-wrap gap-2">
-          {props.testResult.agentRole ? <StatusBadge label={roleLabel(props.testResult.agentRole)} tone={props.testResult.agentRole === "primary_agent" ? "success" : "warning"} /> : null}
+          {props.testResult.agentRole ? <StatusBadge label={roleLabel(props.testResult.agentRole, props.testResult.sourceType)} tone={props.testResult.agentRole === "primary_agent" ? "success" : "warning"} /> : null}
           {typeof props.testResult.supportsTools === "boolean" ? <StatusBadge label={props.testResult.supportsTools ? "支持工具调用" : "不支持工具调用"} tone={props.testResult.supportsTools ? "success" : "warning"} /> : null}
           {typeof props.testResult.contextWindow === "number" ? <StatusBadge label={`上下文 ${props.testResult.contextWindow}`} tone={props.testResult.contextWindow >= MIN_AGENT_CONTEXT ? "success" : "warning"} /> : null}
           {props.testResult.runtimeCompatibility ? <StatusBadge label={runtimeLabel(props.testResult.runtimeCompatibility)} tone={props.testResult.runtimeCompatibility === "connection_only" ? "warning" : "success"} /> : null}
@@ -95,6 +95,9 @@ function WslLocalhostHelp(props: { testResult?: ModelConnectionTestResult }) {
 }
 
 export function noticeForTestResult(result: ModelConnectionTestResult): OperationNotice {
+  if (result.ok && isCodingPlanSourceType(result.sourceType)) {
+    return { tone: "success", title: "配置已保存（由 Hermes 运行时验证）", message: result.message || "Coding Plan 配置已同步到 Hermes，实际可用性请在会话中确认。" };
+  }
   if (result.ok) return { tone: "success", title: "测试通过", message: result.message || "这个模型已通过连接检查。" };
   const canStillSave = result.agentRole === "auxiliary_model" || result.agentRole === "provider_only";
   return {
@@ -112,6 +115,7 @@ function resultTone(result?: ModelConnectionTestResult): OperationNotice["tone"]
 
 function resultTitle(result?: ModelConnectionTestResult) {
   if (!result) return undefined;
+  if (result.ok && isCodingPlanSourceType(result.sourceType)) return "配置已保存（由 Hermes 运行时验证）";
   return result.ok ? "测试通过" : "测试失败";
 }
 

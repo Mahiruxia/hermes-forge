@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppPaths } from "./app-paths";
 import { SessionLog } from "./session-log";
 import type { TaskEventEnvelope } from "../shared/types";
@@ -58,6 +58,32 @@ describe("SessionLog.readRecent", () => {
     expect(events[0].taskRunId).toBe("task-60");
     expect(events.at(-1)?.taskRunId).toBe("task-259");
     expect(events.every((event) => event.workSessionId === "session-long")).toBe(true);
+  });
+
+  it("reads only the tail of large recent-event logs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-session-log-"));
+    tempRoots.push(root);
+    const appPaths = new AppPaths(root);
+    const sessionLog = new SessionLog(appPaths);
+    const workspaceId = appPaths.workspaceId(path.join(root, "workspace"));
+    const dir = appPaths.workspaceSessionDir(workspaceId);
+    await fs.mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, "session-long.jsonl");
+    const payload = "x".repeat(1200);
+    const lines: string[] = [];
+    for (let index = 0; index < 2600; index += 1) {
+      const at = new Date(Date.UTC(2026, 3, 22, 12, 0, index)).toISOString();
+      lines.push(JSON.stringify(eventFor(`task-${index}`, "session-long", `${payload}-${index}`, at)));
+    }
+    await fs.writeFile(filePath, `${lines.join("\n")}\n`, "utf8");
+    const readFile = vi.spyOn(fs, "readFile");
+
+    const events = await sessionLog.readRecent(workspaceId, 50, "session-long");
+
+    expect(events).toHaveLength(50);
+    expect(events.at(-1)?.taskRunId).toBe("task-2599");
+    expect(readFile).not.toHaveBeenCalledWith(filePath, "utf8");
+    readFile.mockRestore();
   });
 });
 

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import type { AppPaths } from "../../main/app-paths";
 import { readHermesJsonStream } from "./hermes-json-stream-adapter";
 import { resolveActiveHermesHome } from "../../main/hermes-home";
@@ -84,6 +85,21 @@ type HermesCliSessionMapping = {
   lastStatus: HermesCliSessionStatus;
   lastDegradationReason?: string;
 };
+
+const hermesCliSessionMappingSchema = z.object({
+  version: z.literal(1),
+  forgeSessionId: z.string().trim().min(1).max(120),
+  cliSessionId: z.string().trim().min(1).max(240).optional(),
+  cliSource: z.string().trim().min(1).max(80),
+  cliStateDbPath: z.string().trim().min(1).max(1000),
+  cliStateDbRuntimePath: z.string().trim().min(1).max(1000).optional(),
+  createdAt: z.string().trim().min(1).max(80),
+  updatedAt: z.string().trim().min(1).max(80),
+  lastTaskRunId: z.string().trim().min(1).max(120).optional(),
+  lastWorkspacePath: z.string().trim().min(1).max(1000).optional(),
+  lastStatus: z.enum(["fresh", "resumed", "continued", "degraded"]),
+  lastDegradationReason: z.string().trim().max(1000).optional(),
+});
 
 type HermesCliSessionPlan = {
   forgeSessionId?: string;
@@ -727,8 +743,9 @@ export class HermesCliAdapter implements EngineAdapter {
     // 注意：模型 / provider 通过 hermesEnv 写到 OPENAI_MODEL / HERMES_INFERENCE_PROVIDER
     // 等环境变量，hermes-windows-agent.py 直接读 env，不要在这里再 push --model /
     // --provider —— Python argparse 没有这两个参数，多塞会让 runner 直接退出 2。
+    const python = await this.windowsPythonSpec(rootPath, this.hermesCliPath(rootPath, runtime), env);
 
-    const proc = spawn("python", args, {
+    const proc = spawn(python.command, [...python.argsPrefix, ...args], {
       cwd: request.workspacePath ?? rootPath,
       env: { ...process.env, ...env },
       windowsHide: true,
@@ -1218,15 +1235,17 @@ export class HermesCliAdapter implements EngineAdapter {
   }
 
   private async readCliSessionMapping(forgeSessionId: string): Promise<HermesCliSessionMapping | undefined> {
-    const raw = await fs.readFile(this.cliSessionMappingPath(forgeSessionId), "utf8").catch(() => "");
+    const mappingPath = this.cliSessionMappingPath(forgeSessionId);
+    const raw = await fs.readFile(mappingPath, "utf8").catch(() => "");
     if (!raw) return undefined;
     try {
-      const parsed = JSON.parse(raw) as Partial<HermesCliSessionMapping>;
+      const parsed = hermesCliSessionMappingSchema.parse(JSON.parse(raw));
       if (parsed.version !== 1 || parsed.forgeSessionId !== forgeSessionId) {
         return undefined;
       }
-      return parsed as HermesCliSessionMapping;
+      return parsed;
     } catch {
+      await quarantineInvalidJson(mappingPath);
       return undefined;
     }
   }
@@ -1657,4 +1676,9 @@ function sanitizeStringEnv(env: NodeJS.ProcessEnv) {
     }
   }
   return next;
+}
+
+async function quarantineInvalidJson(filePath: string) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await fs.rename(filePath, `${filePath}.invalid.${timestamp}`).catch(() => undefined);
 }

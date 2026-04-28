@@ -22,7 +22,8 @@ export class GeminiProvider extends BaseProvider {
   }
 
   protected override normalizeBaseUrl(baseUrl?: string) {
-    return (baseUrl?.trim() || this.definition.baseUrl || "").replace(/\/$/, "");
+    const url = (baseUrl?.trim() || this.definition.baseUrl || "").replace(/\/$/, "");
+    return url ? { ok: true as const, url } : { ok: false as const, message: "还没有填写模型服务地址。" };
   }
 
   protected async fetchModels(_input: ProviderTestContext, baseUrl: string, auth?: string): Promise<ModelListResult> {

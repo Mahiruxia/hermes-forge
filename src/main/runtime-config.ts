@@ -7,6 +7,13 @@ import { defaultEnginePermissions } from "../shared/types";
 import type { EngineId, RuntimeConfig } from "../shared/types";
 import { DEFAULT_PINNED_HERMES_SOURCE } from "../install/install-source";
 
+export type RuntimeConfigRecovery = {
+  configPath: string;
+  backupPath?: string;
+  reason: "invalid_json" | "schema_validation_failed";
+  message: string;
+};
+
 const defaultHermesHome = path.join(process.env.USERPROFILE ?? process.cwd(), "Hermes Agent");
 const hermesPathCandidates = [
   process.env.HERMES_HOME,
@@ -78,6 +85,8 @@ const defaultConfig: RuntimeConfig = {
 };
 
 export class RuntimeConfigStore {
+  private lastRecovery?: RuntimeConfigRecovery;
+
   constructor(private readonly configPath: string) {}
 
   async read(): Promise<RuntimeConfig> {
@@ -87,12 +96,17 @@ export class RuntimeConfigStore {
       await this.write(config);
       return config;
     }
-    const parsedJson = JSON.parse(raw) as RuntimeConfig & { hermesRuntime?: RuntimeConfig["hermesRuntime"] };
+    let parsedJson: RuntimeConfig & { hermesRuntime?: RuntimeConfig["hermesRuntime"] };
+    try {
+      parsedJson = JSON.parse(raw) as RuntimeConfig & { hermesRuntime?: RuntimeConfig["hermesRuntime"] };
+    } catch (error) {
+      return await this.resetInvalidConfig("invalid_json", error);
+    }
     const migratedJson = migrateRuntimeConfigModels(parsedJson);
     const parsed = runtimeConfigSchema.safeParse(migratedJson);
     if (!parsed.success) {
       console.error("[RuntimeConfigStore] Schema validation failed, resetting to default config:", parsed.error);
-      return await defaultConfigWithPreferredRuntime();
+      return await this.resetInvalidConfig("schema_validation_failed", parsed.error);
     }
     const config = parsed.data as RuntimeConfig;
     if (!parsedJson.hermesRuntime?.mode) {
@@ -121,6 +135,16 @@ export class RuntimeConfigStore {
     return this.configPath;
   }
 
+  getLastRecovery() {
+    return this.lastRecovery;
+  }
+
+  consumeLastRecovery() {
+    const recovery = this.lastRecovery;
+    this.lastRecovery = undefined;
+    return recovery;
+  }
+
   async getEnginePath(engineId: EngineId) {
     const config = await this.read();
     const configured = config.enginePaths?.[engineId]?.trim();
@@ -141,6 +165,30 @@ export class RuntimeConfigStore {
       }
     }
     return undefined;
+  }
+
+  private async resetInvalidConfig(reason: RuntimeConfigRecovery["reason"], error: unknown) {
+    const backupPath = await this.backupInvalidConfig().catch((backupError) => {
+      console.error("[RuntimeConfigStore] Failed to back up invalid config:", backupError);
+      return undefined;
+    });
+    const config = await defaultConfigWithPreferredRuntime();
+    await this.write(config);
+    this.lastRecovery = {
+      configPath: this.configPath,
+      backupPath,
+      reason,
+      message: error instanceof Error ? error.message : String(error),
+    };
+    return config;
+  }
+
+  private async backupInvalidConfig() {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = `${this.configPath}.bak.${timestamp}`;
+    await fs.mkdir(path.dirname(this.configPath), { recursive: true });
+    await fs.copyFile(this.configPath, backupPath);
+    return backupPath;
   }
 }
 

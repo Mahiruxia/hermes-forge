@@ -91,8 +91,6 @@ describe("model-connection-service", () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "my-model", context_length: 32000 }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "unsupported forced tool choice" }), { status: 400 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "unsupported flat tool choice" }), { status: 400 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "call_1", type: "function", function: { name: "ping", arguments: "{}" } }] } }] }), { status: 200 }));
 
     const result = await testModelConnection({
@@ -120,8 +118,6 @@ describe("model-connection-service", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "plain" } }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "plain" } }] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "plain" } }] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "plain" } }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { function_call: { name: "ping", arguments: "{}" } } }] }), { status: 200 }));
 
     const result = await testModelConnection({
@@ -141,6 +137,38 @@ describe("model-connection-service", () => {
     expect(result.supportsTools).toBe(true);
     expect(result.message).toContain("tool calling");
     expect(result.healthChecks?.find((step) => step.id === "agent_capability")?.detail).toContain("旧版 functions + function_call");
+  });
+
+  it("stops tool-calling probes on HTTP 429 to avoid burning relay quota", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "relay-model", context_length: 32000 }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "触发限额（每小时额度）上游 429" }), { status: 429 }));
+
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "openai_compatible",
+        baseUrl: "https://relay.example.com/v1",
+        model: "relay-model",
+        maxTokens: 32000,
+        secretRef: "secret:relay",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault({
+        hasSecret: async () => true,
+        readSecret: async () => "test-key",
+      }),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failureCategory).toBe("tool_calling_unavailable");
+    expect(result.message).toContain("HTTP 429");
+    expect(result.recommendedFix).toContain("小时额度");
+    expect(result.healthChecks?.find((step) => step.id === "agent_capability")?.detail).toContain("触发限额");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("accepts manually typed OpenAI-compatible models when /models is unavailable", async () => {
@@ -225,7 +253,7 @@ describe("model-connection-service", () => {
 
   it.each([
     ["MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.7"],
-    ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"],
+    ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-v4-pro"],
     ["DashScope/Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
     ["Moonshot/Kimi", "https://api.moonshot.cn/v1", "kimi-k2"],
     ["Zhipu", "https://open.bigmodel.cn/api/paas/v4", "glm-4.6"],
@@ -368,6 +396,53 @@ describe("model-connection-service", () => {
     expect(result.ok).toBe(false);
     expect(result.failureCategory).toBe("auth_invalid");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send API keys to private OpenAI-compatible endpoints", async () => {
+    const fetchMock = vi.mocked(fetch);
+
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "openai_compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "local-model",
+        secretRef: "secret:custom",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault({
+        hasSecret: async () => true,
+        readSecret: async () => "real-api-key",
+      }),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failureCategory).toBe("invalid_url");
+    expect(result.message).toContain("内网或本机地址");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still allows private OpenAI-compatible endpoints when no API key will be sent", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "local-model", context_length: 32000 }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "call_1" }] } }] }), { status: 200 }));
+
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "openai_compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "local-model",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault(),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("reports WSL localhost reachability issues with a host-IP fix hint", async () => {

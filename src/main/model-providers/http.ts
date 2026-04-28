@@ -1,6 +1,6 @@
 import type { ModelConnectionTestResult } from "../../shared/types";
 
-const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_STATUS = new Set([408, 409, 425, 500, 502, 503, 504]);
 
 export async function fetchWithRetry(url: string, init: RequestInit, options: {
   attempts?: number;
@@ -42,6 +42,7 @@ export function httpFailureCategory(status: number): NonNullable<ModelConnection
 export function httpFailureFix(status: number, baseUrl: string) {
   if (status === 401 || status === 403) return "请确认 provider 和 API Key 对得上。";
   if (status === 404) return `请确认地址是否指向兼容接口：${baseUrl}`;
+  if (status === 429) return "模型服务返回限流或额度不足（HTTP 429）。请等额度恢复、降低测试频率，或更换有剩余额度的 Key/中转站；Forge 不会自动重试 429，避免继续消耗额度。";
   if (status >= 500) return "服务端当前异常，请确认模型服务已经完整启动。";
   return "请重新检查地址、模型名和鉴权方式。";
 }

@@ -50,18 +50,20 @@ const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_QUEUE_EVENTS = 1000;
 const DEFAULT_MAX_LINE_CHARS = 16000;
 
-export function killActiveCommands() {
-  for (const child of activeChildren) {
-    killProcessTree(child);
-  }
+export async function killActiveCommands() {
+  await Promise.all([...activeChildren].map((child) => killProcessTree(child)));
 }
 
-function killProcessTree(child: ChildProcessWithoutNullStreams) {
+async function killProcessTree(child: ChildProcessWithoutNullStreams) {
   if (child.killed) {
     return;
   }
   if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, shell: false });
+    const pid = child.pid;
+    const result = await waitForTaskkill(pid);
+    if (result.exitCode !== 0) {
+      console.warn("[Hermes Forge] taskkill failed", { pid, exitCode: result.exitCode, stderr: result.stderr.trim() });
+    }
     return;
   }
   child.kill("SIGTERM");
@@ -96,13 +98,13 @@ export function executeCommand(command: string, args: string[], options: Command
     const timer = options.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          killProcessTree(child);
+          void killProcessTree(child);
         }, options.timeoutMs)
       : undefined;
 
     const abort = () => {
       cancelled = true;
-      killProcessTree(child);
+      void killProcessTree(child);
     };
     options.signal?.addEventListener("abort", abort, { once: true });
 
@@ -111,7 +113,7 @@ export function executeCommand(command: string, args: string[], options: Command
         stdoutBytes = bytes;
       }, () => {
         outputLimited = true;
-        killProcessTree(child);
+        void killProcessTree(child);
       });
     });
     child.stderr.on("data", (chunk: Buffer) => {
@@ -119,7 +121,7 @@ export function executeCommand(command: string, args: string[], options: Command
         stderrBytes = bytes;
       }, () => {
         outputLimited = true;
-        killProcessTree(child);
+        void killProcessTree(child);
       });
     });
     child.on("error", (error) => {
@@ -205,7 +207,7 @@ export async function* streamCommand(
     if (queue.length >= maxQueueEvents) {
       outputLimited = true;
       if (!child.killed) {
-        killProcessTree(child);
+        void killProcessTree(child);
       }
       return;
     }
@@ -218,7 +220,7 @@ export async function* streamCommand(
     if (totalOutputBytes > maxOutputBytes) {
       outputLimited = true;
       push({ type: "stderr", line: `命令输出超过 ${Math.round(maxOutputBytes / 1024)}KB，已自动中断。` });
-      killProcessTree(child);
+      void killProcessTree(child);
       return;
     }
     const text = (kind === "stdout" ? stdoutBuffer : stderrBuffer) + chunk.toString("utf8");
@@ -243,14 +245,14 @@ export async function* streamCommand(
 
   const abort = () => {
     push({ type: "stderr", line: "任务已请求取消，正在终止子进程。" });
-    killProcessTree(child);
+    void killProcessTree(child);
   };
   options.signal?.addEventListener("abort", abort, { once: true });
   const timer = options.timeoutMs
     ? setTimeout(() => {
         timedOut = true;
         push({ type: "stderr", line: `命令超过 ${Math.round(options.timeoutMs! / 1000)} 秒未完成，已自动中断。` });
-        killProcessTree(child);
+        void killProcessTree(child);
       }, options.timeoutMs)
     : undefined;
 
@@ -342,6 +344,22 @@ function appendLimitedOutput(
   setBytes(maxBytes);
   onLimit();
   return `${current}${chunk.subarray(0, remaining).toString("utf8")}\n...[output truncated: limit exceeded]`;
+}
+
+function waitForTaskkill(pid: number) {
+  return new Promise<{ exitCode: number | null; stderr: string }>((resolve) => {
+    const proc = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { windowsHide: true, shell: false });
+    let stderr = "";
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    proc.on("error", (error) => {
+      resolve({ exitCode: 1, stderr: error.message });
+    });
+    proc.on("close", (exitCode) => {
+      resolve({ exitCode, stderr });
+    });
+  });
 }
 
 function truncateLine(line: string, maxChars: number) {

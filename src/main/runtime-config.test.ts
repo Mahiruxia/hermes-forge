@@ -97,4 +97,38 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.modelProfiles[0].id).toMatch(/^model-/);
     expect(config.defaultModelProfileId).toBe(config.modelProfiles[0].id);
   });
+
+  it("backs up invalid JSON and resets to default config", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "config.json");
+    await fs.writeFile(configPath, "{not json", "utf8");
+
+    const store = new RuntimeConfigStore(configPath);
+    const config = await store.read();
+    const backups = await fs.readdir(dir);
+
+    expect(config.defaultModelProfileId).toBe("default-local");
+    expect(backups.some((name) => name.startsWith("config.json.bak."))).toBe(true);
+    expect(store.getLastRecovery()).toMatchObject({ reason: "invalid_json", configPath });
+    await expect(fs.readFile(configPath, "utf8")).resolves.toContain("default-local");
+  });
+
+  it("backs up schema-invalid config and resets to default config", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "config.json");
+    await fs.writeFile(configPath, JSON.stringify({
+      modelProfiles: [{ id: "bad", provider: "openai", model: "gpt-5.4" }],
+      updateSources: { hermes: "not a url" },
+    }), "utf8");
+
+    const store = new RuntimeConfigStore(configPath);
+    const config = await store.read();
+    const recovery = store.consumeLastRecovery();
+
+    expect(config.defaultModelProfileId).toBe("default-local");
+    expect(recovery).toMatchObject({ reason: "schema_validation_failed", configPath });
+    expect(recovery?.backupPath).toContain("config.json.bak.");
+  });
 });

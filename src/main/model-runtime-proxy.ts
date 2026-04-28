@@ -1,5 +1,5 @@
 import http from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { EngineRuntimeEnv } from "../shared/types";
 
@@ -19,11 +19,10 @@ type BaiduCredential = {
   secretKey: string;
 };
 
-const PROXY_API_KEY = "hermes-forge-local-proxy-key";
-
 export class ModelRuntimeProxyService {
   private server?: http.Server;
   private proxyRoot?: string;
+  private proxyApiKey = randomBytes(32).toString("hex");
   private readonly targets = new Map<string, ProxyTarget>();
   private readonly baiduTokens = new Map<string, { accessToken: string; expiresAt: number }>();
 
@@ -57,8 +56,8 @@ export class ModelRuntimeProxyService {
       AI_BASE_URL: proxyBaseUrl,
       OPENAI_BASE_URL: proxyBaseUrl,
       ANTHROPIC_BASE_URL: proxyBaseUrl,
-      AI_API_KEY: PROXY_API_KEY,
-      OPENAI_API_KEY: PROXY_API_KEY,
+      AI_API_KEY: this.proxyApiKey,
+      OPENAI_API_KEY: this.proxyApiKey,
       HERMES_FORGE_UPSTREAM_BASE_URL: upstreamBaseUrl,
       HERMES_FORGE_UPSTREAM_API_KEY_SHA: fingerprint(upstreamApiKey || runtime.env.HERMES_FORGE_BAIDU_CREDENTIAL || ""),
     };
@@ -93,9 +92,13 @@ export class ModelRuntimeProxyService {
       void this.forward(request, response);
     });
     await new Promise<void>((resolve, reject) => {
-      this.server?.once("error", reject);
+      const startupError = (error: Error) => reject(error);
+      this.server?.once("error", startupError);
       this.server?.listen(0, "127.0.0.1", () => {
-        this.server?.off("error", reject);
+        this.server?.off("error", startupError);
+        this.server?.on("error", (error) => {
+          console.warn("[Hermes Forge] model runtime proxy server error:", error);
+        });
         resolve();
       });
     });
@@ -104,6 +107,11 @@ export class ModelRuntimeProxyService {
   }
 
   private async forward(request: http.IncomingMessage, response: http.ServerResponse) {
+    if (!this.isAuthorized(request)) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "Model runtime proxy authentication failed." } }));
+      return;
+    }
     const incomingUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     const match = incomingUrl.pathname.match(/^\/profiles\/([^/]+)\/v1(\/.*)?$/);
     const target = match ? this.targets.get(match[1]) : undefined;
@@ -127,6 +135,16 @@ export class ModelRuntimeProxyService {
         },
       }));
     }
+  }
+
+  private isAuthorized(request: http.IncomingMessage) {
+    const authHeader = Array.isArray(request.headers.authorization) ? request.headers.authorization[0] : request.headers.authorization;
+    const proxyHeader = request.headers["x-proxy-auth"];
+    const provided = (authHeader?.replace(/^Bearer\s+/i, "") || (Array.isArray(proxyHeader) ? proxyHeader[0] : proxyHeader) || "").trim();
+    if (!provided) return false;
+    const expected = Buffer.from(this.proxyApiKey);
+    const actual = Buffer.from(provided);
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
   private async forwardOpenAiCompatible(target: ProxyTarget, request: http.IncomingMessage, response: http.ServerResponse, suffix: string, search: string) {

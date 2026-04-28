@@ -126,10 +126,25 @@ export function friendlyProfileName(sourceType: ModelSourceType, model: string, 
   return model ? `${provider.label} · ${model}` : provider.label;
 }
 
-export function roleLabel(role: ModelCapabilityRole) {
+export function roleLabel(role: ModelCapabilityRole, sourceType?: ModelSourceType) {
+  if (role === "primary_agent" && isCodingPlanSourceType(sourceType)) return "可作 Coding Plan 主模型（运行时验证）";
   if (role === "primary_agent") return "可作主模型";
   if (role === "auxiliary_model") return "辅助模型";
   return "仅接入 provider";
+}
+
+export function isCodingPlanSourceType(sourceType?: ModelSourceType) {
+  if (!sourceType) return false;
+  return [
+    "volcengine_coding_api_key",
+    "dashscope_coding_api_key",
+    "zhipu_coding_api_key",
+    "baidu_qianfan_coding_api_key",
+    "tencent_token_plan_api_key",
+    "tencent_hunyuan_token_plan_api_key",
+    "minimax_token_plan_api_key",
+    "kimi_coding_api_key",
+  ].includes(sourceType);
 }
 
 export function healthStepLabel(stepId: NonNullable<ModelConnectionTestResult["healthChecks"]>[number]["id"]) {

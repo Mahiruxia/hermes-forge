@@ -108,6 +108,10 @@
       {
         "from": "resources/hermes-windows-agent.py",
         "to": "hermes-windows-agent.py"
+      },
+      {
+        "from": "resources/weixin-qr-login.py",
+        "to": "resources/weixin-qr-login.py"
       }
     ],
     "win": {

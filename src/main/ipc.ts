@@ -42,6 +42,10 @@ import { defaultProviderRegistry } from "./model-providers/registry";
 import { IpcChannels } from "../shared/ipc";
 import {
   modelRoleSchema,
+  modelProfileSchema,
+  modelProviderProfileSchema,
+  enginePermissionPolicySchema,
+  hermesRuntimeSchema,
   runtimeConfigSchema,
   secretRefSchema,
   secretSaveInputSchema,
@@ -73,6 +77,22 @@ const quickTextFileInputSchema = z.object({
   fileName: z.string().trim().max(120).optional(),
   content: z.string().max(20000).optional(),
 });
+const clipboardTextSchema = z.string().trim().min(1).max(100_000);
+const updateModelConfigSchema = z.object({
+  defaultProfileId: z.string().max(120).optional(),
+  defaultModelId: z.string().max(120).optional(),
+  modelRoleAssignments: z.partialRecord(modelRoleSchema, z.string().trim().min(1).max(120)).optional(),
+  modelProfiles: z.array(modelProfileSchema).optional(),
+  providerProfiles: z.array(modelProviderProfileSchema).optional(),
+});
+const updateHermesConfigSchema = z.object({
+  rootPath: z.string().trim().max(1000).optional(),
+  warmupMode: z.enum(["off", "cheap", "real_probe"]).optional(),
+  permissions: enginePermissionPolicySchema.partial().optional(),
+  runtime: hermesRuntimeSchema.partial().optional(),
+});
+const ALLOWED_OPEN_PATH_EXTENSIONS = new Set([".txt", ".md", ".json", ".csv", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".log"]);
+const BLOCKED_OPEN_PATH_EXTENSIONS = new Set([".exe", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".wsh", ".msi", ".url", ".lnk", ".hta", ".html", ".htm"]);
 const attachmentSourcePathsSchema = z.array(workspacePathInputSchema).max(12);
 const setupDependencyRepairIdSchema = z.enum(["git", "python", "hermes_pyyaml", "weixin_aiohttp"]);
 const installHermesOptionsSchema = z.object({
@@ -337,8 +357,13 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   });
 
   ipcMain.handle(IpcChannels.openPath, async (_event, targetPath: string) => {
+    const pathValidation = validateOpenablePath(targetPath, { skipTypeCheck: true });
+    if (!pathValidation.ok) return pathValidation;
     const stat = await fs.stat(targetPath).catch(() => undefined);
     if (!stat) return { ok: false, message: `路径不存在：${targetPath}` };
+    const typeValidation = validateOpenablePath(targetPath, { isDirectory: stat.isDirectory() });
+    if (!typeValidation.ok) return typeValidation;
+    if (!stat.isFile() && !stat.isDirectory()) return { ok: false, message: "只能打开受信任类型的文件或文件夹。" };
     const error = await shell.openPath(targetPath);
     return { ok: !error, message: error || `已打开：${targetPath}` };
   });
@@ -648,33 +673,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     };
   });
   ipcMain.handle(IpcChannels.updateHermesConfig, async (_event, input) => {
-    const parsed = z.object({
-      rootPath: z.string().trim().max(1000).optional(),
-      warmupMode: z.enum(["off", "cheap", "real_probe"]).optional(),
-      permissions: z.object({
-        enabled: z.boolean().optional(),
-        workspaceRead: z.boolean().optional(),
-        fileWrite: z.boolean().optional(),
-        commandRun: z.boolean().optional(),
-        memoryRead: z.boolean().optional(),
-        contextBridge: z.boolean().optional(),
-      }).optional(),
-      runtime: z.object({
-        mode: z.enum(["windows", "wsl"]).optional(),
-        distro: z.string().trim().max(120).optional(),
-        pythonCommand: z.string().trim().min(1).max(120).optional(),
-        windowsAgentMode: z.enum(["hermes_native", "host_tool_loop", "disabled"]).optional(),
-        cliPermissionMode: z.enum(["yolo", "safe", "guarded"]).optional(),
-        permissionPolicy: z.enum(["passthrough", "bridge_guarded", "restricted_workspace"]).optional(),
-        workerMode: z.enum(["off", "experimental_wsl"]).optional(),
-        installSource: z.object({
-          repoUrl: z.string().trim().url(),
-          branch: z.string().trim().max(200).optional(),
-          commit: z.string().trim().regex(/^[0-9a-fA-F]{7,40}$/).optional(),
-          sourceLabel: z.enum(["official", "fork", "pinned"]).default("official"),
-        }).optional(),
-      }).optional(),
-    }).parse(input);
+    const parsed = updateHermesConfigSchema.parse(input);
     const config = await services.configStore.read();
     return services.configStore.write({
       ...config,
@@ -712,13 +711,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     });
   });
   ipcMain.handle(IpcChannels.updateModelConfig, async (_event, input) => {
-    const parsed = z.object({
-      defaultProfileId: z.string().max(120).optional(),
-      defaultModelId: z.string().max(120).optional(),
-      modelRoleAssignments: z.partialRecord(modelRoleSchema, z.string().trim().min(1).max(120)).optional(),
-      modelProfiles: z.array(z.any()).optional(),
-      providerProfiles: z.array(z.any()).optional(),
-    }).parse(input);
+    const parsed = updateModelConfigSchema.parse(input);
     const config = await services.configStore.read();
     const defaultModelProfileId = parsed.defaultModelId ?? parsed.defaultProfileId ?? parsed.modelRoleAssignments?.chat ?? config.defaultModelProfileId;
     return writeRuntimeConfigWithModelSync(migrateRuntimeConfigModels({
@@ -979,7 +972,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     return { ok: true, path: result.filePath, message: "已导出" };
   });
   ipcMain.handle(IpcChannels.writeClipboard, async (_event, text: string) => {
-    clipboard.writeText(text);
+    clipboard.writeText(clipboardTextSchema.parse(text));
     return { ok: true };
   });
   ipcMain.handle(IpcChannels.oneClickDiagnosticsRun, (_event, input) =>
@@ -1206,6 +1199,20 @@ async function testOpenAiCompatibleModel(
   apiKey: string | undefined,
   sourceType: ModelConnectionTestResult["sourceType"],
 ): Promise<ModelConnectionTestResult> {
+  const outboundValidation = validateOutboundModelBaseUrl(baseUrl, {
+    allowPrivateNetwork: isLocalModelSourceType(sourceType),
+  });
+  if (!outboundValidation.ok) {
+    return {
+      ok: false,
+      profileId,
+      sourceType,
+      normalizedBaseUrl: baseUrl,
+      failureCategory: "invalid_url",
+      recommendedFix: outboundValidation.message,
+      message: outboundValidation.message,
+    };
+  }
   const modelsUrl = `${baseUrl.replace(/\/$/, "")}/models`;
   try {
     const response = await fetch(modelsUrl, {
@@ -1367,11 +1374,9 @@ function sourceTypeFromProfile(profile: Pick<ModelProfile, "provider" | "baseUrl
       ? "ollama"
       : baseUrl.includes(":1234")
         ? "lm_studio"
-        : baseUrl.includes(":8000")
-          ? "vllm"
-          : baseUrl.includes(":30000")
-            ? "sglang"
-            : "openai_compatible";
+        : baseUrl.includes(":30000")
+          ? "sglang"
+          : "openai_compatible";
   }
   if (profile.provider === "openrouter") return "openrouter_api_key";
   if (profile.provider === "openai") return "openai_compatible";
@@ -1625,6 +1630,75 @@ async function exists(targetPath: string) {
   }
 }
 
+function validateOpenablePath(targetPath: unknown, options: { isDirectory?: boolean; skipTypeCheck?: boolean } = {}): { ok: boolean; message: string } {
+  if (typeof targetPath !== "string" || !targetPath.trim()) {
+    return { ok: false, message: "路径不能为空。" };
+  }
+  const trimmed = targetPath.trim();
+  if (/^\\\\/.test(trimmed)) {
+    return { ok: false, message: "出于安全考虑，不能直接打开 UNC 网络路径。" };
+  }
+  if (!path.isAbsolute(trimmed)) {
+    return { ok: false, message: "只能打开本机绝对路径。" };
+  }
+  if (options.skipTypeCheck || options.isDirectory) {
+    return { ok: true, message: "ok" };
+  }
+  const ext = path.extname(trimmed).toLowerCase();
+  if (BLOCKED_OPEN_PATH_EXTENSIONS.has(ext)) {
+    return { ok: false, message: `出于安全考虑，不能打开 ${ext || "该类型"} 文件。` };
+  }
+  if (!ALLOWED_OPEN_PATH_EXTENSIONS.has(ext)) {
+    return { ok: false, message: `只允许打开文本、图片、PDF、日志等安全文件类型。当前类型：${ext || "无扩展名"}` };
+  }
+  return { ok: true, message: "ok" };
+}
+
+function validateOutboundModelBaseUrl(baseUrl: string, options: { allowPrivateNetwork?: boolean } = {}): { ok: boolean; message: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return { ok: false, message: `Base URL 格式不正确：${baseUrl}` };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { ok: false, message: "Base URL 只支持 http 或 https。" };
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!options.allowPrivateNetwork && isPrivateOrInternalHost(hostname)) {
+    return {
+      ok: false,
+      message: `检测到内网或本机地址 ${hostname}。为避免把 API Key 发送到不受信任的本地/内网服务，Forge 已取消本次连接测试。`,
+    };
+  }
+  return { ok: true, message: "ok" };
+}
+
+function isPrivateOrInternalHost(hostname: string) {
+  if (!hostname) return true;
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) return true;
+  if (!hostname.includes(".") && !isIpv4(hostname) && !hostname.includes(":")) return true;
+  if (hostname === "::1" || hostname.startsWith("fe80:") || hostname.startsWith("fd")) return true;
+  if (!isIpv4(hostname)) return false;
+  const parts = hostname.split(".").map((part) => Number(part));
+  const [a, b] = parts;
+  return a === 10
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || a === 0;
+}
+
+function isIpv4(hostname: string) {
+  const parts = hostname.split(".");
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function isLocalModelSourceType(sourceType: ModelConnectionTestResult["sourceType"]) {
+  return sourceType === "ollama" || sourceType === "vllm" || sourceType === "sglang" || sourceType === "lm_studio";
+}
+
 function modelSupportsRuntimeRole(profile: ModelProfile, role: ModelRole) {
   const definition = defaultProviderRegistry.definitions().find((item) => item.sourceType === profile.sourceType)
     ?? defaultProviderRegistry.getByModelOrUrl(profile.model, profile.baseUrl).definition;
@@ -1652,3 +1726,8 @@ function modelSupportsRuntimeRole(profile: ModelProfile, role: ModelRole) {
   }
   return { ok: true, message: "ok" };
 }
+
+export const testOnly = {
+  validateOpenablePath,
+  validateOutboundModelBaseUrl,
+};
