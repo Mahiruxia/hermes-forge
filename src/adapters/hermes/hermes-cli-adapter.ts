@@ -20,7 +20,7 @@ import { validateWslHermesCli, type HermesCliValidationFailureKind } from "../..
 import type { RuntimeAdapterFactory } from "../../runtime/runtime-adapter";
 import { toWslPath as runtimeToWslPath, sanitizeEnvForWsl } from "../../runtime/runtime-resolver";
 import { extractHermesCliLifecycleSessionId, isHermesCliLifecycleLine } from "../../shared/hermes-cli-output";
-import { mapSourceTypeToHermesProvider, resolveHermesProvider } from "../../shared/model-config";
+import { mapSourceTypeToHermesProvider, normalizeModelIdForSource, normalizeSourceTypeForProfile, resolveHermesProvider } from "../../shared/model-config";
 import { createPermissionBoundaryAudit, createPermissionPolicyBlockReason, type PermissionBoundaryAudit } from "../../shared/permission-audit";
 import type { EngineAdapter, HermesToolLoopMessage } from "../engine-adapter";
 import type {
@@ -823,7 +823,7 @@ export class HermesCliAdapter implements EngineAdapter {
 
   private modelArgs(request: EngineRunRequest) {
     const args: string[] = [];
-    const model = request.runtimeEnv?.model?.trim();
+    const model = this.normalizedRuntimeModel(request.runtimeEnv);
     if (model) {
       args.push("--model", model);
     }
@@ -832,7 +832,7 @@ export class HermesCliAdapter implements EngineAdapter {
 
   private providerArgs(request: EngineRunRequest) {
     const args: string[] = [];
-    const sourceType = request.runtimeEnv?.sourceType;
+    const sourceType = this.normalizedRuntimeSourceType(request.runtimeEnv);
     // Map Forge sourceType to Hermes CLI --provider for providers that need
     // special handling (e.g. kimi-coding has reasoning_content quirks).
     const hermesProvider = this.mapSourceTypeToHermesProvider(sourceType);
@@ -844,6 +844,18 @@ export class HermesCliAdapter implements EngineAdapter {
 
   private mapSourceTypeToHermesProvider(sourceType: string | undefined): string | undefined {
     return mapSourceTypeToHermesProvider(sourceType);
+  }
+
+  private normalizedRuntimeSourceType(runtimeEnv?: EngineRuntimeEnv) {
+    return normalizeSourceTypeForProfile({
+      sourceType: runtimeEnv?.sourceType,
+      baseUrl: runtimeEnv?.baseUrl,
+      model: runtimeEnv?.model,
+    });
+  }
+
+  private normalizedRuntimeModel(runtimeEnv?: EngineRuntimeEnv) {
+    return normalizeModelIdForSource(this.normalizedRuntimeSourceType(runtimeEnv), runtimeEnv?.model ?? "");
   }
 
   private resolveCliPermissionStrategy(runtime: HermesRuntimeConfig): HermesCliPermissionStrategy {
@@ -1297,6 +1309,12 @@ export class HermesCliAdapter implements EngineAdapter {
   private async cleanReply(lines: string[], startedAt: number, streamReplyLines: string[] = []) {
     const directReply = this.extractDirectReply(lines);
     const streamReply = this.normalizeReply(streamReplyLines.join("\n"));
+    if (streamReply || directReply) {
+      return this.pickBestReply([
+        streamReply,
+        directReply,
+      ]);
+    }
     const sessionId = this.extractSessionId(lines);
     const sessionReply = sessionId ? await this.readSessionReplyWithRetry(sessionId) : "";
     const newestSessionReply = sessionReply ? "" : await this.readNewestSessionReply(startedAt);
@@ -1467,6 +1485,9 @@ export class HermesCliAdapter implements EngineAdapter {
 
   private async hermesEnv(rootPath: string, runtime: HermesRuntimeConfig, request?: EngineRunRequest): Promise<NodeJS.ProcessEnv> {
     const hermesHome = await this.activeHermesHome();
+    const runtimeEnv = request?.runtimeEnv;
+    const normalizedSourceType = this.normalizedRuntimeSourceType(runtimeEnv);
+    const normalizedModel = this.normalizedRuntimeModel(runtimeEnv);
     const env = {
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8",
@@ -1481,12 +1502,12 @@ export class HermesCliAdapter implements EngineAdapter {
       PROMPT_TOOLKIT_NO_CPR: "1",
       PROMPT_TOOLKIT_COLOR_DEPTH: "DEPTH_1_BIT",
       HERMES_HOME: runtime.mode === "wsl" ? toWslPath(hermesHome) : hermesHome,
-      ...(request?.runtimeEnv ? {
-        HERMES_INFERENCE_PROVIDER: this.hermesProvider(request.runtimeEnv.provider, request.runtimeEnv.sourceType),
-        OPENAI_MODEL: request.runtimeEnv.model,
+      ...(runtimeEnv?.env ?? {}),
+      ...(runtimeEnv ? {
+        HERMES_INFERENCE_PROVIDER: this.hermesProvider(runtimeEnv.provider, normalizedSourceType),
+        AI_MODEL: normalizedModel,
+        OPENAI_MODEL: normalizedModel,
       } : {}),
-      ...(request?.runtimeEnv?.model ? { OPENAI_MODEL: request.runtimeEnv.model } : {}),
-      ...(request?.runtimeEnv?.env ?? {}),
     };
     return env;
   }

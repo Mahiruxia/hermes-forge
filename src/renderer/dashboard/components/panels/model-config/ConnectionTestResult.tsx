@@ -2,7 +2,7 @@ import { AlertCircle, CheckCircle2, ChevronDown, Loader2, ShieldCheck } from "lu
 import { useState } from "react";
 import type { ModelConnectionTestResult } from "../../../../../shared/types";
 import { cn } from "../../../DashboardPrimitives";
-import { healthStepLabel, isCodingPlanSourceType, MIN_AGENT_CONTEXT, roleLabel } from "./modelConfigUtils";
+import { codingPlanRuntimeHint, healthStepLabel, isCodingPlanSourceType, MIN_AGENT_CONTEXT, roleLabel } from "./modelConfigUtils";
 import { StatusBadge } from "./StatusBadge";
 import type { BusyAction, OperationNotice } from "./types";
 
@@ -96,7 +96,8 @@ function WslLocalhostHelp(props: { testResult?: ModelConnectionTestResult }) {
 
 export function noticeForTestResult(result: ModelConnectionTestResult): OperationNotice {
   if (result.ok && isCodingPlanSourceType(result.sourceType)) {
-    return { tone: "success", title: "配置已保存（由 Hermes 运行时验证）", message: result.message || "Coding Plan 配置已同步到 Hermes，实际可用性请在会话中确认。" };
+    const hint = codingPlanRuntimeHint(result.sourceType);
+    return { tone: "success", title: "配置已保存（Hermes 运行时已同步）", message: result.message || hint.message };
   }
   if (result.ok) return { tone: "success", title: "测试通过", message: result.message || "这个模型已通过连接检查。" };
   const canStillSave = result.agentRole === "auxiliary_model" || result.agentRole === "provider_only";
@@ -115,7 +116,7 @@ function resultTone(result?: ModelConnectionTestResult): OperationNotice["tone"]
 
 function resultTitle(result?: ModelConnectionTestResult) {
   if (!result) return undefined;
-  if (result.ok && isCodingPlanSourceType(result.sourceType)) return "配置已保存（由 Hermes 运行时验证）";
+  if (result.ok && isCodingPlanSourceType(result.sourceType)) return "配置已保存（Hermes 运行时已同步）";
   return result.ok ? "测试通过" : "测试失败";
 }
 

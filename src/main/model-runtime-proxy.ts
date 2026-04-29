@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { EngineRuntimeEnv } from "../shared/types";
 
-type ProxyMode = "openai_passthrough" | "baidu_wenxin";
+type ProxyMode = "openai_passthrough" | "baidu_wenxin" | "mimo_api_key";
 
 type ProxyTarget = {
   key: string;
@@ -35,7 +35,9 @@ export class ModelRuntimeProxyService {
     const baiduCredential = sourceType === "baidu_wenxin_api_key"
       ? parseBaiduCredential(runtime.env.HERMES_FORGE_BAIDU_CREDENTIAL ?? "")
       : undefined;
-    const mode: ProxyMode | undefined = baiduCredential
+    const mode: ProxyMode | undefined = sourceType === "mimo_api_key" || sourceType === "mimo_token_plan_api_key"
+      ? "mimo_api_key"
+      : baiduCredential
       ? "baidu_wenxin"
       : needsProxyApiKey(upstreamApiKey)
         ? "openai_passthrough"
@@ -153,7 +155,12 @@ export class ModelRuntimeProxyService {
     upstream.search = search;
 
     const headers = headersFromIncoming(request);
-    headers.set("authorization", `Bearer ${target.upstreamApiKey ?? ""}`);
+    if (target.mode === "mimo_api_key") {
+      headers.set("authorization", `Bearer ${target.upstreamApiKey ?? ""}`);
+      headers.set("api-key", target.upstreamApiKey ?? "");
+    } else {
+      headers.set("authorization", `Bearer ${target.upstreamApiKey ?? ""}`);
+    }
     const upstreamResponse = await fetch(upstream, {
       method: request.method,
       headers,

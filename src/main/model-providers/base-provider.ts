@@ -78,24 +78,28 @@ export abstract class BaseProvider {
     const steps: ModelHealthCheckStep[] = [];
     const modelInfo = await this.fetchModels({ ...input, profile }, baseUrl, auth.auth);
     steps.push(step("auth", modelInfo.authResolved, modelInfo.authResolved ? "鉴权已通过" : modelInfo.message));
-    const modelListMismatch = modelInfo.availableModels.length > 0 && !modelInfo.availableModels.includes(profile.model);
+    const effectiveProfile = this.withCanonicalModel(profile, modelInfo.availableModels);
+    const modelCanonicalized = effectiveProfile.model !== profile.model;
+    const modelListMismatch = modelInfo.availableModels.length > 0 && !modelInfo.availableModels.includes(effectiveProfile.model);
     steps.push(step(
       "models",
       modelInfo.ok,
-      modelListMismatch
+      modelCanonicalized
+        ? `模型列表已将 ${profile.model} 规范为 ${effectiveProfile.model}；继续用规范模型 ID 实测。`
+        : modelListMismatch
         ? `模型列表返回 ${modelInfo.availableModels.length} 个模型，但未包含 ${profile.model}；继续用 chat 实测为准。`
         : modelInfo.message,
       modelListMismatch ? `返回模型示例：${modelInfo.availableModels.slice(0, 12).join("、")}` : undefined,
     ));
     if (!modelInfo.ok) {
-      return this.fail(profile, modelInfo.failureCategory ?? "unknown", modelInfo.message, modelInfo.recommendedFix, steps, {
+      return this.fail(effectiveProfile, modelInfo.failureCategory ?? "unknown", modelInfo.message, modelInfo.recommendedFix, steps, {
         normalizedBaseUrl: baseUrl,
         availableModels: modelInfo.availableModels,
         authResolved: modelInfo.authResolved,
       });
     }
 
-    const chat = await this.sendTestChat({ ...input, profile }, baseUrl, auth.auth);
+    const chat = await this.sendTestChat({ ...input, profile: effectiveProfile }, baseUrl, auth.auth);
     steps.push(step("chat", chat.ok, chat.message));
     const isCodingPlan = this.definition.badge === "Coding Plan";
     const isAccessTerminated = !chat.ok && chat.failureCategory === "manual_action_required" && /access_terminated/i.test(chat.message ?? "");
@@ -104,7 +108,7 @@ export abstract class BaseProvider {
       if (isCodingPlan) {
         if (chat.failureCategory === "network_unreachable" || (chat.failureCategory === "auth_invalid" && !isAccessTerminated)) {
           return this.fail(
-            profile,
+            effectiveProfile,
             chat.failureCategory,
             chat.message,
             chat.recommendedFix,
@@ -116,9 +120,9 @@ export abstract class BaseProvider {
         const roleCompatibility = this.buildRoleCompatibility("provider_only", runtimeCompatibility);
         steps.push(step("agent_capability", false, "Coding Plan provider 的 agent 能力由 Hermes Agent 在运行时验证，Forge 不做直接测试。"));
         steps.push(step("runtime", runtimeCompatibility !== "connection_only", runtimeCompatibility === "proxy" ? "运行态将通过本地 OpenAI 兼容代理接入 Hermes。" : runtimeCompatibility === "runtime" ? "运行态可直接同步到 Hermes。" : "当前只支持连接测试和保存，暂不能分配给 Hermes runtime。"));
-        const wsl = await this.testWslIfNeeded({ ...input, profile }, baseUrl, steps);
+        const wsl = await this.testWslIfNeeded({ ...input, profile: effectiveProfile }, baseUrl, steps);
         if (!wsl.ok) {
-          return this.fail(profile, "wsl_unreachable", wsl.message ?? "WSL 内 Hermes 暂时访问不到这个模型服务地址。", wsl.fixHint, steps, {
+          return this.fail(effectiveProfile, "wsl_unreachable", wsl.message ?? "WSL 内 Hermes 暂时访问不到这个模型服务地址。", wsl.fixHint, steps, {
             normalizedBaseUrl: baseUrl,
             availableModels: modelInfo.availableModels,
             authResolved: modelInfo.authResolved,
@@ -131,7 +135,7 @@ export abstract class BaseProvider {
           });
         }
         return success({
-          profile,
+          profile: effectiveProfile,
           sourceType: this.sourceType,
           family: this.definition.family,
           authMode: this.definition.authMode,
@@ -148,17 +152,17 @@ export abstract class BaseProvider {
         });
       }
       return this.fail(
-        profile,
+        effectiveProfile,
         modelListMismatch ? "model_not_found" : chat.failureCategory ?? "unknown",
-        modelListMismatch ? `模型服务可达，但模型列表不包含"${profile.model}"，chat 实测也失败。` : chat.message,
+        modelListMismatch ? `模型服务可达，但模型列表不包含"${effectiveProfile.model}"，chat 实测也失败。` : chat.message,
         modelListMismatch ? "请从返回的模型列表里选择一个模型，或确认模型 ID/部署名是否正确。" : chat.recommendedFix,
         steps,
         { normalizedBaseUrl: baseUrl, availableModels: modelInfo.availableModels, authResolved: modelInfo.authResolved },
       );
     }
 
-    const toolCheck = await this.testToolCalling({ ...input, profile }, baseUrl, auth.auth);
-    const contextWindow = profile.maxTokens ?? inferContextWindow(profile.model, modelInfo.rawModelPayload);
+    const toolCheck = await this.testToolCalling({ ...input, profile: effectiveProfile }, baseUrl, auth.auth);
+    const contextWindow = effectiveProfile.maxTokens ?? inferContextWindow(effectiveProfile.model, modelInfo.rawModelPayload);
     const agentRole = classifyAgentRole({ contextWindow, supportsTools: toolCheck.ok });
     const runtimeCompatibility = this.effectiveRuntimeCompatibility();
     const roleCompatibility = this.buildRoleCompatibility(agentRole, runtimeCompatibility);
@@ -182,9 +186,9 @@ export abstract class BaseProvider {
           : "当前只支持连接测试和保存，暂不能分配给 Hermes runtime。",
     ));
 
-    const wsl = await this.testWslIfNeeded({ ...input, profile }, baseUrl, steps);
+    const wsl = await this.testWslIfNeeded({ ...input, profile: effectiveProfile }, baseUrl, steps);
     if (!wsl.ok) {
-      return this.fail(profile, "wsl_unreachable", wsl.message ?? "WSL 内 Hermes 暂时访问不到这个模型服务地址。", wsl.fixHint, steps, {
+      return this.fail(effectiveProfile, "wsl_unreachable", wsl.message ?? "WSL 内 Hermes 暂时访问不到这个模型服务地址。", wsl.fixHint, steps, {
         normalizedBaseUrl: baseUrl,
         availableModels: modelInfo.availableModels,
         authResolved: modelInfo.authResolved,
@@ -203,7 +207,7 @@ export abstract class BaseProvider {
       const toolFailureMessage = /HTTP 429|限流|额度/.test(toolCheck.message)
         ? toolCheck.message
         : "模型可以正常对话，但不支持「工具调用」功能。Hermes 需要工具调用才能自动执行命令、读写文件。如果你确认不需要这些功能，可以把它保存为「辅助模型」；否则请换一个支持 tool calling 的模型。";
-      return this.fail(profile, "tool_calling_unavailable", toolFailureMessage, toolCheck.recommendedFix ?? "请开启工具调用能力，或把它只作为辅助模型保存。", steps, {
+      return this.fail(effectiveProfile, "tool_calling_unavailable", toolFailureMessage, toolCheck.recommendedFix ?? "请开启工具调用能力，或把它只作为辅助模型保存。", steps, {
         normalizedBaseUrl: baseUrl,
         availableModels: modelInfo.availableModels,
         authResolved: modelInfo.authResolved,
@@ -217,7 +221,7 @@ export abstract class BaseProvider {
       });
     }
     if (!contextWindow || contextWindow < 16_000) {
-      return this.fail(profile, "context_too_low", `模型服务可以聊天，也支持 tool calling，但上下文窗口只有 ${contextWindow ?? 0}，不适合作为 Hermes 主模型。`, "请填写真实的 context length（至少 16000），或把它只作为辅助模型保存。", steps, {
+      return this.fail(effectiveProfile, "context_too_low", `模型服务可以聊天，也支持 tool calling，但上下文窗口只有 ${contextWindow ?? 0}，不适合作为 Hermes 主模型。`, "请填写真实的 context length（至少 16000），或把它只作为辅助模型保存。", steps, {
         normalizedBaseUrl: baseUrl,
         availableModels: modelInfo.availableModels,
         authResolved: modelInfo.authResolved,
@@ -232,7 +236,7 @@ export abstract class BaseProvider {
     }
 
     return success({
-      profile,
+      profile: effectiveProfile,
       sourceType: this.sourceType,
       family: this.definition.family,
       authMode: this.definition.authMode,
@@ -271,18 +275,19 @@ export abstract class BaseProvider {
   }
 
   protected async buildDelegatedSuccess(input: ProviderTestContext, baseUrl: string): Promise<ModelConnectionTestResult> {
+    const profile = this.withCanonicalModel(input.profile, this.definition.presetModels ?? []);
     const steps: ModelHealthCheckStep[] = [
       step("auth", true, "API Key 已就绪"),
       step("models", true, "Coding Plan / Token Plan 直通 Hermes Agent，跳过 Forge 侧模型发现。"),
       step("agent_capability", true, "Agent 能力由 Hermes Agent 内置 handler 在运行时验证。"),
       step("runtime", true, "运行态由 Hermes Agent 直接接管。"),
     ];
-    const wsl = await this.testWslIfNeeded(input, baseUrl, steps);
+    const wsl = await this.testWslIfNeeded({ ...input, profile }, baseUrl, steps);
     const runtimeCompatibility = this.effectiveRuntimeCompatibility();
     const roleCompatibility = this.buildRoleCompatibility("primary_agent", runtimeCompatibility);
     if (!wsl.ok) {
       return this.fail(
-        input.profile,
+        profile,
         "wsl_unreachable",
         wsl.message ?? "WSL 内 Hermes 暂时访问不到这个模型服务地址。",
         wsl.fixHint,
@@ -301,7 +306,7 @@ export abstract class BaseProvider {
       );
     }
     return success({
-      profile: input.profile,
+      profile,
       sourceType: this.sourceType,
       family: this.definition.family,
       authMode: this.definition.authMode,
@@ -424,6 +429,11 @@ export abstract class BaseProvider {
 
   protected fail(profile: ModelProfile, category: NonNullable<ModelConnectionTestResult["failureCategory"]>, message: string, fix: string | undefined, steps: ModelHealthCheckStep[], extra: Partial<ProviderHealthExtra> = {}) {
     return failure({ profile, sourceType: this.sourceType, family: this.definition.family, authMode: this.definition.authMode, category, message, fix, steps, ...extra });
+  }
+
+  private withCanonicalModel(profile: ModelProfile, availableModels: string[]): ModelProfile {
+    const canonical = availableModels.find((item) => item.toLowerCase() === profile.model.trim().toLowerCase());
+    return canonical && canonical !== profile.model ? { ...profile, model: canonical } : profile;
   }
 
   private async testWslIfNeeded(input: ProviderTestContext, baseUrl: string, steps: ModelHealthCheckStep[]) {

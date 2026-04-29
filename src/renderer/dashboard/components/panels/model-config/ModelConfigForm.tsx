@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { LocalModelDiscoveryResult } from "../../../../../shared/types";
 import { cn } from "../../../DashboardPrimitives";
-import { defaultSecretRefForSource, isCodingPlanSourceType } from "./modelConfigUtils";
+import { codingPlanRuntimeHint, defaultSecretRefForSource, isCodingPlanSourceType } from "./modelConfigUtils";
 import type { BusyAction, ConnectionDraft } from "./types";
 
 type InputMode = "json" | "form";
@@ -42,6 +42,7 @@ export function ModelConfigForm(props: {
   const [jsonError, setJsonError] = useState<string | undefined>();
   const isBaidu = props.draft.sourceType === "baidu_wenxin_api_key";
   const isCodingPlan = isCodingPlanSourceType(props.draft.sourceType);
+  const codingPlanHint = isCodingPlan ? codingPlanRuntimeHint(props.draft.sourceType) : undefined;
   const canDiscover = ["ollama", "vllm", "sglang", "lm_studio", "openai_compatible"].includes(props.draft.sourceType);
   const modelSuggestions = useMemo(() => props.draft.modelOptions.slice(0, 12), [props.draft.modelOptions]);
 
@@ -126,8 +127,8 @@ export function ModelConfigForm(props: {
           <div className="grid gap-4">
             {props.draft.provider.badge === "Coding Plan" ? (
               <div className="rounded-2xl bg-amber-50/80 px-4 py-3 text-[12px] leading-5 text-amber-800 ring-1 ring-amber-200/70">
-                <p className="font-semibold">Forge 不会直接测试此 provider 的连接。</p>
-                <p className="mt-1">请填入 Coding Plan API Key 和模型 ID。保存后会同步到 Hermes 的 Coding Plan 专用环境变量，实际可用性由 Hermes 在运行时直接验证。</p>
+                <p className="font-semibold">{codingPlanHint?.title}</p>
+                <p className="mt-1">{codingPlanHint?.message}</p>
               </div>
             ) : null}
 

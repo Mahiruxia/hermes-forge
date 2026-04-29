@@ -110,6 +110,7 @@ function providerMenuLabel(provider: ProviderPreset) {
   if (provider.id === "deepseek_api_key") return "深度求索（DeepSeek）";
   if (provider.id === "moonshot_api_key") return "Moonshot AI（Kimi 国内）";
   if (provider.id === "zhipu_api_key") return "智谱 AI（GLM 国内）";
+  if (provider.id === "mimo_api_key") return "MiMo API（按量付费）";
   if (provider.id === "volcengine_ark_api_key") return "火山引擎（豆包）";
   if (provider.id === "baidu_wenxin_api_key") return "百度（文心一言）";
   if (provider.id === "volcengine_coding_api_key") return "火山引擎方舟 Coding Plan";
@@ -118,6 +119,7 @@ function providerMenuLabel(provider: ProviderPreset) {
   if (provider.id === "baidu_qianfan_coding_api_key") return "百度千帆 Coding Plan";
   if (provider.id === "tencent_token_plan_api_key") return "腾讯云通用 Token Plan";
   if (provider.id === "tencent_hunyuan_token_plan_api_key") return "腾讯云 Hy Token Plan";
+  if (provider.id === "mimo_token_plan_api_key") return "MiMo Token Plan（中国区）";
   if (provider.id === "minimax_token_plan_api_key") return "MiniMax Token Plan（国内）";
   if (provider.id === "kimi_coding_api_key") return "Kimi Coding Plan";
   return provider.label;
@@ -127,12 +129,13 @@ function codingPlanOrder(sourceType: ModelSourceType) {
   const order: Partial<Record<ModelSourceType, number>> = {
     tencent_token_plan_api_key: 10,
     tencent_hunyuan_token_plan_api_key: 20,
-    minimax_token_plan_api_key: 30,
-    zhipu_coding_api_key: 40,
-    kimi_coding_api_key: 50,
-    dashscope_coding_api_key: 60,
-    baidu_qianfan_coding_api_key: 70,
-    volcengine_coding_api_key: 80,
+    mimo_token_plan_api_key: 30,
+    minimax_token_plan_api_key: 40,
+    zhipu_coding_api_key: 50,
+    kimi_coding_api_key: 60,
+    dashscope_coding_api_key: 70,
+    baidu_qianfan_coding_api_key: 80,
+    volcengine_coding_api_key: 90,
   };
   return order[sourceType] ?? 999;
 }

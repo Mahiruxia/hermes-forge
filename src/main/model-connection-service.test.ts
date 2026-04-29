@@ -307,12 +307,18 @@ describe("model-connection-service", () => {
       "baidu_qianfan_coding_api_key",
       "tencent_token_plan_api_key",
       "tencent_hunyuan_token_plan_api_key",
+      "mimo_token_plan_api_key",
       "minimax_token_plan_api_key",
       "kimi_coding_api_key",
     ]));
     expect(definitions.find((item) => item.sourceType === "kimi_coding_api_key")).toMatchObject({
-      roleCapabilities: ["coding_plan"],
+      roleCapabilities: ["chat", "coding_plan"],
       runtimeCompatibility: "runtime",
+    });
+    expect(definitions.find((item) => item.sourceType === "mimo_api_key")).toMatchObject({
+      baseUrl: "https://api.xiaomimimo.com/v1",
+      roleCapabilities: ["chat"],
+      runtimeCompatibility: "proxy",
     });
     expect(codingProviders).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -326,8 +332,13 @@ describe("model-connection-service", () => {
         runtimeCompatibility: "runtime",
       }),
       expect.objectContaining({
+        sourceType: "mimo_token_plan_api_key",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        runtimeCompatibility: "proxy",
+      }),
+      expect.objectContaining({
         sourceType: "minimax_token_plan_api_key",
-        baseUrl: "https://api.minimaxi.com/anthropic/v1",
+        baseUrl: "https://api.minimaxi.com/anthropic",
         runtimeCompatibility: "runtime",
       }),
     ]));
@@ -340,6 +351,8 @@ describe("model-connection-service", () => {
     expect(inferSourceType("custom", "https://open.bigmodel.cn/api/paas/v4")).toBe("zhipu_api_key");
     expect(inferSourceType("custom", "https://qianfan.baidubce.com/v2/coding")).toBe("baidu_qianfan_coding_api_key");
     expect(inferSourceType("custom", "https://api.kimi.com/coding/v1")).toBe("kimi_coding_api_key");
+    expect(inferSourceType("custom", "https://api.xiaomimimo.com/v1")).toBe("mimo_api_key");
+    expect(inferSourceType("custom", "https://token-plan-sgp.xiaomimimo.com/v1")).toBe("mimo_token_plan_api_key");
   });
 
   it("marks tested coding-plan endpoints as coding_plan runtime compatible", async () => {
@@ -369,7 +382,133 @@ describe("model-connection-service", () => {
     expect(result.ok).toBe(true);
     expect(result.runtimeCompatibility).toBe("runtime");
     expect(result.roleCompatibility?.coding_plan?.ok).toBe(true);
-    expect(result.roleCompatibility?.chat?.ok).toBe(false);
+    expect(result.roleCompatibility?.chat?.ok).toBe(true);
+  });
+
+  it("canonicalizes delegated Coding Plan model ids from preset models", async () => {
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "kimi_coding_api_key",
+        baseUrl: "https://api.kimi.com/coding/v1",
+        model: "KIMI-FOR-CODING",
+        secretRef: "provider.kimi-coding.apiKey",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault({
+        hasSecret: async () => true,
+        readSecret: async () => "kimi-key",
+      }),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("kimi-for-coding");
+  });
+
+  it("tests MiMo API with the MiMo auth headers and discovers models", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockImplementationOnce(async (_url, init) => {
+        expect(new Headers(init?.headers).get("api-key")).toBe("mimo-key");
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer mimo-key");
+        return new Response(JSON.stringify({ data: [{ id: "mimo-v2.5-pro", context_window: 1048576 }] }), { status: 200 });
+      })
+      .mockImplementationOnce(async (_url, init) => {
+        expect(new Headers(init?.headers).get("api-key")).toBe("mimo-key");
+        return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 });
+      })
+      .mockImplementationOnce(async (_url, init) => {
+        expect(new Headers(init?.headers).get("api-key")).toBe("mimo-key");
+        return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "call_1" }] } }] }), { status: 200 });
+      });
+
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "mimo_api_key",
+        baseUrl: "https://api.xiaomimimo.com/v1",
+        model: "mimo-v2.5-pro",
+        secretRef: "provider.mimo.apiKey",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault({
+        hasSecret: async () => true,
+        readSecret: async () => "mimo-key",
+      }),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.runtimeCompatibility).toBe("proxy");
+    expect(result.roleCompatibility?.chat?.ok).toBe(true);
+    expect(result.roleCompatibility?.coding_plan?.ok).toBe(false);
+    expect(result.availableModels).toContain("mimo-v2.5-pro");
+  });
+
+  it("canonicalizes case-sensitive MiMo model IDs from /models before chat", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "mimo-v2.5-pro", context_window: 1048576 }] }), { status: 200 }))
+      .mockImplementationOnce(async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+        expect(body.model).toBe("mimo-v2.5-pro");
+        return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 });
+      })
+      .mockImplementationOnce(async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+        expect(body.model).toBe("mimo-v2.5-pro");
+        return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "call_1" }] } }] }), { status: 200 });
+      });
+
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "mimo_token_plan_api_key",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        model: "MiMo-V2.5-Pro",
+        secretRef: "provider.mimo-token-plan.apiKey",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault({
+        hasSecret: async () => true,
+        readSecret: async () => "mimo-key",
+      }),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("mimo-v2.5-pro");
+    expect(result.healthChecks?.find((item) => item.id === "models")?.message).toContain("规范为 mimo-v2.5-pro");
+  });
+
+  it("falls back to the built-in MiMo V2.5 model list when /models is unavailable", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "models disabled" }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "call_1" }] } }] }), { status: 200 }));
+
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "mimo_token_plan_api_key",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        model: "mimo-v2.5-pro",
+        secretRef: "provider.mimo-token-plan.apiKey",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault({
+        hasSecret: async () => true,
+        readSecret: async () => "mimo-key",
+      }),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.availableModels).toEqual(expect.arrayContaining(["mimo-v2.5-pro", "mimo-v2.5"]));
+    expect(result.roleCompatibility?.chat?.ok).toBe(true);
+    expect(result.roleCompatibility?.coding_plan?.ok).toBe(true);
   });
 
   it("still fails OpenAI-compatible model discovery on auth errors", async () => {

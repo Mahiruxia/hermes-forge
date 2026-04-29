@@ -53,6 +53,44 @@ describe("ModelRuntimeProxyService", () => {
     expect(receivedAuth).toBe("Bearer pwd");
   });
 
+  it("proxies MiMo requests with api-key authentication", async () => {
+    let receivedApiKey = "";
+    let receivedAuth = "";
+    const upstream = http.createServer((request, response) => {
+      receivedApiKey = request.headers["api-key"] as string;
+      receivedAuth = request.headers.authorization ?? "";
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: [{ id: "mimo-v2.5-pro" }] }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    closeServer = () => new Promise<void>((resolve) => upstream.close(() => resolve()));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing upstream port");
+
+    const service = new ModelRuntimeProxyService();
+    const resolved = await service.resolve({
+      profileId: "mimo",
+      provider: "custom",
+      sourceType: "mimo_token_plan_api_key",
+      model: "mimo-v2.5-pro",
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      env: {
+        OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+        OPENAI_API_KEY: "mimo-key",
+        MIMO_API_KEY: "mimo-key",
+      },
+    });
+
+    const response = await fetch(`${resolved.baseUrl}/models`, {
+      headers: { authorization: `Bearer ${resolved.env.OPENAI_API_KEY}` },
+    });
+    await service.shutdown();
+
+    expect(response.ok).toBe(true);
+    expect(receivedApiKey).toBe("mimo-key");
+    expect(receivedAuth).toBe("Bearer mimo-key");
+  });
+
   it("rejects unauthenticated local proxy requests", async () => {
     const upstream = http.createServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });

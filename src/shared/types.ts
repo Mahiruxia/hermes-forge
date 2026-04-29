@@ -1234,6 +1234,7 @@ export type ModelSourceType =
   | "yi_api_key"
   | "hunyuan_api_key"
   | "siliconflow_api_key"
+  | "mimo_api_key"
   | "volcengine_ark_api_key"
   | "volcengine_coding_api_key"
   | "dashscope_coding_api_key"
@@ -1241,6 +1242,7 @@ export type ModelSourceType =
   | "baidu_qianfan_coding_api_key"
   | "tencent_token_plan_api_key"
   | "tencent_hunyuan_token_plan_api_key"
+  | "mimo_token_plan_api_key"
   | "minimax_token_plan_api_key"
   | "kimi_coding_api_key"
   | "gemini_oauth"
@@ -1301,8 +1303,9 @@ export type ModelHealthCheckStep = {
 export type ModelConnectionTestResult = {
   ok: boolean;
   profileId?: string;
-  message: string;
-  sourceType?: ModelSourceType;
+    message: string;
+    model?: string;
+    sourceType?: ModelSourceType;
   providerFamily?: ModelProviderFamily;
   authMode?: ModelAuthMode;
   normalizedBaseUrl?: string;

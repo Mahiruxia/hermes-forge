@@ -28,8 +28,10 @@ export function inferSourceType(provider: string, baseUrl?: string): ModelSource
     if (text.includes("api.minimaxi.com/anthropic") || text.includes("api.minimax.io/anthropic") || text.includes("api.minimaxi.com/v1")) return "minimax_token_plan_api_key";
     if (text.includes("minimax.chat")) return "minimax_api_key";
     if (text.includes("lingyiwanwu.com")) return "yi_api_key";
+    if (text.includes("api.xiaomimimo.com/v1") || text.includes("api.mimo-v2.com/v1")) return "mimo_api_key";
     if (text.includes("api.lkeap.cloud.tencent.com/coding/v3") || text.includes("api.lkeap.cloud.tencent.com/plan/v3")) return "tencent_token_plan_api_key";
     if (text.includes("tokenhub.tencentmaas.com")) return "tencent_hunyuan_token_plan_api_key";
+    if (text.includes("token-plan-") && text.includes("xiaomimimo.com/v1")) return "mimo_token_plan_api_key";
     if (text.includes("hunyuan.cloud.tencent.com")) return "hunyuan_api_key";
     if (text.includes("siliconflow.cn")) return "siliconflow_api_key";
     if (text.includes("ark.cn-beijing.volces.com/api/coding")) return "volcengine_coding_api_key";
@@ -59,6 +61,7 @@ export function defaultSecretRefForSource(sourceType: ModelSourceType) {
     case "yi_api_key": return "provider.yi.apiKey";
     case "hunyuan_api_key": return "provider.hunyuan.apiKey";
     case "siliconflow_api_key": return "provider.siliconflow.apiKey";
+    case "mimo_api_key": return "provider.mimo.apiKey";
     case "volcengine_ark_api_key": return "provider.volcengine-ark.apiKey";
     case "volcengine_coding_api_key": return "provider.volcengine-coding.apiKey";
     case "dashscope_coding_api_key": return "provider.dashscope-coding.apiKey";
@@ -66,6 +69,7 @@ export function defaultSecretRefForSource(sourceType: ModelSourceType) {
     case "baidu_qianfan_coding_api_key": return "provider.baidu-qianfan-coding.apiKey";
     case "tencent_token_plan_api_key": return "provider.tencent-token-plan.apiKey";
     case "tencent_hunyuan_token_plan_api_key": return "provider.tencent-hy-token-plan.apiKey";
+    case "mimo_token_plan_api_key": return "provider.mimo-token-plan.apiKey";
     case "minimax_token_plan_api_key": return "provider.minimax-token-plan.apiKey";
     case "kimi_coding_api_key": return "provider.kimi-coding.apiKey";
     case "github_copilot": return "provider.copilot.token";
@@ -142,9 +146,31 @@ export function isCodingPlanSourceType(sourceType?: ModelSourceType) {
     "baidu_qianfan_coding_api_key",
     "tencent_token_plan_api_key",
     "tencent_hunyuan_token_plan_api_key",
+    "mimo_token_plan_api_key",
     "minimax_token_plan_api_key",
     "kimi_coding_api_key",
   ].includes(sourceType);
+}
+
+export function hasHermesNativeCodingPlanProvider(sourceType?: ModelSourceType) {
+  return [
+    "mimo_token_plan_api_key",
+    "minimax_token_plan_api_key",
+    "kimi_coding_api_key",
+  ].includes(sourceType ?? "");
+}
+
+export function codingPlanRuntimeHint(sourceType?: ModelSourceType) {
+  if (hasHermesNativeCodingPlanProvider(sourceType)) {
+    return {
+      title: "Hermes 会使用内置 Coding Plan provider。",
+      message: "保存后会同步模型、密钥和专用运行环境；MiMo、Kimi、MiniMax 会使用 Hermes CLI 已支持的 provider 名直接运行。",
+    };
+  }
+  return {
+    title: "此 Coding Plan 会按兼容接口保存。",
+    message: "保存后会写入 OpenAI-compatible/custom 运行环境，不会强行传 Hermes CLI 不支持的 provider 名，避免启动时报参数错误。",
+  };
 }
 
 export function healthStepLabel(stepId: NonNullable<ModelConnectionTestResult["healthChecks"]>[number]["id"]) {

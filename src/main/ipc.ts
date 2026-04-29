@@ -153,6 +153,7 @@ const modelConnectionDraftSchema = z.object({
     "yi_api_key",
     "hunyuan_api_key",
     "siliconflow_api_key",
+    "mimo_api_key",
     "volcengine_ark_api_key",
     "volcengine_coding_api_key",
     "dashscope_coding_api_key",
@@ -160,6 +161,7 @@ const modelConnectionDraftSchema = z.object({
     "baidu_qianfan_coding_api_key",
     "tencent_token_plan_api_key",
     "tencent_hunyuan_token_plan_api_key",
+    "mimo_token_plan_api_key",
     "minimax_token_plan_api_key",
     "kimi_coding_api_key",
     "gemini_oauth",
@@ -1362,6 +1364,8 @@ function sourceTypeFromProfile(profile: Pick<ModelProfile, "provider" | "baseUrl
     if (baseUrl.includes("spark-api-open.xf-yun.com")) return "spark_api_key";
     if (baseUrl.includes("baichuan-ai.com")) return "baichuan_api_key";
     if (baseUrl.includes("api.minimaxi.com/anthropic") || baseUrl.includes("api.minimax.io/anthropic") || baseUrl.includes("api.minimaxi.com/v1")) return "minimax_token_plan_api_key";
+    if (baseUrl.includes("api.xiaomimimo.com/v1") || baseUrl.includes("api.mimo-v2.com/v1")) return "mimo_api_key";
+    if (baseUrl.includes("token-plan-") && baseUrl.includes("xiaomimimo.com/v1")) return "mimo_token_plan_api_key";
     if (baseUrl.includes("minimax.chat")) return "minimax_api_key";
     if (baseUrl.includes("lingyiwanwu.com")) return "yi_api_key";
     if (baseUrl.includes("api.lkeap.cloud.tencent.com/coding/v3") || baseUrl.includes("api.lkeap.cloud.tencent.com/plan/v3")) return "tencent_token_plan_api_key";
@@ -1391,7 +1395,7 @@ function sourceTypeFromProfile(profile: Pick<ModelProfile, "provider" | "baseUrl
 
 function draftToModelProfile(draft: z.infer<typeof modelConnectionDraftSchema>): ModelProfile {
   const provider =
-    ["ollama", "vllm", "sglang", "lm_studio", "openai_compatible", "legacy", "dashscope_api_key", "baidu_wenxin_api_key", "zhipu_api_key", "spark_api_key", "moonshot_api_key", "baichuan_api_key", "minimax_api_key", "yi_api_key", "hunyuan_api_key", "siliconflow_api_key", "volcengine_ark_api_key", "volcengine_coding_api_key", "dashscope_coding_api_key", "zhipu_coding_api_key", "baidu_qianfan_coding_api_key", "tencent_token_plan_api_key", "tencent_hunyuan_token_plan_api_key", "minimax_token_plan_api_key", "kimi_coding_api_key"].includes(draft.sourceType)
+    ["ollama", "vllm", "sglang", "lm_studio", "openai_compatible", "legacy", "dashscope_api_key", "baidu_wenxin_api_key", "zhipu_api_key", "spark_api_key", "moonshot_api_key", "baichuan_api_key", "minimax_api_key", "yi_api_key", "hunyuan_api_key", "siliconflow_api_key", "mimo_api_key", "volcengine_ark_api_key", "volcengine_coding_api_key", "dashscope_coding_api_key", "zhipu_coding_api_key", "baidu_qianfan_coding_api_key", "tencent_token_plan_api_key", "tencent_hunyuan_token_plan_api_key", "mimo_token_plan_api_key", "minimax_token_plan_api_key", "kimi_coding_api_key"].includes(draft.sourceType)
       ? "custom"
       : draft.sourceType === "openrouter_api_key"
         ? "openrouter"

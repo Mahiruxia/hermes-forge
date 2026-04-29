@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { migrateRuntimeConfigModels, normalizeOpenAiCompatibleBaseUrl, requiresStoredSecret, stableModelProfileId } from "./model-config";
+import { migrateRuntimeConfigModels, normalizeOpenAiCompatibleBaseUrl, requiresStoredSecret, resolveHermesProvider, stableModelProfileId } from "./model-config";
 import type { ModelProfile } from "./types";
 
 describe("model config helpers", () => {
@@ -52,5 +52,58 @@ describe("model config helpers", () => {
       chat: "kimi-main",
       coding_plan: "doubao-coding",
     });
+  });
+
+  it("migrates an OpenAI-compatible MiMo Token Plan endpoint to the dedicated source", () => {
+    const migrated = migrateRuntimeConfigModels({
+      defaultModelProfileId: "mimo-main",
+      modelRoleAssignments: { chat: "mimo-main" },
+      modelProfiles: [{
+        id: "mimo-main",
+        provider: "custom",
+        sourceType: "openai_compatible",
+        model: "MiMo-V2.5-Pro",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        secretRef: "provider.custom.apiKey",
+      }],
+    });
+
+    expect(migrated.modelProfiles[0]).toMatchObject({
+      id: "mimo-main",
+      sourceType: "mimo_token_plan_api_key",
+      model: "mimo-v2.5-pro",
+      secretRef: "provider.custom.apiKey",
+    });
+    expect(migrated.modelRoleAssignments?.chat).toBe("mimo-main");
+  });
+
+  it("migrates old generic Coding Plan endpoints before runtime resolution", () => {
+    const migrated = migrateRuntimeConfigModels({
+      defaultModel: "KIMI-FOR-CODING",
+      modelProfiles: [{
+        provider: "custom",
+        sourceType: "openai_compatible",
+        model: "KIMI-FOR-CODING",
+        baseUrl: "https://api.kimi.com/coding/v1",
+      }],
+    });
+
+    expect(migrated.modelProfiles[0]).toMatchObject({
+      sourceType: "kimi_coding_api_key",
+      model: "kimi-for-coding",
+    });
+    expect(migrated.defaultModelProfileId).toBe(migrated.modelProfiles[0].id);
+  });
+
+  it("maps MiMo sources to the Hermes Xiaomi provider instead of custom", () => {
+    expect(resolveHermesProvider({ provider: "custom", sourceType: "mimo_token_plan_api_key" })).toBe("xiaomi");
+    expect(resolveHermesProvider({ provider: "custom", sourceType: "mimo_api_key" })).toBe("xiaomi");
+  });
+
+  it("keeps unsupported Coding Plan providers on custom instead of inventing CLI aliases", () => {
+    expect(resolveHermesProvider({ provider: "custom", sourceType: "dashscope_coding_api_key" })).toBe("custom");
+    expect(resolveHermesProvider({ provider: "custom", sourceType: "zhipu_coding_api_key" })).toBe("custom");
+    expect(resolveHermesProvider({ provider: "custom", sourceType: "tencent_token_plan_api_key" })).toBe("custom");
+    expect(resolveHermesProvider({ provider: "custom", sourceType: "volcengine_coding_api_key" })).toBe("custom");
   });
 });

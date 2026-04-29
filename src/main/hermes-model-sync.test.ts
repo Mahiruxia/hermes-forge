@@ -140,6 +140,102 @@ describe("HermesModelSyncService", () => {
     expect(env).toContain("HERMES_INFERENCE_PROVIDER=kimi-coding");
   });
 
+  it("writes MiniMax Token Plan as Anthropic-compatible runtime env", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-model-sync-minimax-token-plan-"));
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "minimax-token-plan",
+      modelProfiles: [{
+        id: "minimax-token-plan",
+        provider: "custom",
+        sourceType: "minimax_token_plan_api_key",
+        model: "MiniMax-M2.7",
+        baseUrl: "https://api.minimaxi.com/anthropic",
+        secretRef: "provider.minimax-token-plan.apiKey",
+      }],
+      updateSources: {},
+    };
+    const resolver = {
+      resolveFromConfig: async () => ({
+        profileId: "minimax-token-plan",
+        provider: "custom",
+        sourceType: "minimax_token_plan_api_key",
+        model: "MiniMax-M2.7",
+        baseUrl: "https://api.minimaxi.com/anthropic",
+        env: {
+          AI_PROVIDER: "custom",
+          AI_MODEL: "MiniMax-M2.7",
+          AI_BASE_URL: "https://api.minimaxi.com/anthropic",
+          MINIMAX_BASE_URL: "https://api.minimaxi.com/anthropic",
+          ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic",
+          OPENAI_BASE_URL: "https://api.minimaxi.com/v1",
+          MINIMAX_API_KEY: "sk-minimax",
+          ANTHROPIC_API_KEY: "sk-minimax",
+          ANTHROPIC_AUTH_TOKEN: "sk-minimax",
+          OPENAI_API_KEY: "sk-minimax",
+          AI_API_KEY: "sk-minimax",
+        },
+      }),
+    };
+
+    const service = new HermesModelSyncService(resolver as never, () => home);
+    const result = await service.syncRuntimeConfig(config);
+
+    expect(result.roles?.chat?.provider).toBe("minimax-cn");
+    const yaml = await fs.readFile(path.join(home, "config.yaml"), "utf8");
+    expect(yaml).toContain("provider: \"minimax-cn\"");
+    expect(yaml).toContain("base_url: \"https://api.minimaxi.com/anthropic\"");
+    const env = await fs.readFile(path.join(home, ".env"), "utf8");
+    expect(env).toContain("HERMES_INFERENCE_PROVIDER=minimax-cn");
+    expect(env).toContain("AI_BASE_URL=https://api.minimaxi.com/anthropic");
+    expect(env).toContain("ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic");
+    expect(env).toContain("OPENAI_BASE_URL=https://api.minimaxi.com/v1");
+  });
+
+  it("infers old MiMo OpenAI-compatible profiles and writes Xiaomi for Hermes", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-model-sync-mimo-token-plan-"));
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "mimo-token-plan",
+      modelRoleAssignments: { chat: "mimo-token-plan" },
+      modelProfiles: [{
+        id: "mimo-token-plan",
+        provider: "custom",
+        sourceType: "openai_compatible",
+        model: "MiMo-V2.5-Pro",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        secretRef: "provider.custom.apiKey",
+      }],
+      updateSources: {},
+    };
+    const resolver = {
+      resolveFromConfig: async () => ({
+        profileId: "mimo-token-plan",
+        provider: "custom",
+        sourceType: "mimo_token_plan_api_key",
+        model: "mimo-v2.5-pro",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        env: {
+          AI_PROVIDER: "custom",
+          AI_MODEL: "mimo-v2.5-pro",
+          OPENAI_MODEL: "mimo-v2.5-pro",
+          XIAOMI_BASE_URL: "https://token-plan-cn.xiaomimimo.com/v1",
+          XIAOMI_API_KEY: "sk-mimo",
+        },
+      }),
+    };
+
+    const service = new HermesModelSyncService(resolver as never, () => home);
+    const result = await service.syncRuntimeConfig(config);
+
+    expect(result.roles?.chat?.provider).toBe("xiaomi");
+    const yaml = await fs.readFile(path.join(home, "config.yaml"), "utf8");
+    expect(yaml).toContain("provider: \"xiaomi\"");
+    expect(yaml).toContain("default: \"mimo-v2.5-pro\"");
+    expect(yaml).toContain("base_url: \"https://token-plan-cn.xiaomimimo.com/v1\"");
+    const env = await fs.readFile(path.join(home, ".env"), "utf8");
+    expect(env).toContain("HERMES_INFERENCE_PROVIDER=xiaomi");
+    expect(env).toContain("XIAOMI_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1");
+  });
+
   it("writes separate chat and Coding Plan runtime env values", async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-model-sync-roles-"));
     const config: RuntimeConfig = {

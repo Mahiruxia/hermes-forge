@@ -141,6 +141,7 @@ export function defaultSecretRefForSource(sourceType: ModelSourceType) {
     case "yi_api_key": return "provider.yi.apiKey";
     case "hunyuan_api_key": return "provider.hunyuan.apiKey";
     case "siliconflow_api_key": return "provider.siliconflow.apiKey";
+    case "mimo_api_key": return "provider.mimo.apiKey";
     case "volcengine_ark_api_key": return "provider.volcengine-ark.apiKey";
     case "volcengine_coding_api_key": return "provider.volcengine-coding.apiKey";
     case "dashscope_coding_api_key": return "provider.dashscope-coding.apiKey";
@@ -148,6 +149,7 @@ export function defaultSecretRefForSource(sourceType: ModelSourceType) {
     case "baidu_qianfan_coding_api_key": return "provider.baidu-qianfan-coding.apiKey";
     case "tencent_token_plan_api_key": return "provider.tencent-token-plan.apiKey";
     case "tencent_hunyuan_token_plan_api_key": return "provider.tencent-hy-token-plan.apiKey";
+    case "mimo_token_plan_api_key": return "provider.mimo-token-plan.apiKey";
     case "minimax_token_plan_api_key": return "provider.minimax-token-plan.apiKey";
     case "kimi_coding_api_key": return "provider.kimi-coding.apiKey";
     case "github_copilot": return "provider.copilot.token";

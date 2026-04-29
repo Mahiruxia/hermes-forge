@@ -206,10 +206,110 @@ describe("RuntimeEnvResolver", () => {
       AI_PROVIDER: "custom",
       AI_MODEL: "MiniMax-M2.7",
       MINIMAX_API_KEY: "sk-minimax-test",
+      ANTHROPIC_API_KEY: "sk-minimax-test",
+      ANTHROPIC_AUTH_TOKEN: "sk-minimax-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/anthropic",
+      AI_BASE_URL: "https://api.minimaxi.com/anthropic",
+      ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic",
       OPENAI_API_KEY: "sk-minimax-test",
-      OPENAI_BASE_URL: "https://api.minimaxi.com/anthropic",
+      OPENAI_BASE_URL: "https://api.minimaxi.com/v1",
     });
+  });
+
+  it("exports MiMo Token Plan env and lets the runtime proxy adapt auth", async () => {
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "mimo-token-plan",
+      modelProfiles: [{
+        id: "mimo-token-plan",
+        provider: "custom",
+        sourceType: "mimo_token_plan_api_key",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        model: "mimo-v2.5-pro",
+        secretRef: "provider.mimo-token-plan.apiKey",
+      }],
+      updateSources: {},
+    };
+    const resolver = new RuntimeEnvResolver(
+      { read: async () => config } as never,
+      { readSecret: async () => "mimo-key" } as never,
+    );
+
+    const runtime = await resolver.resolve();
+
+    expect(runtime.env).toMatchObject({
+      AI_PROVIDER: "custom",
+      AI_MODEL: "mimo-v2.5-pro",
+      MIMO_API_KEY: "mimo-key",
+      XIAOMI_API_KEY: "mimo-key",
+      OPENAI_API_KEY: "mimo-key",
+      OPENAI_BASE_URL: "https://token-plan-cn.xiaomimimo.com/v1",
+      AI_BASE_URL: "https://token-plan-cn.xiaomimimo.com/v1",
+    });
+  });
+
+  it("normalizes old mixed-case MiMo model ids at runtime even with settingsConfig", async () => {
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "mimo-token-plan",
+      modelProfiles: [{
+        id: "mimo-token-plan",
+        provider: "custom",
+        sourceType: "mimo_token_plan_api_key",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        model: "MiMo-V2.5-Pro",
+        secretRef: "provider.mimo-token-plan.apiKey",
+        settingsConfig: {
+          env: {
+            AI_PROVIDER: "custom",
+            AI_MODEL: "${model}",
+            OPENAI_BASE_URL: "${base_url}",
+            OPENAI_API_KEY: "${api_key}",
+          },
+        },
+      }],
+      updateSources: {},
+    };
+    const resolver = new RuntimeEnvResolver(
+      { read: async () => config } as never,
+      { readSecret: async () => "mimo-key" } as never,
+    );
+
+    const runtime = await resolver.resolve();
+
+    expect(runtime.model).toBe("mimo-v2.5-pro");
+    expect(runtime.env.AI_MODEL).toBe("mimo-v2.5-pro");
+    expect(runtime.env.MIMO_BASE_URL).toBe("https://token-plan-cn.xiaomimimo.com/v1");
+  });
+
+  it("uses provider-specific Kimi runtime env instead of stale settingsConfig templates", async () => {
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "kimi-coding",
+      modelProfiles: [{
+        id: "kimi-coding",
+        provider: "custom",
+        sourceType: "kimi_coding_api_key",
+        baseUrl: "https://api.kimi.com/coding/v1",
+        model: "kimi-for-coding",
+        secretRef: "provider.kimi-coding.apiKey",
+        settingsConfig: {
+          env: {
+            AI_PROVIDER: "custom",
+            KIMI_BASE_URL: "https://api.kimi.com/coding/v1",
+            OPENAI_BASE_URL: "https://api.kimi.com/coding/v1",
+            OPENAI_API_KEY: "${api_key}",
+          },
+        },
+      }],
+      updateSources: {},
+    };
+    const resolver = new RuntimeEnvResolver(
+      { read: async () => config } as never,
+      { readSecret: async () => "sk-kimi-test" } as never,
+    );
+
+    const runtime = await resolver.resolve();
+
+    expect(runtime.env.KIMI_BASE_URL).toBe("https://api.kimi.com/coding");
+    expect(runtime.env.OPENAI_API_KEY).toBe("sk-kimi-test");
   });
 
   it("resolves chat and Coding Plan roles to independent model URLs", async () => {

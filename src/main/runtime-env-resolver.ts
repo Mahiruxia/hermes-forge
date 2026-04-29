@@ -1,7 +1,7 @@
 import type { SecretVault } from "../auth/secret-vault";
 import type { RuntimeConfigStore } from "./runtime-config";
 import type { EngineRuntimeEnv, ModelProfile, ModelRole, RuntimeConfig } from "../shared/types";
-import { normalizeOpenAiCompatibleBaseUrl } from "../shared/model-config";
+import { normalizeModelIdForSource, normalizeOpenAiCompatibleBaseUrl, normalizeSourceTypeForProfile } from "../shared/model-config";
 import type { ModelRuntimeProxyService } from "./model-runtime-proxy";
 
 export class RuntimeEnvResolver {
@@ -54,15 +54,22 @@ export class RuntimeEnvResolver {
     const secret = profile.secretRef ? await this.secretVault.readSecret(profile.secretRef) : undefined;
     const providerProfile = config.providerProfiles?.find((item) => item.provider === profile.provider || item.id === profile.id);
     const baseUrl = normalizeOpenAiCompatibleBaseUrl(profile.baseUrl ?? providerProfile?.baseUrl);
+    const sourceType = normalizeSourceTypeForProfile({ sourceType: profile.sourceType, baseUrl, model: profile.model });
+    const normalizedProfile = {
+      ...profile,
+      sourceType,
+      model: normalizeModelIdForSource(sourceType, profile.model),
+      ...(baseUrl ? { baseUrl } : {}),
+    };
     const runtime = {
       profileId: profile.id,
       provider: profile.provider,
-      model: profile.model,
+      model: normalizedProfile.model,
       role,
-      sourceType: profile.sourceType,
+      sourceType: normalizedProfile.sourceType,
       baseUrl,
       providerProfileId: providerProfile?.id,
-      env: this.toEnv({ ...profile, baseUrl }, secret),
+      env: this.toEnv(normalizedProfile, secret),
     };
     const result = this.modelRuntimeProxy ? await this.modelRuntimeProxy.resolve(runtime) : runtime;
     this.cache.set(cacheKey, { env: result, expiresAt: Date.now() + 10_000 });
@@ -83,6 +90,9 @@ export class RuntimeEnvResolver {
   }
 
   private toEnv(profile: ModelProfile, secret?: string): Record<string, string> {
+    if (usesProviderSpecificRuntimeEnv(profile.sourceType)) {
+      return this.legacyToEnv(profile, secret);
+    }
     // CC Switch 直接模式：settingsConfig 存在时直接透传，不再走 legacy 分支转换
     if (profile.settingsConfig?.env) {
       return applyTemplateValues(profile.settingsConfig.env, {
@@ -131,11 +141,17 @@ export class RuntimeEnvResolver {
     }
 
     if (profile.sourceType === "minimax_token_plan_api_key") {
+      const anthropicBaseUrl = toMiniMaxAnthropicBaseUrl(profile.baseUrl);
+      const openAiBaseUrl = toMiniMaxOpenAiBaseUrl(profile.baseUrl);
       env.AI_PROVIDER = "custom";
-      env.MINIMAX_BASE_URL = profile.baseUrl ?? "https://api.minimaxi.com/anthropic/v1";
-      env.OPENAI_BASE_URL = profile.baseUrl ?? "https://api.minimaxi.com/anthropic/v1";
+      env.MINIMAX_BASE_URL = anthropicBaseUrl;
+      env.AI_BASE_URL = anthropicBaseUrl;
+      env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
+      env.OPENAI_BASE_URL = openAiBaseUrl;
       if (secret) {
         env.MINIMAX_API_KEY = secret;
+        env.ANTHROPIC_API_KEY = secret;
+        env.ANTHROPIC_AUTH_TOKEN = secret;
         env.OPENAI_API_KEY = secret;
         env.AI_API_KEY = secret;
       }
@@ -213,6 +229,36 @@ export class RuntimeEnvResolver {
       if (secret) {
         env.TENCENT_HY_API_KEY = secret;
         env.TENCENT_TOKENHUB_API_KEY = secret;
+        env.OPENAI_API_KEY = secret;
+        env.AI_API_KEY = secret;
+      }
+      return env;
+    }
+
+    if (profile.sourceType === "mimo_api_key") {
+      env.AI_PROVIDER = "custom";
+      env.MIMO_BASE_URL = profile.baseUrl ?? "https://api.xiaomimimo.com/v1";
+      env.XIAOMI_BASE_URL = profile.baseUrl ?? "https://api.xiaomimimo.com/v1";
+      env.OPENAI_BASE_URL = profile.baseUrl ?? "https://api.xiaomimimo.com/v1";
+      env.AI_BASE_URL = profile.baseUrl ?? "https://api.xiaomimimo.com/v1";
+      if (secret) {
+        env.MIMO_API_KEY = secret;
+        env.XIAOMI_API_KEY = secret;
+        env.OPENAI_API_KEY = secret;
+        env.AI_API_KEY = secret;
+      }
+      return env;
+    }
+
+    if (profile.sourceType === "mimo_token_plan_api_key") {
+      env.AI_PROVIDER = "custom";
+      env.MIMO_BASE_URL = profile.baseUrl ?? "https://token-plan-cn.xiaomimimo.com/v1";
+      env.XIAOMI_BASE_URL = profile.baseUrl ?? "https://token-plan-cn.xiaomimimo.com/v1";
+      env.OPENAI_BASE_URL = profile.baseUrl ?? "https://token-plan-cn.xiaomimimo.com/v1";
+      env.AI_BASE_URL = profile.baseUrl ?? "https://token-plan-cn.xiaomimimo.com/v1";
+      if (secret) {
+        env.MIMO_API_KEY = secret;
+        env.XIAOMI_API_KEY = secret;
         env.OPENAI_API_KEY = secret;
         env.AI_API_KEY = secret;
       }
@@ -313,4 +359,48 @@ function applyTemplateValues(
 
 function stripTrailingV1(url: string) {
   return url.trim().replace(/\/+$/, "").replace(/\/v1$/i, "");
+}
+
+function usesProviderSpecificRuntimeEnv(sourceType: ModelProfile["sourceType"] | undefined) {
+  return Boolean(sourceType && [
+    "baidu_wenxin_api_key",
+    "volcengine_coding_api_key",
+    "dashscope_coding_api_key",
+    "zhipu_coding_api_key",
+    "baidu_qianfan_coding_api_key",
+    "tencent_token_plan_api_key",
+    "tencent_hunyuan_token_plan_api_key",
+    "mimo_api_key",
+    "mimo_token_plan_api_key",
+    "minimax_token_plan_api_key",
+    "kimi_coding_api_key",
+  ].includes(sourceType));
+}
+
+function toMiniMaxAnthropicBaseUrl(baseUrl?: string) {
+  return normalizeMiniMaxProtocolBaseUrl(baseUrl, "anthropic");
+}
+
+function toMiniMaxOpenAiBaseUrl(baseUrl?: string) {
+  return normalizeMiniMaxProtocolBaseUrl(baseUrl, "openai");
+}
+
+function normalizeMiniMaxProtocolBaseUrl(baseUrl: string | undefined, protocol: "anthropic" | "openai") {
+  const fallback = protocol === "anthropic"
+    ? "https://api.minimaxi.com/anthropic"
+    : "https://api.minimaxi.com/v1";
+  const raw = baseUrl?.trim() || fallback;
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase();
+    if (host === "api.minimaxi.com" || host === "api.minimax.io") {
+      parsed.pathname = protocol === "anthropic" ? "/anthropic" : "/v1";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString().replace(/\/$/, "");
+    }
+  } catch {
+    return protocol === "anthropic" ? stripTrailingV1(raw) : raw;
+  }
+  return protocol === "anthropic" ? stripTrailingV1(raw) : raw.replace(/\/$/, "");
 }

@@ -8,6 +8,7 @@ import { BaichuanProvider } from "./adapters/baichuan-provider";
 import { BaiduWenxinProvider } from "./adapters/baidu-wenxin-provider";
 import { DashScopeProvider } from "./adapters/dashscope-provider";
 import { HunyuanProvider } from "./adapters/hunyuan-provider";
+import { MimoProvider, MimoTokenPlanProvider } from "./adapters/mimo-provider";
 import { MiniMaxProvider } from "./adapters/minimax-provider";
 import { MoonshotProvider } from "./adapters/moonshot-provider";
 import { SiliconFlowProvider } from "./adapters/siliconflow-provider";
@@ -187,6 +188,8 @@ export function createDefaultProviderRegistry() {
   registry.register(new BaiduQianfanCodingProvider());
   registry.register(new TencentTokenPlanProvider());
   registry.register(new TencentHunyuanTokenPlanProvider());
+  registry.register(new MimoProvider());
+  registry.register(new MimoTokenPlanProvider());
   registry.register(new MiniMaxTokenPlanProvider());
   registry.register(new KimiCodingProvider());
   registry.register(new DashScopeProvider());
@@ -249,12 +252,12 @@ function normalizeDefinition(definition: ModelSourceDefinition): ModelSourceDefi
 function inferGroup(definition: ModelSourceDefinition): ModelProviderGroup {
   if (definition.sourceType === "openai_compatible") return "recommended";
   if (["ollama", "vllm", "sglang", "lm_studio", "legacy"].includes(definition.sourceType)) return "local";
-  if (["dashscope_api_key", "baidu_wenxin_api_key", "zhipu_api_key", "spark_api_key", "moonshot_api_key", "baichuan_api_key", "minimax_api_key", "yi_api_key", "hunyuan_api_key", "siliconflow_api_key", "volcengine_ark_api_key", "volcengine_coding_api_key", "dashscope_coding_api_key", "zhipu_coding_api_key", "baidu_qianfan_coding_api_key", "tencent_token_plan_api_key", "tencent_hunyuan_token_plan_api_key", "minimax_token_plan_api_key", "kimi_coding_api_key", "deepseek_api_key"].includes(definition.sourceType)) return "china";
+  if (["dashscope_api_key", "baidu_wenxin_api_key", "zhipu_api_key", "spark_api_key", "moonshot_api_key", "baichuan_api_key", "minimax_api_key", "yi_api_key", "hunyuan_api_key", "siliconflow_api_key", "mimo_api_key", "volcengine_ark_api_key", "volcengine_coding_api_key", "dashscope_coding_api_key", "zhipu_coding_api_key", "baidu_qianfan_coding_api_key", "tencent_token_plan_api_key", "tencent_hunyuan_token_plan_api_key", "mimo_token_plan_api_key", "minimax_token_plan_api_key", "kimi_coding_api_key", "deepseek_api_key"].includes(definition.sourceType)) return "china";
   return "international";
 }
 
 function inferRoleCapabilities(definition: ModelSourceDefinition): ModelRole[] {
-  if (isCodingPlanSource(definition.sourceType)) return ["coding_plan"];
+  if (isCodingPlanSource(definition.sourceType)) return ["chat", "coding_plan"];
   if (inferRuntimeCompatibility(definition) === "connection_only") return [];
   return ["chat"];
 }
@@ -298,6 +301,7 @@ function isCodingPlanSource(sourceType: ModelSourceType) {
     "baidu_qianfan_coding_api_key",
     "tencent_token_plan_api_key",
     "tencent_hunyuan_token_plan_api_key",
+    "mimo_token_plan_api_key",
     "minimax_token_plan_api_key",
     "kimi_coding_api_key",
   ].includes(sourceType);

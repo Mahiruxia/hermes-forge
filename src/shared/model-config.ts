@@ -4,9 +4,12 @@ import type { ModelProfile, ModelRole, ModelSourceType, ProviderId, RuntimeConfi
  * Coding Plan / 特殊路由 sourceType → Hermes Agent 内部 provider 名映射。
  *
  * Hermes Agent 在 CLI 命令 (`--provider X`) 与 AIAgent 构造函数
- * (`provider="X"`) 上接受同一组 provider 名，例如 `kimi-coding`、`zhipu-coding`。
+ * (`provider="X"`) 上只接受它内置注册过的 provider 名，例如
+ * `kimi-coding`、`minimax-cn`、`xiaomi`。
  * Forge 默认让所有 Coding Plan profile 的 `provider` 字段挂在 `custom` 上，
- * 但 Hermes AIAgent 不认识 `custom`，需要把 sourceType 翻译成它认识的 alias。
+ * 但只有 Hermes 已内置的特殊 provider 才能翻译；其它 OpenAI-compatible
+ * Coding Plan 不能强行造 alias，否则 `hermes chat --provider ...` 会直接
+ * argparse 退出 2。
  */
 export function mapSourceTypeToHermesProvider(sourceType?: ModelSourceType | string): string | undefined {
   switch (sourceType) {
@@ -18,20 +21,12 @@ export function mapSourceTypeToHermesProvider(sourceType?: ModelSourceType | str
       return "stepfun";
     case "minimax_coding_api_key":
       return "minimax";
+    case "minimax_token_plan_api_key":
     case "minimax_cn_token_plan_api_key":
       return "minimax-cn";
-    case "zhipu_coding_api_key":
-      return "zhipu-coding";
-    case "dashscope_coding_api_key":
-      return "dashscope-coding";
-    case "baidu_qianfan_coding_api_key":
-      return "baidu-qianfan-coding";
-    case "tencent_token_plan_api_key":
-      return "tencent-token-plan";
-    case "tencent_hunyuan_token_plan_api_key":
-      return "tencent-hy-token-plan";
-    case "volcengine_coding_api_key":
-      return "volcengine-coding";
+    case "mimo_api_key":
+    case "mimo_token_plan_api_key":
+      return "xiaomi";
     default:
       return undefined;
   }
@@ -50,6 +45,75 @@ export function resolveHermesProvider(input: { provider: string; sourceType?: Mo
   if (input.provider === "openai") return "openrouter";
   if (input.provider === "copilot_acp") return "copilot-acp";
   return input.provider;
+}
+
+const CANONICAL_MODELS_BY_SOURCE: Partial<Record<ModelSourceType, string[]>> = {
+  mimo_api_key: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2.5-flash"],
+  mimo_token_plan_api_key: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2.5-flash"],
+  kimi_coding_api_key: ["kimi-for-coding", "k2p6", "k2p5", "kimi-k2-thinking"],
+  dashscope_coding_api_key: [
+    "qwen3-coder-plus",
+    "qwen3-max-2026-01-23",
+    "qwen3-coder-next",
+    "qwen3.6-plus",
+    "qwen3.5-plus",
+    "kimi-k2.5",
+    "glm-5",
+    "glm-4.7",
+    "MiniMax-M2.5",
+  ],
+  zhipu_coding_api_key: [
+    "glm-5",
+    "glm-5.1",
+    "glm-5-turbo",
+    "glm-5v-turbo",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-4.7-flashx",
+    "glm-4.6",
+    "glm-4.6v",
+    "glm-4.6v-flash",
+    "glm-4.5",
+    "glm-4.5-air",
+    "glm-4.5v",
+    "glm-4.5-flash",
+  ],
+  tencent_token_plan_api_key: [
+    "kimi-k2.5",
+    "glm-5",
+    "minimax-m2.5",
+    "hunyuan-turbos",
+    "hunyuan-t1",
+    "hunyuan-2.0-thinking",
+    "hunyuan-2.0-instruct",
+    "tc-code-latest",
+  ],
+  tencent_hunyuan_token_plan_api_key: ["hy3-preview", "n-2.0-thinking-202511", "n-2.0-instruct-202511"],
+  minimax_token_plan_api_key: [
+    "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2",
+  ],
+};
+
+export function normalizeSourceTypeForProfile(input: { sourceType?: ModelSourceType | string; baseUrl?: string; model?: string }): ModelSourceType | undefined {
+  const current = normalizeSourceType(input.sourceType);
+  const inferred = inferSourceTypeFromEndpoint(input.baseUrl);
+  if (inferred && (!current || current === "openai_compatible" || current === "legacy")) {
+    return inferred;
+  }
+  return current;
+}
+
+export function normalizeModelIdForSource(sourceType: ModelSourceType | string | undefined, model: string) {
+  const trimmed = model.trim();
+  if (!trimmed) return trimmed;
+  const canonical = sourceType && CANONICAL_MODELS_BY_SOURCE[sourceType as ModelSourceType]
+    ?.find((item) => item.toLowerCase() === trimmed.toLowerCase());
+  return canonical ?? trimmed;
 }
 
 export function normalizeOpenAiCompatibleBaseUrl(baseUrl?: string) {
@@ -138,6 +202,7 @@ export function resolveDefaultModelProfileId(rawDefault: string | undefined, pro
     profiles.find((item) => stableModelProfileId(item) === wanted)?.id ??
     profiles.find((item) => `${item.provider}:${item.model}` === wanted)?.id ??
     profiles.find((item) => item.model === wanted)?.id ??
+    profiles.find((item) => item.model.toLowerCase() === wanted.toLowerCase())?.id ??
     profiles.find((item) => item.name === wanted)?.id ??
     profiles[0].id
   );
@@ -146,10 +211,16 @@ export function resolveDefaultModelProfileId(rawDefault: string | undefined, pro
 function normalizeLegacyModelProfile(input: unknown): ModelProfile | undefined {
   if (!input || typeof input !== "object") return undefined;
   const raw = input as LegacyModelProfile;
-  const model = firstString(raw.model, raw.defaultModel, raw.default_model, raw.name);
-  if (!model) return undefined;
+  const rawModel = firstString(raw.model, raw.defaultModel, raw.default_model, raw.name);
+  if (!rawModel) return undefined;
   const provider = normalizeProvider(firstString(raw.provider, raw.providerId), raw.baseUrl);
   const baseUrl = typeof raw.baseUrl === "string" && raw.baseUrl.trim() ? raw.baseUrl.trim() : undefined;
+  const sourceType = normalizeSourceTypeForProfile({
+    sourceType: typeof raw.sourceType === "string" ? raw.sourceType : undefined,
+    baseUrl,
+    model: rawModel,
+  });
+  const model = normalizeModelIdForSource(sourceType, rawModel);
   const profile: ModelProfile = {
     ...raw,
     id: typeof raw.id === "string" && raw.id.trim()
@@ -157,9 +228,59 @@ function normalizeLegacyModelProfile(input: unknown): ModelProfile | undefined {
       : stableModelProfileId({ provider, model, baseUrl }),
     provider,
     model,
+    ...(sourceType ? { sourceType } : {}),
     ...(baseUrl ? { baseUrl } : {}),
   };
   return profile;
+}
+
+function inferSourceTypeFromEndpoint(baseUrl: unknown): ModelSourceType | undefined {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl.trim());
+  } catch {
+    return undefined;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const pathname = parsed.pathname.toLowerCase();
+  if (host === "token-plan-cn.xiaomimimo.com" || /^token-plan-[a-z0-9-]+\.xiaomimimo\.com$/.test(host)) {
+    return "mimo_token_plan_api_key";
+  }
+  if (host === "api.xiaomimimo.com" || host === "api.mimo-v2.com") {
+    return "mimo_api_key";
+  }
+  if (host === "api.kimi.com" && pathname.includes("/coding")) {
+    return "kimi_coding_api_key";
+  }
+  if (host === "api.minimaxi.com" || host === "api.minimax.io") {
+    return "minimax_token_plan_api_key";
+  }
+  if (host === "coding-intl.dashscope.aliyuncs.com") {
+    return "dashscope_coding_api_key";
+  }
+  if (host === "open.bigmodel.cn" && pathname.includes("/coding")) {
+    return "zhipu_coding_api_key";
+  }
+  if (host === "qianfan.baidubce.com" && pathname.includes("/coding")) {
+    return "baidu_qianfan_coding_api_key";
+  }
+  if (host === "api.lkeap.cloud.tencent.com" && pathname.includes("/coding")) {
+    return "tencent_token_plan_api_key";
+  }
+  if (host === "tokenhub.tencentmaas.com") {
+    return "tencent_hunyuan_token_plan_api_key";
+  }
+  if (host === "ark.cn-beijing.volces.com" && pathname.includes("/coding")) {
+    return "volcengine_coding_api_key";
+  }
+  return undefined;
+}
+
+function normalizeSourceType(sourceType: ModelSourceType | string | undefined): ModelSourceType | undefined {
+  if (!sourceType) return undefined;
+  const normalized = sourceType.trim() as ModelSourceType;
+  return normalized ? normalized : undefined;
 }
 
 function normalizeRoleAssignments(raw: unknown, defaultModelProfileId: string | undefined, profiles: ModelProfile[]) {

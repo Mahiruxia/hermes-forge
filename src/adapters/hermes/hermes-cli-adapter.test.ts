@@ -56,6 +56,22 @@ describe("HermesCliAdapter reply cleanup", () => {
       "__HERMES_FORGE_RESULT_END__",
     ])).toBe("当前模型是 gpt-5.4。");
   });
+
+  it("uses streamed or direct CLI output without waiting for session files", async () => {
+    const adapter = Object.create(HermesCliAdapter.prototype) as {
+      cleanReply(lines: string[], startedAt: number, streamReplyLines?: string[]): Promise<string>;
+      readSessionReplyWithRetry(sessionId: string): Promise<string>;
+      readNewestSessionReply(startedAt: number): Promise<string>;
+    };
+    adapter.readSessionReplyWithRetry = async () => {
+      throw new Error("session file lookup should not run when stdout already has a reply");
+    };
+    adapter.readNewestSessionReply = async () => {
+      throw new Error("newest session lookup should not run when stdout already has a reply");
+    };
+
+    await expect(adapter.cleanReply(["OK", "session_id: 20260429_010203_abcdef"], Date.now())).resolves.toBe("OK");
+  });
 });
 
 describe("HermesCliAdapter prompt isolation", () => {
@@ -488,7 +504,7 @@ describe("HermesCliAdapter WSL permission policy", () => {
 });
 
 describe("HermesCliAdapter Windows launch", () => {
-  it("keeps MiniMax Token Plan on custom OpenAI-compatible routing", async () => {
+  it("routes MiniMax Token Plan through Hermes' MiniMax handler", async () => {
     const adapter = new HermesCliAdapter(
       { hermesDir: () => "C:\\Users\\example\\AppData\\Roaming\\Hermes Forge\\hermes" } as never,
       {} as never,
@@ -500,7 +516,7 @@ describe("HermesCliAdapter Windows launch", () => {
       providerArgs(request: { runtimeEnv?: { sourceType?: string } }): string[];
     }).providerArgs({ runtimeEnv: { sourceType: "minimax_token_plan_api_key" } });
 
-    expect(args).toEqual([]);
+    expect(args).toEqual(["--provider", "minimax-cn"]);
   });
 
   it("translates Coding Plan sourceType into a canonical Hermes provider name for env runners", () => {
@@ -509,15 +525,42 @@ describe("HermesCliAdapter Windows launch", () => {
     };
 
     expect(adapter.hermesProvider("custom", "kimi_coding_api_key")).toBe("kimi-coding");
-    expect(adapter.hermesProvider("custom", "zhipu_coding_api_key")).toBe("zhipu-coding");
-    expect(adapter.hermesProvider("custom", "dashscope_coding_api_key")).toBe("dashscope-coding");
-    expect(adapter.hermesProvider("custom", "tencent_token_plan_api_key")).toBe("tencent-token-plan");
-    // 没有显式映射的 sourceType 仍然落到 OpenAI-compatible 通用路由（保留原有行为）。
-    expect(adapter.hermesProvider("custom", "minimax_token_plan_api_key")).toBe("custom");
+    expect(adapter.hermesProvider("custom", "minimax_token_plan_api_key")).toBe("minimax-cn");
+    expect(adapter.hermesProvider("custom", "mimo_token_plan_api_key")).toBe("xiaomi");
+    expect(adapter.hermesProvider("custom", "zhipu_coding_api_key")).toBe("custom");
+    expect(adapter.hermesProvider("custom", "dashscope_coding_api_key")).toBe("custom");
+    expect(adapter.hermesProvider("custom", "tencent_token_plan_api_key")).toBe("custom");
+    expect(adapter.hermesProvider("custom", "volcengine_coding_api_key")).toBe("custom");
     expect(adapter.hermesProvider("custom", undefined)).toBe("custom");
     // 老的 provider-only 翻译保持不变。
     expect(adapter.hermesProvider("openai")).toBe("openrouter");
     expect(adapter.hermesProvider("copilot_acp")).toBe("copilot-acp");
+  });
+
+  it("does not pass unsupported Coding Plan providers to Hermes CLI --provider", () => {
+    const adapter = Object.create(HermesCliAdapter.prototype) as {
+      providerArgs(request: { runtimeEnv?: { provider: string; sourceType?: string; model: string; baseUrl?: string; env?: Record<string, string> } }): string[];
+    };
+    const unsupportedSourceTypes = [
+      "zhipu_coding_api_key",
+      "dashscope_coding_api_key",
+      "baidu_qianfan_coding_api_key",
+      "tencent_token_plan_api_key",
+      "tencent_hunyuan_token_plan_api_key",
+      "volcengine_coding_api_key",
+    ];
+
+    for (const sourceType of unsupportedSourceTypes) {
+      expect(adapter.providerArgs({
+        runtimeEnv: {
+          provider: "custom",
+          sourceType,
+          model: "coding-model",
+          baseUrl: "https://example.com/v1",
+          env: {},
+        },
+      })).toEqual([]);
+    }
   });
 
   it("propagates HERMES_INFERENCE_PROVIDER from sourceType for Coding Plan profiles in hermesEnv", async () => {
@@ -554,6 +597,45 @@ describe("HermesCliAdapter Windows launch", () => {
     expect(env.HERMES_INFERENCE_PROVIDER).toBe("kimi-coding");
     expect(env.OPENAI_MODEL).toBe("kimi-for-coding");
     expect(env.OPENAI_API_KEY).toBe("sk-test");
+  });
+
+  it("infers MiMo Token Plan endpoints as Xiaomi and normalizes model casing for CLI launch", async () => {
+    const adapter = Object.create(HermesCliAdapter.prototype) as {
+      activeHermesHome(): Promise<string>;
+      providerArgs(request: { runtimeEnv?: { provider: string; sourceType?: string; model: string; baseUrl?: string; env?: Record<string, string> } }): string[];
+      modelArgs(request: { runtimeEnv?: { provider: string; sourceType?: string; model: string; baseUrl?: string; env?: Record<string, string> } }): string[];
+      hermesEnv(
+        rootPath: string,
+        runtime: { mode: "windows" },
+        request: { runtimeEnv: { provider: string; sourceType?: string; model: string; baseUrl?: string; env?: Record<string, string> } },
+      ): Promise<NodeJS.ProcessEnv>;
+    };
+    adapter.activeHermesHome = async () => "C:\\Users\\example\\Hermes Agent";
+    const runtimeEnv = {
+      provider: "custom",
+      sourceType: "openai_compatible",
+      model: "MiMo-V2.5-Pro",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      env: {
+        AI_MODEL: "MiMo-V2.5-Pro",
+        OPENAI_MODEL: "MiMo-V2.5-Pro",
+        XIAOMI_BASE_URL: "https://token-plan-cn.xiaomimimo.com/v1",
+        XIAOMI_API_KEY: "sk-test",
+      },
+    };
+
+    expect(adapter.providerArgs({ runtimeEnv })).toEqual(["--provider", "xiaomi"]);
+    expect(adapter.modelArgs({ runtimeEnv })).toEqual(["--model", "mimo-v2.5-pro"]);
+
+    const env = await adapter.hermesEnv(
+      "C:\\Users\\example\\Hermes Agent",
+      { mode: "windows" },
+      { runtimeEnv },
+    );
+    expect(env.HERMES_INFERENCE_PROVIDER).toBe("xiaomi");
+    expect(env.OPENAI_MODEL).toBe("mimo-v2.5-pro");
+    expect(env.AI_MODEL).toBe("mimo-v2.5-pro");
+    expect(env.XIAOMI_BASE_URL).toBe("https://token-plan-cn.xiaomimimo.com/v1");
   });
 
   it("uses a hidden non-detached process for Windows CLI runs", async () => {

@@ -14,7 +14,7 @@ const definition: ModelSourceDefinition = {
   description: "火山方舟 Coding Plan 专用入口，使用独立 base URL。",
   keywords: ["火山", "方舟", "doubao", "coding", "plan"],
   badge: "Coding Plan",
-  roleCapabilities: ["coding_plan"],
+  roleCapabilities: ["chat", "coding_plan"],
   runtimeCompatibility: "runtime",
 };
 

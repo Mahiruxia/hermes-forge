@@ -304,25 +304,26 @@ export function ModelConfigWizard(props: {
       const currentSourceType = draft.sourceType;
       const currentProvider = providerForCatalog(currentSourceType, providerCatalog);
       const nextProviderId = providerIdForSource(currentSourceType);
+      const savedModel = health.model?.trim() || draft.model.trim();
       const profileId = editingProfileId && sameModelIdentity(currentEditingProfile, {
         provider: nextProviderId,
-        model: draft.model.trim(),
+        model: savedModel,
         baseUrl: draft.baseUrl.trim(),
       })
         ? editingProfileId
         : buildProfileId({
           provider: nextProviderId,
-          model: draft.model.trim(),
+          model: savedModel,
           baseUrl: draft.baseUrl.trim(),
           existingProfiles: props.models.modelProfiles,
         });
       const nextProfile = {
         id: profileId,
-        name: friendlyProfileName(currentSourceType, draft.model.trim(), providerCatalog),
+        name: friendlyProfileName(currentSourceType, savedModel, providerCatalog),
         provider: nextProviderId,
         sourceType: currentSourceType,
         authMode: currentProvider.authModeToStore,
-        model: draft.model.trim(),
+        model: savedModel,
         ...(draft.baseUrl.trim() ? { baseUrl: draft.baseUrl.trim() } : {}),
         ...(ref ? { secretRef: ref } : {}),
         maxTokens: health.contextWindow ?? DEFAULT_MAX_CONTEXT,

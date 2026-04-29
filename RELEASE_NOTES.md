@@ -1,5 +1,38 @@
 # Release Notes
 
+## Hermes Forge v0.2.7
+
+发布日期：2026-04-29
+
+这是一次模型接入热修版本，重点修复 MiMo V2.5 Pro / Token Plan 以及多类 Coding Plan 在 Hermes CLI 下的 provider、模型名和运行环境兼容问题。
+
+### 修复内容
+
+- 新增 MiMo API 与 MiMo Token Plan（中国区）独立接入：
+  - MiMo Token Plan 默认使用 `https://token-plan-cn.xiaomimimo.com/v1`。
+  - 模型名统一规范化为 `mimo-v2.5-pro`，避免 `MiMo-V2.5-Pro` 被服务端判定为不支持模型。
+  - Hermes CLI 运行时映射为已支持的 `xiaomi` provider。
+- 修复部分 Coding Plan 被错误映射成 Hermes CLI 不支持的 `--provider`：
+  - DashScope、智谱、百度千帆、腾讯、火山等 OpenAI-compatible Coding Plan 不再强行传入自造 provider 名。
+  - Kimi、MiniMax、MiMo 保留 Hermes 内置 provider 路径。
+- 修复 MiniMax Token Plan 的 Anthropic / OpenAI 双协议环境变量覆盖问题。
+- 模型配置页新增更准确的 Coding Plan 提醒：
+  - 区分 Hermes 内置 provider 与 OpenAI-compatible/custom 路由。
+  - 避免用户把所有 Coding Plan 都理解为同一种运行方式。
+
+### 性能优化
+
+- Hermes CLI 已经输出正文时，不再额外等待 session 文件读取，减少回复结束阶段的尾部等待。
+- WSL `/models` 可达性探测增加短期缓存，降低连续聊天前的重复探测开销。
+
+### 验证
+
+- `npm test -- --run src/shared/model-config.test.ts src/main/runtime-env-resolver.test.ts src/main/hermes-model-sync.test.ts src/adapters/hermes/hermes-cli-adapter.test.ts src/main/model-connection-service.test.ts src/main/model-runtime-proxy.test.ts` 通过。
+- `npm run check` 通过。
+- `npm run build` 通过。
+- `npm run package:win` 通过。
+- WSL 端实测 `hermes chat --provider xiaomi --model mimo-v2.5-pro` 返回 `OK`。
+
 ## Hermes Forge v0.2.1
 
 发布日期：2026-04-26

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -5,7 +6,7 @@ import { resolveActiveHermesHome } from "./hermes-home";
 import type { RuntimeEnvResolver } from "./runtime-env-resolver";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import { runCommand } from "../process/command-runner";
-import { resolveHermesProvider } from "../shared/model-config";
+import { normalizeSourceTypeForProfile, resolveHermesProvider } from "../shared/model-config";
 import type { EngineRuntimeEnv, ModelProfile, ModelRole, RuntimeConfig } from "../shared/types";
 
 const MANAGED_ENV_START = "# >>> Hermes Forge Model Runtime >>>";
@@ -29,7 +30,15 @@ type HermesModelConfig = {
   baseUrl?: string;
 };
 
+type WslRoleProbeResult = {
+  wslReachable?: boolean;
+  wslProbeMessage?: string;
+};
+
 export class HermesModelSyncService {
+  private readonly wslRoleProbeCache = new Map<string, { expiresAt: number; result: WslRoleProbeResult }>();
+  private readonly wslRoleProbeCacheTtlMs = 60_000;
+
   constructor(
     private readonly runtimeEnvResolver: RuntimeEnvResolver,
     private readonly hermesHomeBase: () => string = () => path.join(os.homedir(), ".hermes"),
@@ -131,8 +140,13 @@ export class HermesModelSyncService {
     return parsed.toString().replace(/\/$/, "");
   }
 
-  private async probeWslRole(config: RuntimeConfig, hermesHome: string, baseUrl?: string, apiKey?: string) {
+  private async probeWslRole(config: RuntimeConfig, hermesHome: string, baseUrl?: string, apiKey?: string): Promise<WslRoleProbeResult> {
     if (!baseUrl || config.hermesRuntime?.mode !== "wsl" || !this.runtimeAdapterFactory) return {};
+    const cacheKey = this.wslRoleProbeCacheKey(config, baseUrl, apiKey);
+    const cached = this.wslRoleProbeCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.result;
+    }
     const adapter = this.runtimeAdapterFactory(config.hermesRuntime);
     const rootPath = adapter.toRuntimePath(hermesHome);
     const script = [
@@ -170,15 +184,37 @@ export class HermesModelSyncService {
         runtimeKind: "wsl",
         commandId: "hermes-model-sync.wsl-role-probe",
       });
-      return result.exitCode === 0
+      const probeResult = result.exitCode === 0
         ? { wslReachable: true, wslProbeMessage: `WSL 可访问 ${baseUrl}` }
         : { wslReachable: false, wslProbeMessage: result.stderr || result.stdout || `WSL 访问 ${baseUrl} 失败。` };
+      this.rememberWslRoleProbe(cacheKey, probeResult);
+      return probeResult;
     } catch (error) {
-      return {
+      const probeResult = {
         wslReachable: false,
         wslProbeMessage: error instanceof Error ? error.message : `WSL 访问 ${baseUrl} 失败。`,
       };
+      this.rememberWslRoleProbe(cacheKey, probeResult);
+      return probeResult;
     }
+  }
+
+  private rememberWslRoleProbe(cacheKey: string, result: WslRoleProbeResult) {
+    const ttlMs = result.wslReachable === false ? 10_000 : this.wslRoleProbeCacheTtlMs;
+    this.wslRoleProbeCache.set(cacheKey, {
+      expiresAt: Date.now() + ttlMs,
+      result,
+    });
+  }
+
+  private wslRoleProbeCacheKey(config: RuntimeConfig, baseUrl: string, apiKey?: string) {
+    return [
+      config.hermesRuntime?.mode ?? "windows",
+      config.hermesRuntime?.distro?.trim() ?? "",
+      config.hermesRuntime?.pythonCommand?.trim() ?? "python3",
+      baseUrl.replace(/\/$/, ""),
+      fingerprintSecret(apiKey),
+    ].join("\n");
   }
 }
 
@@ -191,8 +227,9 @@ function selectRoleProfile(config: RuntimeConfig, role: ModelRole): ModelProfile
   );
 }
 
-function toHermesProvider(profile: Pick<ModelProfile, "provider" | "sourceType">) {
-  return resolveHermesProvider({ provider: profile.provider, sourceType: profile.sourceType });
+function toHermesProvider(profile: Pick<ModelProfile, "provider" | "sourceType" | "baseUrl" | "model">) {
+  const sourceType = normalizeSourceTypeForProfile(profile);
+  return resolveHermesProvider({ provider: profile.provider, sourceType });
 }
 
 function buildModelEnv(runtimeEnv: EngineRuntimeEnv, hermesProvider: string, role: ModelRole = "chat") {
@@ -218,8 +255,8 @@ function buildModelEnv(runtimeEnv: EngineRuntimeEnv, hermesProvider: string, rol
     ...runtimeEnv.env,
   };
   if (runtimeEnv.baseUrl) {
-    env.AI_BASE_URL = runtimeEnv.baseUrl;
-    env.OPENAI_BASE_URL = runtimeEnv.baseUrl;
+    env.AI_BASE_URL = env.AI_BASE_URL ?? runtimeEnv.baseUrl;
+    env.OPENAI_BASE_URL = env.OPENAI_BASE_URL ?? runtimeEnv.baseUrl;
   }
   return Object.fromEntries(
     Object.entries(env).filter((entry): entry is [string, string] => Boolean(entry[1]?.trim())),
@@ -329,6 +366,11 @@ function yamlString(value: string) {
 function quoteEnv(value: string) {
   if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
   return JSON.stringify(value);
+}
+
+function fingerprintSecret(value?: string) {
+  if (!value) return "";
+  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
 export const testOnly = {

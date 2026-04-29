@@ -29,7 +29,7 @@ function codingPlanDefinition(input: {
     description: input.description,
     keywords: [...input.keywords, "coding", "plan", "token plan"],
     badge: "Coding Plan",
-    roleCapabilities: ["coding_plan"],
+    roleCapabilities: ["chat", "coding_plan"],
     runtimeCompatibility: "runtime",
   };
 }
@@ -158,7 +158,7 @@ export class MiniMaxTokenPlanProvider extends OpenAiCompatibleProvider {
     super(codingPlanDefinition({
       sourceType: "minimax_token_plan_api_key",
       label: "MiniMax Token Plan（国内）",
-      baseUrl: "https://api.minimaxi.com/anthropic/v1",
+      baseUrl: "https://api.minimaxi.com/anthropic",
       modelPlaceholder: "MiniMax-M2.7 / MiniMax-M2.5 / MiniMax-M2",
       presetModels: [
         "MiniMax-M2.7",
@@ -169,7 +169,7 @@ export class MiniMaxTokenPlanProvider extends OpenAiCompatibleProvider {
         "MiniMax-M2",
       ],
       keywords: ["minimax", "m2.7", "m2.5"],
-      description: "MiniMax Token Plan OpenAI-compatible 入口。",
+      description: "MiniMax Token Plan Anthropic-compatible 入口，Hermes Agent 运行时由 MiniMax 专用 handler 接管。",
     }), {
       urlPatterns: [/api\.minimaxi\.com\/anthropic/i, /api\.minimaxi\.com\/v1/i, /api\.minimax\.io\/anthropic/i],
       modelPatterns: [/^MiniMax-/i],
