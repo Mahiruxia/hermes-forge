@@ -1,5 +1,32 @@
 # Release Notes
 
+## Hermes Forge v0.2.8
+
+发布日期：2026-04-30
+
+这是一次面向 Windows Native 主线、配置迁移和桌面输入体验的版本更新。该版本包含 Claude Code 协作完成的大批运行时收口改动，也包含今天对聊天输入区的细节修复。
+
+### 核心变化
+
+- 收口 Windows Native 运行链路，移除旧 Managed WSL 安装器、WSL doctor、WSL runtime adapter 等遗留路径。
+- 新增 Hermes Core bridge、Hermes home 链接与 legacy WSL 配置迁移服务，让旧配置可以迁入当前 Forge 管理目录。
+- 强化 Hermes 兼容性检测、诊断编排、模型运行时同步和连接测试，减少配置看似可用但运行时失败的情况。
+- 优化 Windows agent 的文件、窗口、剪贴板和命令能力处理，并补充 token usage 解析与展示。
+
+### 桌面体验
+
+- 修复聊天输入区右下角上下文用量详情被 composer 裁切、覆盖发送区域的问题，改为轻量浮层展示。
+- 修复语音输入状态机：避免监听状态卡死、临时识别结果重复追加，并让监听中的左下角按钮直接停止语音输入。
+- 改进 Agent 面板、欢迎页、设置页和模型配置页的文案与布局，让 Windows Native 状态更清楚。
+- `.claude/` 本地工作树缓存已加入忽略列表，避免误提交本地辅助环境。
+
+### 验证
+
+- `npm run check` 通过。
+- `npm test` 通过，285 个测试全部成功。
+- `npm run build` 通过。
+- GitHub CI `verify` 通过。
+
 ## Hermes Forge v0.2.7
 
 发布日期：2026-04-29
