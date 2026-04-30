@@ -9,6 +9,7 @@ import type { SecretVault } from "../auth/secret-vault";
 import { runCommand } from "../process/command-runner";
 import type {
   EngineMaintenanceResult,
+  HermesCompatibilityReport,
   HermesInstallEvent,
   HermesInstallResult,
   RuntimeConfig,
@@ -19,10 +20,10 @@ import type {
 } from "../shared/types";
 import { missingSecretMessage, normalizeOpenAiCompatibleBaseUrl, requiresStoredSecret } from "../shared/model-config";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
-import { wslDistroArgs } from "../runtime/runtime-probe-service";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type { RuntimeProbeResult } from "../runtime/runtime-types";
 import type { InstallOrchestrator } from "../install/install-orchestrator";
+import type { HermesCompatibilityService } from "./hermes-compatibility-service";
 
 const DEFAULT_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
 const DEFAULT_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -44,11 +45,13 @@ export class SetupService {
     private readonly runtimeProbeService?: RuntimeProbeService,
     private readonly runtimeAdapterFactory?: RuntimeAdapterFactory,
     private readonly installOrchestrator?: InstallOrchestrator,
+    private readonly hermesCompatibilityService?: HermesCompatibilityService,
   ) {}
 
   async getSummary(workspacePath?: string): Promise<SetupSummary> {
     const config = await this.configStore.read();
     const runtimeProbe = await this.runtimeProbeService?.probe({ workspacePath }).catch(() => undefined);
+    const hermesCompatibility = await this.hermesCompatibilityService?.inspect().catch(() => undefined);
     const checks: SetupCheck[] = [
       runtimeProbe ? this.gitCheckFromProbe(runtimeProbe) : await this.checkCommand("git", ["--version"], "git", "Git", {
         statusOnFailure: "missing",
@@ -70,7 +73,7 @@ export class SetupService {
       runtimeProbe ? this.wingetCheckFromProbe(runtimeProbe) : await this.checkWinget(),
       ...(runtimeProbe?.runtimeMode === "wsl" ? [this.wslCheckFromProbe(runtimeProbe)] : []),
       runtimeProbe ? this.hermesCheckFromProbe(runtimeProbe) : await this.checkHermes(),
-      await this.checkHermesAgentCompatibility(),
+      await this.checkHermesAgentCompatibility(hermesCompatibility),
       await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "hermes-pyyaml", "Hermes 配置依赖", "yaml", "PyYAML", {
         description: "Hermes CLI 读取 config.yaml 时需要 PyYAML；缺失时会出现 No module named 'yaml'。",
         recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade PyYAML。",
@@ -106,7 +109,7 @@ export class SetupService {
     const blocking = mergedChecks.filter((check) =>
       check.blocking !== false && (check.status === "missing" || check.status === "failed"),
     );
-    return { ready: blocking.length === 0, blocking, checks: mergedChecks };
+    return { ready: blocking.length === 0, blocking, checks: mergedChecks, hermesCompatibility };
   }
 
   private gitCheckFromProbe(probe: RuntimeProbeResult): SetupCheck {
@@ -961,10 +964,8 @@ export class SetupService {
       return this.checkPythonPackage(id, label, moduleName, packageName, options);
     }
     const script = `import ${moduleName}; print("${packageName} ok")`;
-    const command = probe.runtimeMode === "wsl" ? "wsl.exe" : probe.commands.python.command;
-    const args = probe.runtimeMode === "wsl"
-      ? [...wslDistroArgs({ distro: probe.distroName }), probe.commands.wsl.pythonCommand ?? "python3", "-c", script]
-      : [...(probe.commands.python.args ?? []), "-c", script];
+    const command = probe.commands.python.command;
+    const args = [...(probe.commands.python.args ?? []), "-c", script];
     if (!command) {
       return {
         id,
@@ -1125,10 +1126,14 @@ export class SetupService {
       });
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
       log.push(`Install health via ${candidate.command}: ${output || `exit ${result.exitCode ?? "unknown"}`}`);
-      if (result.exitCode === 0) {
+      if (result.exitCode === 0 && output.length > 0) {
         return { available: true, message: output || "Hermes CLI 可启动。" };
       }
-      lastMessage = output || `${candidate.command} 退出码 ${result.exitCode ?? "unknown"}`;
+      lastMessage = output || (
+        result.exitCode === 0
+          ? `${candidate.command} 成功退出但没有输出 Hermes 版本信息，可能只是残留占位文件。`
+          : `${candidate.command} 退出码 ${result.exitCode ?? "unknown"}`
+      );
     }
     return { available: false, message: lastMessage };
   }
@@ -1161,6 +1166,9 @@ export class SetupService {
   }
 
   private defaultInstallRoot() {
+    if (process.platform === "win32") {
+      return path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"), "hermes", "hermes-agent");
+    }
     return path.join(os.homedir(), "Hermes Agent");
   }
 
@@ -1181,7 +1189,60 @@ export class SetupService {
     }
   }
 
-  async checkHermesAgentCompatibility(): Promise<SetupCheck> {
+  async checkHermesAgentCompatibility(report?: HermesCompatibilityReport): Promise<SetupCheck> {
+    const compatibility = report ?? await this.hermesCompatibilityService?.inspect().catch(() => undefined);
+    if (compatibility) {
+      if (!compatibility.installed) {
+        return {
+          id: "hermes-agent-compat",
+          label: "Hermes Agent 兼容性",
+          status: "missing",
+          message: compatibility.blockingIssues[0] ?? "Hermes Agent 未安装或不可启动。",
+          description: "Windows Native Hermes 是默认运行环境；未安装时无法可靠执行真实任务。",
+          recommendedAction: "点击一键修复，程序会使用官方 Windows 安装脚本安装 Hermes。",
+          fixAction: "install_hermes",
+          blocking: true,
+        };
+      }
+      if (!compatibility.forgeTaskReady) {
+        return {
+          id: "hermes-agent-compat",
+          label: "Hermes Agent 兼容性",
+          status: "missing",
+          message: compatibility.blockingIssues[0] ?? "Hermes Agent 缺少 Forge 任务所需能力。",
+          description: "Forge 需要 Hermes Agent 提供 run_conversation 与基础模型初始化参数。",
+          recommendedAction: "点击一键修复，程序会重装或修复 Windows Hermes Agent。",
+          fixAction: "install_hermes",
+          blocking: true,
+        };
+      }
+      if (!compatibility.enhancedCapabilities.supported || compatibility.venvStatus === "missing") {
+        return {
+          id: "hermes-agent-compat",
+          label: "Hermes Agent 兼容性",
+          status: "warning",
+          message: [
+            `Hermes Agent ${compatibility.version ?? ""} 可用于 Forge 任务。`,
+            compatibility.enhancedCapabilities.supported ? "" : "官方版本未提供增强 capabilities；会话元数据将使用兼容模式。",
+            compatibility.venvStatus === "missing" ? "未检测到 venv，建议一键修复补齐。" : "",
+          ].filter(Boolean).join(" "),
+          description: "官方 Windows Hermes 可运行时不再因 capabilities --json 缺失被判为安装损坏；缺失项作为增强能力 warning 展示。",
+          recommendedAction: compatibility.venvStatus === "missing"
+            ? "可以先使用；建议运行一键修复补齐 venv 和可自动修复项。"
+            : "可以正常使用；增强 capabilities 缺失不影响基础对话、模型、Skills 与连接器。",
+          fixAction: "update_hermes",
+          blocking: false,
+        };
+      }
+      return {
+        id: "hermes-agent-compat",
+        label: "Hermes Agent 兼容性",
+        status: "ok",
+        message: `Hermes Agent ${compatibility.version ?? ""} 已满足 Forge Windows Native 运行要求。`,
+        blocking: false,
+      };
+    }
+
     const config = await this.configStore.read();
     const runtimeMode = config.hermesRuntime?.mode ?? "windows";
     if (runtimeMode === "wsl") {
@@ -1205,6 +1266,23 @@ export class SetupService {
       };
     }
 
+    const health = await this.hermes.healthCheck().catch((error) => ({
+      available: false,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+    if (!health.available) {
+      return {
+        id: "hermes-agent-compat",
+        label: "Hermes Agent 兼容性",
+        status: "missing",
+        message: `Hermes Agent 安装不完整或不可启动：${health.message}`,
+        description: "兼容性检查需要先有可执行的 Windows Hermes CLI；当前目录可能是旧残留、占位文件或未完成安装。",
+        recommendedAction: "点击一键修复，程序会隔离残留目录并重跑官方 Windows 安装脚本。",
+        fixAction: "install_hermes",
+        blocking: true,
+      };
+    }
+
     const script = `
 import json, sys, inspect
 sys.path.insert(0, r"""${hermesRoot}""")
@@ -1212,12 +1290,15 @@ try:
     from run_agent import AIAgent
     sig = inspect.signature(AIAgent.__init__)
     params = set(sig.parameters.keys())
-    required = {"skip_context_files", "quiet_mode", "session_id", "platform", "ephemeral_system_prompt", "base_url", "api_key", "provider", "model", "max_iterations"}
+    required = {"base_url", "api_key", "provider", "model", "max_iterations"}
+    recommended = {"skip_context_files", "quiet_mode", "session_id", "platform", "ephemeral_system_prompt"}
     missing = sorted(required - params)
+    missing_recommended = sorted(recommended - params)
     has_run_conversation = hasattr(AIAgent, "run_conversation") and callable(getattr(AIAgent, "run_conversation", None))
     print(json.dumps({
         "compatible": len(missing) == 0 and has_run_conversation,
         "missing": missing,
+        "missing_recommended": missing_recommended,
         "has_run_conversation": has_run_conversation
     }))
 except Exception as e:
@@ -1252,7 +1333,7 @@ except Exception as e:
         label: "Hermes Agent 兼容性",
         status: "missing",
         message: `当前 Hermes Agent 缺少 v0.2.0 所需的关键能力：AIAgent.run_conversation 不存在。`,
-        description: "Forge v0.2.0 需要 Hermes Agent 支持 run_conversation 方法以及 skip_context_files、quiet_mode 等参数。",
+        description: "Forge 需要 Hermes Agent 支持 run_conversation 方法；缺失时无法稳定启动任务。",
         recommendedAction: "请更新 Hermes Agent 到最新版本。",
         fixAction: "update_hermes",
         blocking: true,
@@ -1266,7 +1347,7 @@ except Exception as e:
         status: "warning",
         message: `Hermes Agent 可以运行，但缺少 v0.2.0 推荐参数：${missing.join("、")}。`,
         description: "Forge v0.2.0 重构后依赖这些参数实现最佳体验（如 Hermes 自主管理记忆、流式事件等）。",
-        recommendedAction: "建议更新 Hermes Agent 到最新版本以获得完整功能。",
+        recommendedAction: "可以正常使用；等待官方版本提供增强能力后可获得完整体验。",
         fixAction: "update_hermes",
         blocking: false,
       };

@@ -6,7 +6,6 @@ import type {
   HermesProbeSummary,
   HermesStatusSummary,
   HermesWebUiOverview,
-  ManagedWslInstallerIpcResult,
   ModelProviderProfile,
   PermissionOverview,
   RuntimeConfig,
@@ -26,8 +25,6 @@ export interface ConfigState {
   setupSummary?: SetupSummary;
   secretStatus?: SecretVaultStatus;
   webUiOverview?: HermesWebUiOverview;
-  managedWslInstaller?: ManagedWslInstallerIpcResult;
-  managedWslInstallerLoadingAction?: ManagedWslInstallerIpcResult["action"];
   permissionOverview?: PermissionOverview;
 }
 
@@ -42,8 +39,6 @@ export interface ConfigActions {
   setSetupSummary(setupSummary: SetupSummary): void;
   setSecretStatus(secretStatus: SecretVaultStatus): void;
   setWebUiOverview(overview?: HermesWebUiOverview): void;
-  setManagedWslInstaller(result?: ManagedWslInstallerIpcResult): void;
-  setManagedWslInstallerLoadingAction(action?: ManagedWslInstallerIpcResult["action"]): void;
   setPermissionOverview(overview?: PermissionOverview): void;
 }
 
@@ -59,8 +54,6 @@ export const configSlice = combine<ConfigState, ConfigActions>(
     setupSummary: undefined,
     secretStatus: undefined,
     webUiOverview: undefined,
-    managedWslInstaller: undefined,
-    managedWslInstallerLoadingAction: undefined,
     permissionOverview: undefined,
   },
   (set) => ({
@@ -77,9 +70,6 @@ export const configSlice = combine<ConfigState, ConfigActions>(
     setSetupSummary: (setupSummary: SetupSummary) => set({ setupSummary }),
     setSecretStatus: (secretStatus: SecretVaultStatus) => set({ secretStatus }),
     setWebUiOverview: (overview?: HermesWebUiOverview) => set({ webUiOverview: overview }),
-    setManagedWslInstaller: (managedWslInstaller?: ManagedWslInstallerIpcResult) => set({ managedWslInstaller }),
-    setManagedWslInstallerLoadingAction: (managedWslInstallerLoadingAction?: ManagedWslInstallerIpcResult["action"]) =>
-      set({ managedWslInstallerLoadingAction }),
     setPermissionOverview: (permissionOverview?: PermissionOverview) => set({ permissionOverview }),
   })
 );

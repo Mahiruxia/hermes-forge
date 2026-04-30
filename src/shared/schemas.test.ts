@@ -42,13 +42,13 @@ describe("startTaskInputSchema", () => {
 });
 
 describe("runtimeConfigSchema", () => {
-  it("defaults Hermes runtime to WSL mode", () => {
+  it("defaults Hermes runtime to Windows mode", () => {
     const parsed = runtimeConfigSchema.parse({
       modelProfiles: [{ id: "local", provider: "local", model: "mock" }],
     });
 
     expect(parsed.hermesRuntime).toEqual({
-      mode: "wsl",
+      mode: "windows",
       pythonCommand: "python3",
       windowsAgentMode: "hermes_native",
       cliPermissionMode: "yolo",
@@ -57,7 +57,7 @@ describe("runtimeConfigSchema", () => {
     });
   });
 
-  it("accepts WSL runtime settings", () => {
+  it("migrates legacy WSL runtime settings to Windows", () => {
     const parsed = runtimeConfigSchema.parse({
       modelProfiles: [{ id: "local", provider: "local", model: "mock" }],
       hermesRuntime: {
@@ -78,13 +78,13 @@ describe("runtimeConfigSchema", () => {
     });
 
     expect(parsed.hermesRuntime).toEqual({
-      mode: "wsl",
-      distro: "Ubuntu",
+      mode: "windows",
+      distro: undefined,
       pythonCommand: "python3",
       windowsAgentMode: "host_tool_loop",
       cliPermissionMode: "safe",
       permissionPolicy: "passthrough",
-      workerMode: "experimental_wsl",
+      workerMode: "off",
       installSource: {
         repoUrl: "https://github.com/example/hermes-agent.git",
         branch: "main",

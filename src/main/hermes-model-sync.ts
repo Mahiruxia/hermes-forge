@@ -1,11 +1,8 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { resolveActiveHermesHome } from "./hermes-home";
 import type { RuntimeEnvResolver } from "./runtime-env-resolver";
-import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
-import { runCommand } from "../process/command-runner";
 import { normalizeSourceTypeForProfile, resolveHermesProvider } from "../shared/model-config";
 import type { EngineRuntimeEnv, ModelProfile, ModelRole, RuntimeConfig } from "../shared/types";
 
@@ -28,28 +25,32 @@ type HermesModelConfig = {
   provider: string;
   model: string;
   baseUrl?: string;
-};
-
-type WslRoleProbeResult = {
-  wslReachable?: boolean;
-  wslProbeMessage?: string;
+  contextLength?: number;
 };
 
 export class HermesModelSyncService {
-  private readonly wslRoleProbeCache = new Map<string, { expiresAt: number; result: WslRoleProbeResult }>();
-  private readonly wslRoleProbeCacheTtlMs = 60_000;
-
   constructor(
     private readonly runtimeEnvResolver: RuntimeEnvResolver,
     private readonly hermesHomeBase: () => string = () => path.join(os.homedir(), ".hermes"),
-    private readonly runtimeAdapterFactory?: RuntimeAdapterFactory,
   ) {}
 
   async syncRuntimeConfig(config: RuntimeConfig): Promise<HermesModelSyncResult> {
     const hermesHome = await this.activeHermesHome();
     const configPath = path.join(hermesHome, "config.yaml");
     const envPath = path.join(hermesHome, ".env");
-    const chatProfile = selectRoleProfile(config, "chat");
+    let chatProfile = selectRoleProfile(config, "chat");
+    let codingPlanFallback = false;
+
+    // When no explicit chat model is configured, fall back to the Coding Plan
+    // profile so that Hermes still has a usable model.
+    if ((!chatProfile || !chatProfile.model.trim() || chatProfile.provider === "local") && !config.modelRoleAssignments?.chat) {
+      const codingProfile = selectRoleProfile(config, "coding_plan");
+      if (codingProfile && codingProfile.model.trim() && codingProfile.provider !== "local") {
+        chatProfile = codingProfile;
+        codingPlanFallback = true;
+      }
+    }
+
     if (!chatProfile || !chatProfile.model.trim()) {
       return { ok: true, synced: false, skippedReason: "missing-model-profile", configPath, envPath };
     }
@@ -62,7 +63,8 @@ export class HermesModelSyncService {
     const modelConfig: HermesModelConfig = {
       provider,
       model: chatRuntimeEnv.model,
-      baseUrl: await this.toRuntimeReachableBaseUrl(config, chatRuntimeEnv.baseUrl),
+      baseUrl: persistedModelBaseUrl(chatProfile, chatRuntimeEnv),
+      contextLength: normalizeContextLength(chatProfile.maxTokens),
     };
     const roles: NonNullable<HermesModelSyncResult["roles"]> = {
       chat: {
@@ -71,25 +73,40 @@ export class HermesModelSyncService {
         provider,
         baseUrl: modelConfig.baseUrl,
         consumedByHermes: true,
-        ...(await this.probeWslRole(config, hermesHome, modelConfig.baseUrl, resolveRuntimeApiKey(chatRuntimeEnv))),
+        ...(codingPlanFallback ? { syncNote: "Coding Plan 模型被用作 Chat fallback（未配置显式 Chat 模型）。" } : {}),
       },
     };
     const envBlocks = [await this.buildRoleEnv(config, "chat", chatRuntimeEnv, provider)];
+    if (codingPlanFallback) {
+      // When the coding plan is used as the chat fallback, add a marker env var
+      // so downstream tooling can detect this mode.
+      envBlocks.push({ HERMES_FORGE_CODING_PLAN_CONSUMED_AS_CHAT: chatProfile.id });
+    }
     const codingProfile = selectRoleProfile(config, "coding_plan");
     if (codingProfile && codingProfile.id !== chatProfile.id && codingProfile.provider !== "local") {
-      const codingRuntimeEnv = await this.runtimeEnvResolver.resolveFromConfig(config, codingProfile.id, "coding_plan");
-      const codingProvider = toHermesProvider(codingProfile);
-      const codingEnv = await this.buildRoleEnv(config, "coding_plan", codingRuntimeEnv, codingProvider);
-      envBlocks.push(codingEnv);
-      roles.coding_plan = {
-        profileId: codingRuntimeEnv.profileId,
-        model: codingRuntimeEnv.model,
-        provider: codingProvider,
-        baseUrl: codingEnv.HERMES_CODING_PLAN_BASE_URL ?? codingRuntimeEnv.baseUrl,
-        consumedByHermes: false,
-        syncNote: "已写入 Hermes Forge 托管配置；当前 Hermes Agent 未读取 HERMES_CODING_PLAN_*，不会自动切换 Coding Plan runtime。",
-        ...(await this.probeWslRole(config, hermesHome, codingEnv.HERMES_CODING_PLAN_BASE_URL ?? codingRuntimeEnv.baseUrl, resolveCodingPlanApiKey(codingRuntimeEnv))),
-      };
+      try {
+        const codingRuntimeEnv = await this.runtimeEnvResolver.resolveFromConfig(config, codingProfile.id, "coding_plan");
+        const codingProvider = toHermesProvider(codingProfile);
+        const codingEnv = await this.buildRoleEnv(config, "coding_plan", codingRuntimeEnv, codingProvider);
+        envBlocks.push(codingEnv);
+        roles.coding_plan = {
+          profileId: codingRuntimeEnv.profileId,
+          model: codingRuntimeEnv.model,
+          provider: codingProvider,
+          baseUrl: codingEnv.HERMES_CODING_PLAN_BASE_URL ?? codingRuntimeEnv.baseUrl,
+          consumedByHermes: false,
+          syncNote: "已写入 Hermes Forge 托管配置；当前 Hermes Agent 未读取 HERMES_CODING_PLAN_*，不会自动切换 Coding Plan runtime。",
+        };
+      } catch (error) {
+        console.warn("[Hermes Forge] Coding Plan runtime resolution failed, skipping:", error);
+        roles.coding_plan = {
+          profileId: codingProfile.id,
+          model: codingProfile.model,
+          provider: toHermesProvider(codingProfile),
+          consumedByHermes: false,
+          syncNote: `Coding Plan 运行时解析失败，已跳过：${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
     }
     const modelEnv = Object.assign({}, ...envBlocks);
 
@@ -131,90 +148,7 @@ export class HermesModelSyncService {
   }
 
   private async toRuntimeReachableBaseUrl(config: RuntimeConfig, baseUrl?: string) {
-    if (!baseUrl || config.hermesRuntime?.mode !== "wsl") return baseUrl;
-    const parsed = new URL(baseUrl);
-    if (!["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)) return baseUrl;
-    const adapter = this.runtimeAdapterFactory?.(config.hermesRuntime);
-    if (!adapter) return baseUrl;
-    parsed.hostname = await adapter.getBridgeAccessHost();
-    return parsed.toString().replace(/\/$/, "");
-  }
-
-  private async probeWslRole(config: RuntimeConfig, hermesHome: string, baseUrl?: string, apiKey?: string): Promise<WslRoleProbeResult> {
-    if (!baseUrl || config.hermesRuntime?.mode !== "wsl" || !this.runtimeAdapterFactory) return {};
-    const cacheKey = this.wslRoleProbeCacheKey(config, baseUrl, apiKey);
-    const cached = this.wslRoleProbeCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.result;
-    }
-    const adapter = this.runtimeAdapterFactory(config.hermesRuntime);
-    const rootPath = adapter.toRuntimePath(hermesHome);
-    const script = [
-      "import sys, urllib.error, urllib.request",
-      "url = sys.argv[1].rstrip('/') + '/models'",
-      "api_key = sys.argv[2] if len(sys.argv) > 2 else 'lm-studio'",
-      "req = urllib.request.Request(url, headers={'Authorization': 'Bearer %s' % api_key})",
-      "try:",
-      "    with urllib.request.urlopen(req, timeout=8) as resp:",
-      "        sys.exit(0 if 200 <= resp.status < 300 else 3)",
-      "except urllib.error.HTTPError as exc:",
-      "    print('HTTP %s' % exc.code)",
-      "    sys.exit(4 if exc.code in (401, 403) else 3)",
-      "except Exception as exc:",
-      "    print(str(exc))",
-      "    sys.exit(2)",
-    ].join("\n");
-    try {
-      const launch = await adapter.buildPythonLaunch({
-        runtime: config.hermesRuntime,
-        rootPath,
-        cwd: rootPath,
-        pythonArgs: ["-c", script, baseUrl, apiKey ?? "lm-studio"],
-        env: {
-          PYTHONUTF8: "1",
-          PYTHONIOENCODING: "utf-8",
-          PYTHONUNBUFFERED: "1",
-        },
-      });
-      const result = await runCommand(launch.command, launch.args, {
-        cwd: launch.cwd,
-        timeoutMs: 12_000,
-        env: launch.env,
-        detached: launch.detached,
-        runtimeKind: "wsl",
-        commandId: "hermes-model-sync.wsl-role-probe",
-      });
-      const probeResult = result.exitCode === 0
-        ? { wslReachable: true, wslProbeMessage: `WSL 可访问 ${baseUrl}` }
-        : { wslReachable: false, wslProbeMessage: result.stderr || result.stdout || `WSL 访问 ${baseUrl} 失败。` };
-      this.rememberWslRoleProbe(cacheKey, probeResult);
-      return probeResult;
-    } catch (error) {
-      const probeResult = {
-        wslReachable: false,
-        wslProbeMessage: error instanceof Error ? error.message : `WSL 访问 ${baseUrl} 失败。`,
-      };
-      this.rememberWslRoleProbe(cacheKey, probeResult);
-      return probeResult;
-    }
-  }
-
-  private rememberWslRoleProbe(cacheKey: string, result: WslRoleProbeResult) {
-    const ttlMs = result.wslReachable === false ? 10_000 : this.wslRoleProbeCacheTtlMs;
-    this.wslRoleProbeCache.set(cacheKey, {
-      expiresAt: Date.now() + ttlMs,
-      result,
-    });
-  }
-
-  private wslRoleProbeCacheKey(config: RuntimeConfig, baseUrl: string, apiKey?: string) {
-    return [
-      config.hermesRuntime?.mode ?? "windows",
-      config.hermesRuntime?.distro?.trim() ?? "",
-      config.hermesRuntime?.pythonCommand?.trim() ?? "python3",
-      baseUrl.replace(/\/$/, ""),
-      fingerprintSecret(apiKey),
-    ].join("\n");
+    return baseUrl;
   }
 }
 
@@ -301,7 +235,20 @@ function buildModelBlock(model: HermesModelConfig) {
     `  provider: ${yamlString(model.provider)}`,
     `  default: ${yamlString(model.model)}`,
     model.baseUrl ? `  base_url: ${yamlString(model.baseUrl)}` : undefined,
+    model.contextLength ? `  context_length: ${model.contextLength}` : undefined,
   ].filter(Boolean).join("\n");
+}
+
+function persistedModelBaseUrl(profile: Pick<ModelProfile, "baseUrl">, runtimeEnv: EngineRuntimeEnv) {
+  return runtimeEnv.env.HERMES_FORGE_UPSTREAM_BASE_URL?.trim()
+    || profile.baseUrl?.trim()
+    || runtimeEnv.baseUrl;
+}
+
+function normalizeContextLength(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : undefined;
 }
 
 function removeTopLevelModelBlock(content: string) {
@@ -368,14 +315,11 @@ function quoteEnv(value: string) {
   return JSON.stringify(value);
 }
 
-function fingerprintSecret(value?: string) {
-  if (!value) return "";
-  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
-}
-
 export const testOnly = {
   buildEnvBlock,
   buildModelBlock,
+  normalizeContextLength,
+  persistedModelBaseUrl,
   removeManagedEnvBlock,
   removeTopLevelModelBlock,
   toHermesProvider,

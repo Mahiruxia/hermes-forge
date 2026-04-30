@@ -7,6 +7,7 @@ import type { EngineAdapter } from "../adapters/engine-adapter";
 import type { HermesProbe, HermesProbeSummary, MemoryStatus } from "../shared/types";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import type { RuntimeProbeResult } from "../runtime/runtime-types";
+import { resolveWindowsHermesCliPath } from "../runtime/hermes-cli-paths";
 
 const now = () => new Date().toISOString();
 
@@ -134,7 +135,7 @@ export class EngineProbeService {
 
   private async legacyCliExists(rootPath: string) {
     // Legacy fallback: retained only for tests/standalone construction paths without RuntimeProbeService.
-    return this.exists(path.join(rootPath, "hermes"));
+    return Boolean(await resolveWindowsHermesCliPath(rootPath));
   }
 
   private async exists(targetPath: string) {

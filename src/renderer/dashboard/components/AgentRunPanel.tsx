@@ -161,13 +161,13 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
           </button>
         </PanelCard>
 
-        <PanelCard title="Token 监控" action={usage.hasUsage ? <StatusPill tone="green">{formatCompactNumber(usage.totalTokens)} total</StatusPill> : undefined}>
+        <PanelCard title={usage.source === "actual" ? "Token 用量" : "Token 估算"} action={usage.hasUsage ? <StatusPill tone="green">{usage.source === "actual" ? "实测" : "约"} {formatCompactNumber(usage.totalTokens)}</StatusPill> : undefined}>
           {usage.hasUsage ? (
             <>
               <div className="grid grid-cols-3 gap-2 text-[12px]">
-                <TokenMetric label="输入" value={formatCompactNumber(usage.totalInput)} />
-                <TokenMetric label="输出" value={formatCompactNumber(usage.totalOutput)} />
-                <TokenMetric label="费用" value={formatCost(usage.totalCost)} />
+                <TokenMetric label="估算输入" value={formatCompactNumber(usage.totalInput)} />
+                <TokenMetric label="估算输出" value={formatCompactNumber(usage.totalOutput)} />
+                <TokenMetric label="估算费用" value={formatCost(usage.totalCost)} />
               </div>
               <div className="mt-3 flex items-center justify-between text-[12px]">
                 <span className="text-slate-500">本轮占用</span>
@@ -175,11 +175,11 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
               </div>
               <ProgressBar value={usage.contextPercent} data-testid="agent-token-progress" />
               <p className="mt-2 text-[11px] leading-5 text-slate-400">
-                最近一次：{formatCompactNumber(usage.latestInput)} in / {formatCompactNumber(usage.latestOutput)} out
+                最近一次估算：{formatCompactNumber(usage.latestInput)} in / {formatCompactNumber(usage.latestOutput)} out
               </p>
             </>
           ) : (
-            <EmptyInline text="暂无 Token 采样，运行任务后自动汇总。" />
+            <EmptyInline text="暂无 Token 估算，运行任务后自动汇总。" />
           )}
           {settings?.showUsage === false ? (
             <div className="mt-3 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-[12px] text-slate-500">
@@ -334,6 +334,7 @@ function summarizeUsage(events: TaskEventEnvelope[], contextWindow?: number) {
   const totalCost = latestEvents.reduce((sum, event) => sum + event.estimatedCostUsd, 0);
   const latest = latestEvents.sort((left, right) => right.at.localeCompare(left.at))[0];
   const latestTotal = (latest?.inputTokens ?? 0) + (latest?.outputTokens ?? 0);
+  const latestSource = latest?.source ?? "estimated";
   return {
     hasUsage: usageEvents.length > 0,
     totalInput,
@@ -342,6 +343,7 @@ function summarizeUsage(events: TaskEventEnvelope[], contextWindow?: number) {
     totalCost,
     latestInput: latest?.inputTokens ?? 0,
     latestOutput: latest?.outputTokens ?? 0,
+    source: latestSource,
     contextPercent: contextWindow ? Math.min(100, Math.round((latestTotal / contextWindow) * 100)) : 0,
   };
 }
@@ -355,6 +357,7 @@ function usageFromInsight(usage: SessionAgentInsightUsage | undefined, contextWi
     totalCost: usage?.totalEstimatedCostUsd ?? 0,
     latestInput: usage?.latestInputTokens ?? 0,
     latestOutput: usage?.latestOutputTokens ?? 0,
+    source: usage?.source ?? "estimated",
     contextPercent: contextWindow ? Math.min(100, Math.round((((usage?.latestInputTokens ?? 0) + (usage?.latestOutputTokens ?? 0)) / contextWindow) * 100)) : 0,
   };
 }
@@ -703,7 +706,7 @@ function eventTitle(event: EngineEvent) {
 function eventMessage(event: EngineEvent) {
   if (event.type === "stdout" || event.type === "stderr") return event.line;
   if (event.type === "result") return event.detail;
-  if (event.type === "usage") return `${event.inputTokens}+${event.outputTokens} token`;
+  if (event.type === "usage") return `${event.source === "actual" ? "实测" : "约"} ${event.inputTokens}+${event.outputTokens} token`;
   if ("message" in event) return event.message;
   if (event.type === "file_change") return event.path;
   return "事件已记录。";

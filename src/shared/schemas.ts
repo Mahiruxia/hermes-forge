@@ -46,6 +46,11 @@ export const sessionUpdateSchema = z.object({
   lastMessagePreview: z.string().trim().max(500).optional(),
   workspacePath: z.string().trim().max(1000).optional(),
   workspaceStatus: z.enum(["ready", "missing", "unselected"]).optional(),
+  hermesSessionId: z.string().trim().max(240).optional(),
+  hermesSource: z.string().trim().max(80).optional(),
+  parentHermesSessionId: z.string().trim().max(240).optional(),
+  messageCount: z.number().int().nonnegative().optional(),
+  model: z.string().trim().max(200).optional(),
   pinned: z.boolean().optional(),
   projectId: z.string().trim().max(120).nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
@@ -156,14 +161,14 @@ export const enginePermissionPolicySchema = z.object({
 });
 
 export const hermesRuntimeSchema = z.object({
-  mode: z.enum(["windows", "wsl"]).default("wsl"),
+  mode: z.preprocess((value) => value === "wsl" ? "windows" : value, z.literal("windows")).default("windows"),
   distro: z.string().trim().max(120).optional(),
   pythonCommand: z.string().trim().min(1).max(120).default("python3"),
   managedRoot: z.string().trim().max(1000).optional(),
   windowsAgentMode: z.enum(["hermes_native", "host_tool_loop", "disabled"]).default("hermes_native"),
   cliPermissionMode: z.enum(["yolo", "safe", "guarded"]).default("yolo"),
   permissionPolicy: z.enum(["passthrough", "bridge_guarded", "restricted_workspace"]).default("bridge_guarded"),
-  workerMode: z.enum(["off", "experimental_wsl"]).default("off"),
+  workerMode: z.preprocess((value) => value === "experimental_wsl" ? "off" : value, z.literal("off")).default("off"),
   installSource: z.object({
     repoUrl: z.string().trim().url(),
     branch: z.string().trim().max(200).optional(),
@@ -182,7 +187,7 @@ export const runtimeConfigSchema = z.object({
   startupWarmupMode: z.enum(["off", "cheap", "real_probe"]).default("off"),
   startupGatewayAutoStart: z.boolean().default(false),
   enginePermissions: z.record(z.string(), enginePermissionPolicySchema.partial()).optional(),
-  hermesRuntime: hermesRuntimeSchema.default({ mode: "wsl", pythonCommand: "python3", windowsAgentMode: "hermes_native", cliPermissionMode: "yolo", permissionPolicy: "bridge_guarded", workerMode: "off" }),
+  hermesRuntime: hermesRuntimeSchema.default({ mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native", cliPermissionMode: "yolo", permissionPolicy: "bridge_guarded", workerMode: "off" }),
 }).transform((config) => ({
   ...config,
   defaultModelProfileId: config.modelRoleAssignments?.chat ?? config.defaultModelProfileId,
@@ -190,6 +195,12 @@ export const runtimeConfigSchema = z.object({
   updateSources: pickHermesRecord(config.updateSources),
   enginePaths: config.enginePaths ? pickHermesRecord(config.enginePaths) : undefined,
   enginePermissions: config.enginePermissions ? pickHermesRecord(config.enginePermissions) : undefined,
+  hermesRuntime: {
+    ...config.hermesRuntime,
+    mode: "windows" as const,
+    distro: undefined,
+    workerMode: "off" as const,
+  },
 }));
 
 function normalizeModelRoleAssignments(

@@ -7,6 +7,7 @@ import type { AppPaths } from "../main/app-paths";
 import type { RuntimeEnvResolver } from "../main/runtime-env-resolver";
 import type { SessionLog } from "../main/session-log";
 import type { SessionAgentInsightService } from "../main/session-agent-insight-service";
+import type { WorkSessionService } from "../main/work-session-service";
 import type { SnapshotManager } from "./snapshot-manager";
 import type { TaskPreflightService } from "./task-preflight-service";
 import type { WorkspaceLock } from "./workspace-lock";
@@ -58,6 +59,7 @@ export class TaskRunner {
     private readonly sessionLog: SessionLog,
     private readonly sessionAgentInsightService: SessionAgentInsightService,
     private readonly getMainWindow: () => BrowserWindow | undefined,
+    private readonly workSessionService?: WorkSessionService,
   ) {}
 
   private cliOwnedContextBundle(workspaceId: string): ContextBundle {
@@ -121,6 +123,8 @@ export class TaskRunner {
     this.metrics.get(taskRunId)!.contextMs = Date.now() - contextAt;
 
     const permissions = resolveEnginePermissions(runtimeConfig, actualEngine);
+    const workSession = await this.workSessionService?.read(workSessionId).catch(() => undefined);
+    const hermesSessionId = workSession?.hermesSessionId || workSessionId;
     await this.sessionAgentInsightService.recordTaskStart({
       sessionId: workSessionId,
       taskRunId,
@@ -196,7 +200,7 @@ export class TaskRunner {
 
     const runRequest: EngineRunRequest = {
       sessionId,
-      conversationId: workSessionId,
+      conversationId: hermesSessionId,
       conversationHistory: runtimeMode === "wsl" ? [] : input.conversationHistory ?? [],
       workspaceId,
       workspacePath: targetPath,
@@ -305,7 +309,18 @@ export class TaskRunner {
 
       for await (const event of this.hermesAdapter.run(request, controller.signal)) {
         this.captureFirstOutputMetric(request.sessionId, event);
-        if ((event.type === "stdout" || event.type === "stderr") && !this.streamingLifecyclePublished.has(request.sessionId)) {
+        if (event.type === "session_update" && workSessionId) {
+          await this.workSessionService?.syncHermesSession(workSessionId, {
+            hermesSessionId: event.hermesSessionId,
+            parentHermesSessionId: event.previousHermesSessionId,
+            title: event.title,
+            messageCount: event.messageCount,
+            model: event.model,
+          }).catch((error) => {
+            console.warn("[Hermes Forge] Failed to sync official Hermes session:", error);
+          });
+        }
+        if ((event.type === "stdout" || event.type === "stderr" || event.type === "message_chunk") && !this.streamingLifecyclePublished.has(request.sessionId)) {
           this.streamingLifecyclePublished.add(request.sessionId);
           await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "streaming", "正在接收 Hermes 流式输出。");
         }
@@ -501,7 +516,9 @@ export class TaskRunner {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       estimatedCostUsd: usage.estimatedCostUsd,
-      message: `估算 Token：输入 ${usage.inputTokens}，输出 ${usage.outputTokens}。费用约 $${usage.estimatedCostUsd.toFixed(4)}。`,
+      totalTokens: usage.inputTokens + usage.outputTokens,
+      source: usage.source,
+      message: `${usage.source === "actual" ? "实测" : "估算"} Token：输入 ${usage.inputTokens}，输出 ${usage.outputTokens}。费用约 $${usage.estimatedCostUsd.toFixed(4)}。`,
       at: now(),
     };
     const envelope: TaskEventEnvelope = { taskRunId, workSessionId, sessionId: taskRunId, engineId, event };

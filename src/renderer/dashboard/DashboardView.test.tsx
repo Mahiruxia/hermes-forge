@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView } from "./DashboardView";
 import { ChatInput } from "./ChatInput";
@@ -462,4 +462,138 @@ describe("DashboardView", () => {
 
     expect(onStartTask).toHaveBeenCalledTimes(1);
   });
+
+  it("shows interactive context details inside the composer", () => {
+    useAppStore.setState({
+      userInput: "请继续分析这个模块",
+      runtimeConfig: {
+        defaultModelProfileId: "main",
+        modelProfiles: [{ id: "main", provider: "custom", model: "qwen", maxTokens: 1000 }],
+        updateSources: {},
+      },
+      conversationMessages: [
+        { id: "m1", sessionId: "session-1", role: "user", content: "上一轮需求：检查模型配置模块。", createdAt: "2026-04-18T10:00:00.000Z", visibleInChat: true },
+      ],
+      taskEventsByRunId: {
+        "task-1": [{
+          taskRunId: "task-1",
+          workSessionId: "session-1",
+          sessionId: "task-1",
+          engineId: "hermes",
+          event: { type: "usage", source: "actual", inputTokens: 420, outputTokens: 80, estimatedCostUsd: 0.01, message: "usage", at: "2026-04-18T10:00:02.000Z" },
+        }],
+      },
+    });
+
+    render(
+      <ChatInput
+        onStartTask={vi.fn()}
+        onCancelTask={vi.fn()}
+        onRestoreSnapshot={vi.fn()}
+        canStart
+        latestSnapshotAvailable={false}
+        locked={false}
+      />,
+    );
+
+    const contextButton = screen.getByLabelText(/实测上下文/);
+    expect(contextButton).toHaveTextContent(/实测 420/);
+    expect(contextButton).toHaveTextContent(/42%/);
+
+    fireEvent.click(contextButton);
+
+    expect(screen.getByText("真实上下文")).toBeInTheDocument();
+    expect(screen.getByText("420 tokens")).toBeInTheDocument();
+    expect(screen.getByText("80 tokens")).toBeInTheDocument();
+  });
+
+  it("keeps voice input transcripts stable while interim results update", async () => {
+    const recognitionInstances: MockSpeechRecognition[] = [];
+    const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });
+    const originalMediaDevices = navigator.mediaDevices;
+    const originalSpeechRecognition = window.SpeechRecognition;
+    const originalWebkitSpeechRecognition = window.webkitSpeechRecognition;
+    class MockSpeechRecognition {
+      continuous = false;
+      interimResults = false;
+      lang = "";
+      maxAlternatives = 0;
+      onstart: ((event: Event) => void) | null = null;
+      onresult: ((event: SpeechRecognitionEvent) => void) | null = null;
+      onerror: ((event: SpeechRecognitionErrorEvent) => void) | null = null;
+      onend: ((event: Event) => void) | null = null;
+
+      constructor() {
+        recognitionInstances.push(this);
+      }
+
+      start() {
+        this.onstart?.(new Event("start"));
+      }
+
+      stop() {
+        this.onend?.(new Event("end"));
+      }
+    }
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    window.SpeechRecognition = MockSpeechRecognition as unknown as SpeechRecognitionConstructor;
+    window.webkitSpeechRecognition = undefined;
+    useAppStore.setState({ userInput: "已有文字" });
+
+    try {
+      render(
+        <ChatInput
+          onStartTask={vi.fn()}
+          onCancelTask={vi.fn()}
+          onRestoreSnapshot={vi.fn()}
+          canStart
+          latestSnapshotAvailable={false}
+          locked={false}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "打开更多输入入口" }));
+      fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+
+      await waitFor(() => expect(recognitionInstances).toHaveLength(1));
+      const recognition = recognitionInstances[0];
+
+      act(() => {
+        recognition.onresult?.(speechEvent(0, [{ transcript: "第一段", isFinal: false }]));
+      });
+      expect(screen.getByLabelText("给 Hermes 发送消息")).toHaveValue("已有文字 第一段");
+
+      act(() => {
+        recognition.onresult?.(speechEvent(0, [{ transcript: "第一段", isFinal: true }]));
+      });
+      expect(screen.getByLabelText("给 Hermes 发送消息")).toHaveValue("已有文字 第一段");
+
+      act(() => {
+        recognition.onresult?.(speechEvent(1, [
+          { transcript: "第一段", isFinal: true },
+          { transcript: "第二段", isFinal: false },
+        ]));
+      });
+      expect(screen.getByLabelText("给 Hermes 发送消息")).toHaveValue("已有文字 第一段 第二段");
+
+      fireEvent.click(screen.getByRole("button", { name: "停止语音输入" }));
+
+      expect(useAppStore.getState().toasts.at(-1)?.title).toBe("语音输入已停止");
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      window.SpeechRecognition = originalSpeechRecognition;
+      window.webkitSpeechRecognition = originalWebkitSpeechRecognition;
+    }
+  });
 });
+
+function speechEvent(resultIndex: number, results: Array<{ transcript: string; isFinal: boolean }>) {
+  return {
+    resultIndex,
+    results: results.map((result) => ({
+      0: { transcript: result.transcript },
+      isFinal: result.isFinal,
+      length: 1,
+    })),
+  } as unknown as SpeechRecognitionEvent;
+}

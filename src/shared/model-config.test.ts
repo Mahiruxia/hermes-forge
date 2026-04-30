@@ -54,6 +54,28 @@ describe("model config helpers", () => {
     });
   });
 
+  it("promotes old no-tools Windows profiles when context is sufficient", () => {
+    const migrated = migrateRuntimeConfigModels({
+      defaultModelProfileId: "old-main",
+      modelProfiles: [{
+        id: "old-main",
+        provider: "custom",
+        sourceType: "openai_compatible",
+        model: "qwen",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        maxTokens: 256000,
+        agentRole: "auxiliary_model",
+        supportsTools: false,
+      }],
+    });
+
+    expect(migrated.modelProfiles[0]).toMatchObject({
+      agentRole: "primary_agent",
+      supportsTools: false,
+    });
+    expect(migrated.modelRoleAssignments?.chat).toBe("old-main");
+  });
+
   it("migrates an OpenAI-compatible MiMo Token Plan endpoint to the dedicated source", () => {
     const migrated = migrateRuntimeConfigModels({
       defaultModelProfileId: "mimo-main",
@@ -98,6 +120,10 @@ describe("model config helpers", () => {
   it("maps MiMo sources to the Hermes Xiaomi provider instead of custom", () => {
     expect(resolveHermesProvider({ provider: "custom", sourceType: "mimo_token_plan_api_key" })).toBe("xiaomi");
     expect(resolveHermesProvider({ provider: "custom", sourceType: "mimo_api_key" })).toBe("xiaomi");
+  });
+
+  it("keeps native OpenAI provider names for official Hermes", () => {
+    expect(resolveHermesProvider({ provider: "openai" })).toBe("openai");
   });
 
   it("keeps unsupported Coding Plan providers on custom instead of inventing CLI aliases", () => {

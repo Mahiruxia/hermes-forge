@@ -3,27 +3,19 @@ import path from "node:path";
 import type { RuntimeConfigStore } from "../runtime-config";
 import type { SetupService } from "../../setup/setup-service";
 import type { RuntimeProbeService } from "../../runtime/runtime-probe-service";
-import type { WslDoctorService } from "../../install/wsl-doctor-service";
 import type { HermesConnectorService } from "../hermes-connector-service";
 import type { HermesModelSyncService } from "../hermes-model-sync";
 import type { HermesSystemAuditService } from "../hermes-system-audit-service";
 import type { DiagnosticsService } from "../../diagnostics/diagnostics-service";
 import type { WorkspaceLock } from "../../process/workspace-lock";
 import type { TaskRunner } from "../../process/task-runner";
+import type { HermesCompatibilityService } from "../../setup/hermes-compatibility-service";
 import { runCommand } from "../../process/command-runner";
-import {
-  resolveHermesCliForRuntime,
-  resolveWslHome,
-  validateWslHermesCli,
-  type HermesCliValidationResult,
-  type ResolvedHermesCli,
-} from "../../runtime/hermes-cli-resolver";
-import type { WslRepairService } from "../../install/wsl-repair-service";
-import type { WslRepairDependencyCheck } from "../../install/wsl-doctor-types";
+import type { ResolvedHermesCli } from "../../runtime/hermes-cli-resolver";
+import { defaultWindowsHermesCliPath, isWindowsHermesExecutable, resolveWindowsHermesCliPath } from "../../runtime/hermes-cli-paths";
 import { migrateRuntimeConfigModels } from "../../shared/model-config";
 import { redactSensitiveValue } from "../../shared/redaction";
 import type {
-  HermesRuntimeConfig,
   HermesSystemAuditStep,
   OneClickDiagnosticItem,
   OneClickDiagnosticSeverity,
@@ -52,15 +44,15 @@ export class OneClickDiagnosticsOrchestrator {
     private readonly configStore: RuntimeConfigStore,
     private readonly setupService: SetupService,
     private readonly runtimeProbeService: RuntimeProbeService,
-    private readonly wslDoctorService: WslDoctorService,
-    private readonly wslRepairService: WslRepairService,
     private readonly hermesConnectorService: HermesConnectorService,
     private readonly hermesModelSyncService: HermesModelSyncService,
     private readonly hermesSystemAuditService: HermesSystemAuditService,
     private readonly diagnosticsService: DiagnosticsService,
     private readonly workspaceLock: WorkspaceLock,
     private readonly taskRunner: TaskRunner,
+    private readonly hermesCompatibilityService?: HermesCompatibilityService,
     private readonly testModelConnection?: (config: RuntimeConfig) => Promise<ModelConnectionTestResult>,
+    private readonly hermesHomeProvider?: () => Promise<string> | string,
   ) {}
 
   getStatus(): OneClickDiagnosticsStatus {
@@ -90,11 +82,8 @@ export class OneClickDiagnosticsOrchestrator {
 
       context = await this.readRuntimeContext(items);
       if (context) {
-        await this.capture(items, "wsl.runtime", "WSL 基础检查", "runtime-probe-service", async () => {
-          await this.checkWsl(items, context!, options);
-        });
-        await this.capture(items, "wsl.essentials", "WSL 基础依赖检查", "wsl-repair-service", async () => {
-          await this.checkWslEssentials(items, context!, options);
+        await this.capture(items, "runtime.windows", "Windows Native 运行环境", "runtime-probe-service", async () => {
+          await this.checkWindowsRuntime(items, context!, options);
         });
         resolvedCli = await this.captureValue(items, "hermes.path", "Hermes 路径检查", "hermes-cli-resolver", async () =>
           this.checkHermesPath(items, context!, options),
@@ -226,7 +215,7 @@ export class OneClickDiagnosticsOrchestrator {
       };
     } catch (error) {
       items.push(failureItem("config.runtime", "运行时配置", error, {
-        summary: "无法读取运行时配置，后续 WSL/Hermes/Gateway 检查已跳过。",
+        summary: "无法读取运行时配置，后续 Windows Hermes/Gateway 检查已跳过。",
         severity: "critical",
         suggestedActions: ["重新打开设置中心，或导出诊断报告后修复 runtime config 文件。"],
         source: "runtime-config",
@@ -235,123 +224,28 @@ export class OneClickDiagnosticsOrchestrator {
     }
   }
 
-  private async checkWsl(items: OneClickDiagnosticItem[], context: RuntimeContext, options: OneClickDiagnosticsRunOptions) {
-    this.setStage("wsl", "正在检查 WSL runtime...");
+  private async checkWindowsRuntime(items: OneClickDiagnosticItem[], context: RuntimeContext, options: OneClickDiagnosticsRunOptions) {
+    this.setStage("runtime.windows", "正在检查 Windows Native runtime...");
     const runtime = context.runtime;
     const probe = await this.runtimeProbeService.probe({
       workspacePath: options.workspacePath,
-      runtime,
+      runtime: { ...runtime, mode: "windows", distro: undefined, workerMode: "off" },
       persistResolvedHermesPath: Boolean(options.autoFix),
     });
 
-    if (runtime.mode !== "wsl") {
-      items.push(item({
-        id: "wsl.runtime",
-        title: "WSL 运行环境",
-        status: "warn",
-        severity: "warning",
-        summary: "当前 Hermes 运行环境不是 WSL，本轮不会把 Windows Hermes 路径作为 WSL 主流程成功条件。",
-        evidence: { runtimeMode: runtime.mode, probe: wslProbeEvidence(probe) },
-        autoFixable: false,
-        userActionRequired: true,
-        suggestedActions: ["在 Hermes 设置中把运行环境改为“自动选择（推荐）”或 WSL。"],
-        source: "runtime-probe-service",
-      }));
-      items.push(skippedItem("wsl.distro", "WSL 发行版", "当前未启用 WSL runtime，跳过发行版主流程检查。", "runtime-probe-service"));
-      items.push(skippedItem("wsl.command", "WSL 命令执行", "当前未启用 WSL runtime，跳过 bash 命令执行检查。", "runtime-probe-service"));
-      return;
-    }
-
-    const doctor = await this.wslDoctorService.diagnose({
-      workspacePath: options.workspacePath,
-      runtime,
-      persistResolvedHermesPath: Boolean(options.autoFix),
-    }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
-
     items.push(item({
-      id: "wsl.runtime",
-      title: "WSL 运行环境",
-      status: probe.wslAvailable ? "pass" : "fail",
-      severity: probe.wslAvailable ? "info" : "critical",
-      summary: probe.wslAvailable ? "wsl.exe 可用，wsl --status 正常返回。" : "wsl.exe 不可用或 wsl --status 失败。",
-      details: probe.commands.wsl.message,
-      evidence: wslProbeEvidence(probe),
+      id: "runtime.windows",
+      title: "Windows Native 运行环境",
+      status: probe.overallStatus === "ready" ? "pass" : probe.overallStatus === "degraded" ? "warn" : "fail",
+      severity: probe.overallStatus === "ready" ? "info" : probe.overallStatus === "degraded" ? "warning" : "error",
+      summary: probe.overallStatus === "ready" ? "Windows Native runtime 检查通过。" : "Windows Native runtime 仍有待处理项。",
+      details: probe.issues.map((issue) => `${issue.summary}${issue.detail ? `: ${issue.detail}` : ""}`).join("\n") || undefined,
+      evidence: { runtimeMode: probe.runtimeMode, issues: probe.issues, commands: probe.commands },
       autoFixable: false,
-      userActionRequired: !probe.wslAvailable,
-      suggestedActions: probe.wslAvailable ? [] : ["启用 Windows Subsystem for Linux，安装一个 Linux 发行版后重试。"],
+      userActionRequired: probe.overallStatus !== "ready",
+      suggestedActions: probe.issues.map((issue) => issue.fixHint).filter((value): value is string => Boolean(value)),
       source: "runtime-probe-service",
     }));
-    items.push(item({
-      id: "wsl.distro",
-      title: "WSL 发行版",
-      status: probe.distroExists !== false ? "pass" : "fail",
-      severity: probe.distroExists !== false ? "info" : "error",
-      summary: probe.distroExists !== false ? "当前配置的 WSL distro 存在。" : `当前配置的 WSL distro 不存在：${runtime.distro ?? "<default>"}`,
-      details: probe.commands.wsl.message,
-      evidence: { distro: runtime.distro, doctor },
-      autoFixable: false,
-      userActionRequired: probe.distroExists === false,
-      suggestedActions: probe.distroExists === false ? ["在设置中选择已存在的 WSL 发行版，或使用 Managed WSL 安装器创建。"] : [],
-      source: "wsl-doctor-service",
-    }));
-    items.push(item({
-      id: "wsl.command",
-      title: "WSL bash 命令",
-      status: probe.distroReachable ? "pass" : "fail",
-      severity: probe.distroReachable ? "info" : "error",
-      summary: probe.distroReachable ? "WSL 能执行 bash/uname 命令。" : "WSL 发行版无法执行基础 bash 命令。",
-      details: probe.commands.wsl.message,
-      evidence: { distroReachable: probe.distroReachable, pythonAvailable: probe.wslPythonAvailable },
-      autoFixable: false,
-      userActionRequired: !probe.distroReachable,
-      suggestedActions: probe.distroReachable ? [] : ["运行 wsl.exe 检查发行版状态，必要时执行 wsl --shutdown 后重试。"],
-      source: "runtime-probe-service",
-    }));
-  }
-
-  private async checkWslEssentials(
-    items: OneClickDiagnosticItem[],
-    context: RuntimeContext,
-    options: OneClickDiagnosticsRunOptions,
-  ) {
-    this.setStage("wsl.essentials", "正在检查 WSL 基础依赖...");
-    if (context.runtime.mode !== "wsl") {
-      items.push(skippedItem("wsl.essentials", "WSL 基础依赖", "当前不是 WSL runtime，跳过基础依赖检查。", "wsl-repair-service"));
-      return;
-    }
-
-    const dryRun = await this.wslRepairService.dryRun();
-    let dependencyChecks = dryRun.dependencyChecks;
-    let repairResult: import("../../install/wsl-doctor-types").WslRepairResult | undefined;
-
-    const needsRepair = dependencyChecks.some((check) => check.status === "repair_planned");
-    if (options.autoFix && needsRepair) {
-      repairResult = await this.wslRepairService.repair(dryRun.before, { dryRun: false });
-      const recheck = await this.wslRepairService.dryRun();
-      dependencyChecks = recheck.dependencyChecks;
-    }
-
-    for (const check of dependencyChecks) {
-      const wasRepaired = repairResult ? repairResult.repairedDependencies.includes(check.dependency) : false;
-      const isFixed = wasRepaired && check.available;
-      const isFailed = repairResult ? repairResult.failedDependencies.includes(check.dependency) : false;
-      const needsManual = check.status === "manual_action_required" || (isFailed && !isFixed);
-      const titleMap: Record<string, string> = { python3: "Python3", git: "Git", pip: "Pip", venv: "Python venv" };
-      items.push(item({
-        id: `wsl.essentials.${check.dependency}`,
-        title: `WSL ${titleMap[check.dependency] ?? check.dependency}`,
-        status: isFixed ? "fixed" : check.available ? "pass" : needsManual ? "fail" : "warn",
-        severity: check.available ? "info" : needsManual ? "error" : "warning",
-        summary: isFixed ? `已自动安装 ${titleMap[check.dependency] ?? check.dependency}。` : check.summary,
-        details: check.detail,
-        evidence: check.debugContext,
-        autoFixable: check.status === "repair_planned",
-        fixed: isFixed,
-        userActionRequired: needsManual,
-        suggestedActions: needsManual ? [check.fixHint || `请在 WSL 中手动安装 ${check.dependency}。`] : [],
-        source: "wsl-repair-service",
-      }));
-    }
   }
 
   private async checkHermesPath(
@@ -359,68 +253,28 @@ export class OneClickDiagnosticsOrchestrator {
     context: RuntimeContext,
     options: OneClickDiagnosticsRunOptions,
   ): Promise<ResolvedHermesCli | undefined> {
-    this.setStage("hermes.path", "正在解析 WSL Hermes 路径...");
-    if (context.runtime.mode !== "wsl") {
-      items.push(skippedItem("hermes.path", "Hermes 路径", "当前不是 WSL runtime，跳过 WSL Hermes 路径主流程检查。", "hermes-cli-resolver"));
-      return undefined;
-    }
-
-    const beforeManagedRoot = context.config.hermesRuntime?.managedRoot?.trim();
-    const beforeEnginePath = context.config.enginePaths?.hermes?.trim();
-    const savedPaths = [beforeManagedRoot, beforeEnginePath].filter((value): value is string => Boolean(value));
-    const hardcoded = savedPaths.filter((value) => /\/home\/(jia|xia)\b/i.test(value));
-    let wslHome: string | undefined;
-    try {
-      wslHome = await resolveWslHome(context.runtime);
-    } catch (error) {
-      items.push(item({
-        id: "hermes.path",
-        title: "Hermes 路径",
-        status: "fail",
-        severity: "error",
-        summary: "无法解析 WSL $HOME，因此无法自动发现 Hermes Agent。",
-        details: error instanceof Error ? error.message : String(error),
-        evidence: { runtime: context.runtime, savedPaths },
-        autoFixable: false,
-        userActionRequired: true,
-        suggestedActions: ["确认目标 WSL 发行版可启动，再执行修复安装。"],
-        source: "hermes-cli-resolver",
-      }));
-      return undefined;
-    }
-
-    const dryResolved = await resolveHermesCliForRuntime(this.configStore, context.runtime, { persist: false });
-    const wouldRewritePath = dryResolved.source !== "saved"
-      || hardcoded.length > 0
-      || beforeManagedRoot !== dryResolved.rootPath
-      || beforeEnginePath !== dryResolved.rootPath;
-    let resolved = dryResolved;
-    let fixed = false;
-    if (options.autoFix && wouldRewritePath) {
-      resolved = await resolveHermesCliForRuntime(this.configStore, context.runtime, { persist: true });
-      const verified = await resolveHermesCliForRuntime(this.configStore, context.runtime, { persist: false });
-      fixed = verified.cliPath === resolved.cliPath;
-    }
-
+    this.setStage("hermes.path", "正在解析 Windows Hermes 路径...");
+    const rootPath = await this.configStore.getEnginePath("hermes");
+    const cliPath = await resolveWindowsHermesCliPath(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
+    const exists = await fs.access(cliPath).then(() => true).catch(() => false);
     items.push(item({
       id: "hermes.path",
       title: "Hermes 路径",
-      status: fixed ? "fixed" : hardcoded.length > 0 ? "warn" : "pass",
-      severity: hardcoded.length > 0 ? "warning" : "info",
-      summary: fixed
-        ? `已重新发现并保存 WSL Hermes 路径：${resolved.rootPath}`
-        : hardcoded.length > 0
-          ? `发现旧的硬编码 WSL 用户路径，但已解析到可用 Hermes CLI：${resolved.cliPath}`
-          : `已解析 WSL Hermes CLI：${resolved.cliPath}`,
-      details: `WSL HOME=${wslHome}; source=${resolved.source}`,
-      evidence: { source: resolved.source, rootPath: resolved.rootPath, cliPath: resolved.cliPath, savedPaths, hardcoded },
-      autoFixable: wouldRewritePath,
-      fixed,
-      userActionRequired: false,
-      suggestedActions: fixed || !wouldRewritePath ? [] : ["点击“一键修复”写回自动发现的 WSL Hermes 路径。"],
+      status: exists ? "pass" : "fail",
+      severity: exists ? "info" : "error",
+      summary: exists ? `已解析 Windows Hermes CLI：${cliPath}` : `Windows Hermes CLI 不存在：${cliPath}`,
+      evidence: { rootPath, cliPath, runtimeMode: "windows" },
+      autoFixable: false,
+      userActionRequired: !exists,
+      suggestedActions: exists ? [] : ["点击“一键修复”安装 Windows Native Hermes，或在设置中指定正确安装目录。"],
       source: "hermes-cli-resolver",
     }));
-    return resolved;
+    return {
+      runtime: { ...context.runtime, mode: "windows", distro: undefined, workerMode: "off" },
+      rootPath,
+      cliPath,
+      source: "windows",
+    };
   }
 
   private async checkHermesCli(
@@ -431,78 +285,116 @@ export class OneClickDiagnosticsOrchestrator {
   ) {
     this.setStage("hermes.cli", "正在检查 Hermes CLI capabilities...");
     if (context.runtime.mode !== "wsl") {
-      items.push(skippedItem("hermes.cli", "Hermes CLI 文件", "当前不是 WSL runtime，跳过 WSL Hermes CLI 检查。", "hermes-cli-resolver"));
-      items.push(skippedItem("hermes.capabilities", "Hermes capabilities", "当前不是 WSL runtime，跳过 capabilities --json。", "hermes-cli-resolver"));
+      const rootPath = resolvedCli?.rootPath ?? await this.configStore.getEnginePath("hermes");
+      const cliPath = resolvedCli?.cliPath ?? await resolveWindowsHermesCliPath(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
+      const compatibility = await this.hermesCompatibilityService?.inspect().catch(() => undefined);
+      const exists = await fs.access(cliPath).then(() => true).catch(() => false);
+      items.push(item({
+        id: "hermes.version",
+        title: "Hermes 版本",
+        status: compatibility?.installed || exists ? "pass" : "fail",
+        severity: compatibility?.installed || exists ? "info" : "error",
+        summary: compatibility?.installed
+          ? `Windows Hermes 可启动：${compatibility.version ?? "版本未知"}。`
+          : exists ? "Windows Hermes CLI 文件存在，但版本尚未通过兼容探测。" : "Windows Hermes CLI 文件不存在。",
+        evidence: { rootPath, cliPath, compatibility },
+        autoFixable: false,
+        userActionRequired: !exists,
+        suggestedActions: exists ? [] : ["点击“一键修复”安装 Windows Native Hermes。"],
+        source: "hermes-cli-resolver",
+      }));
+      if (!exists) {
+        items.push(skippedItem("hermes.compatibility", "Hermes 兼容性", "Hermes CLI 不存在，跳过兼容性检查。", "hermes-compatibility-service"));
+        return;
+      }
+      if (compatibility) {
+        items.push(item({
+          id: "hermes.compatibility",
+          title: "Hermes Forge 兼容性",
+          status: compatibility.forgeTaskReady ? compatibility.warnings.length ? "warn" : "pass" : "fail",
+          severity: compatibility.forgeTaskReady ? compatibility.warnings.length ? "warning" : "info" : "error",
+          summary: compatibility.forgeTaskReady
+            ? compatibility.warnings.length
+              ? "Hermes 可用于 Forge 任务，但有可完善项。"
+              : "Hermes 满足 Forge Windows Native 任务要求。"
+            : compatibility.blockingIssues[0] ?? "Hermes 缺少 Forge 任务能力。",
+          details: [...compatibility.blockingIssues, ...compatibility.warnings].join("\n") || undefined,
+          evidence: compatibility,
+          autoFixable: !compatibility.forgeTaskReady || compatibility.warnings.length > 0,
+          userActionRequired: !compatibility.forgeTaskReady,
+          suggestedActions: compatibility.forgeTaskReady
+            ? compatibility.warnings.length ? ["可运行一键修复补齐 venv 或自动修复项。"] : []
+            : ["点击“一键修复”重装或修复 Windows Hermes Agent。"],
+          source: "hermes-compatibility-service",
+        }));
+        items.push(item({
+          id: "hermes.venv",
+          title: "Hermes venv",
+          status: compatibility.venvStatus === "present" ? "pass" : "warn",
+          severity: compatibility.venvStatus === "present" ? "info" : "warning",
+          summary: compatibility.venvStatus === "present" ? "Hermes venv 已存在。" : "未检测到 Hermes venv；源码 CLI 可运行，建议补齐。",
+          evidence: { rootPath, venvStatus: compatibility.venvStatus, launchMode: compatibility.launchMode },
+          autoFixable: compatibility.venvStatus !== "present",
+          userActionRequired: false,
+          suggestedActions: compatibility.venvStatus === "present" ? [] : ["运行一键修复尝试补齐 Hermes venv。"],
+          source: "hermes-compatibility-service",
+        }));
+      }
+      const result = await this.runWindowsHermesCli(rootPath, cliPath, ["capabilities", "--json"], context.runtime.pythonCommand?.trim() || "python");
+      const capabilityStatus = this.classifyWindowsCapabilities(result.stdout, result.stderr, result.exitCode);
+      items.push(item({
+        id: "hermes.capabilities",
+        title: "Hermes capabilities",
+        status: capabilityStatus.ok ? "pass" : "warn",
+        severity: capabilityStatus.ok ? "info" : "warning",
+        summary: capabilityStatus.ok ? "capabilities --json 返回正常，增强能力可用。" : capabilityStatus.message,
+        details: capabilityStatus.ok ? undefined : (result.stderr || result.stdout || "").slice(0, 1000),
+        evidence: { command: result.command, cliPath, exitCode: result.exitCode, capabilities: capabilityStatus.capabilities },
+        autoFixable: false,
+        userActionRequired: false,
+        suggestedActions: capabilityStatus.ok ? [] : ["官方 Windows Hermes 可用时，capabilities 缺失只作为增强能力 warning；主聊天以 Forge 兼容性检查为准。"],
+        source: "hermes-cli-resolver",
+      }));
+      const doctor = await this.runWindowsHermesCli(
+        rootPath,
+        cliPath,
+        options.autoFix ? ["doctor", "--fix"] : ["doctor"],
+        context.runtime.pythonCommand?.trim() || "python",
+      );
+      const doctorOutput = (doctor.stdout || doctor.stderr || "").trim();
+      const doctorHasIssues = /Found\s+\d+\s+issue\(s\)|issue\(s\)\s+to\s+address/i.test(doctorOutput);
+      const doctorSupported = doctor.exitCode !== 0
+        ? !/invalid choice|unknown command|unrecognized arguments|No module named/i.test(doctorOutput)
+        : true;
+      items.push(item({
+        id: "hermes.doctor",
+        title: "Hermes doctor",
+        status: doctor.exitCode === 0 ? doctorHasIssues ? "warn" : (options.autoFix ? "fixed" : "pass") : doctorSupported ? "fail" : "skipped",
+        severity: doctor.exitCode === 0 ? doctorHasIssues ? "warning" : "info" : doctorSupported ? "error" : "info",
+        summary: doctor.exitCode === 0
+          ? doctorHasIssues
+            ? "Hermes doctor 可运行，但仍有非阻塞建议。"
+            : options.autoFix ? "已运行 hermes doctor --fix。" : "已运行 hermes doctor。"
+          : doctorSupported
+            ? "Hermes doctor 执行失败。"
+            : "当前 Hermes CLI 不支持 doctor 命令，已跳过。",
+        details: doctorOutput ? doctorOutput.slice(0, 2000) : undefined,
+        evidence: { command: doctor.command, exitCode: doctor.exitCode },
+        autoFixable: doctorSupported,
+        fixed: options.autoFix && doctor.exitCode === 0,
+        userActionRequired: doctorSupported && doctor.exitCode !== 0,
+        suggestedActions: doctor.exitCode === 0 || !doctorSupported ? [] : ["查看 doctor 输出；必要时点击“一键修复”运行 hermes doctor --fix。"],
+        source: "hermes doctor",
+      }));
       return;
     }
 
-    let resolved = resolvedCli;
-    if (!resolved) {
-      try {
-        resolved = await resolveHermesCliForRuntime(this.configStore, context.runtime, { persist: Boolean(options.autoFix) });
-      } catch (error) {
-        items.push(failureItem("hermes.cli", "Hermes CLI 文件", error, {
-          summary: "无法找到 WSL 内 Hermes CLI。",
-          severity: "error",
-          autoFixable: false,
-          userActionRequired: true,
-          suggestedActions: ["Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。"],
-          source: "hermes-cli-resolver",
-        }));
-        items.push(skippedItem("hermes.capabilities", "Hermes capabilities", "Hermes CLI 不存在，跳过 capabilities --json。", "hermes-cli-resolver"));
-        return;
-      }
-    }
-
-    let validation = await validateWslHermesCli(context.runtime, resolved.cliPath);
-    let chmodFixed = false;
-    if (!validation.ok && validation.kind === "permission_denied" && options.autoFix) {
-      const chmod = await chmodWslExecutable(context.runtime, resolved.cliPath);
-      if (chmod.exitCode === 0) {
-        validation = await validateWslHermesCli(context.runtime, resolved.cliPath);
-        chmodFixed = validation.ok;
-      }
-    }
-
-    const cliProblem = !validation.ok && (validation.kind === "file_missing" || validation.kind === "permission_denied");
-    items.push(item({
-      id: "hermes.cli",
-      title: "Hermes CLI 文件",
-      status: validation.ok || !cliProblem ? chmodFixed ? "fixed" : "pass" : "fail",
-      severity: cliProblem ? "error" : "info",
-      summary: validation.ok
-        ? chmodFixed ? "已修复 Hermes CLI 权限，并确认 CLI 可用于 capabilities 检查。" : "Hermes CLI 存在且可用于 capabilities 检查。"
-        : cliProblem
-          ? validation.message
-          : "Hermes CLI 文件存在，但 capabilities 检查未通过。",
-      details: validation.ok ? undefined : validation.message,
-      evidence: validationEvidence(validation),
-      autoFixable: !validation.ok && validation.kind === "permission_denied",
-      fixed: chmodFixed,
-      userActionRequired: !validation.ok && validation.kind !== "permission_denied",
-      suggestedActions: validation.ok
-        ? []
-        : validation.kind === "file_missing"
-          ? ["Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。"]
-          : validation.kind === "permission_denied"
-            ? ["点击“一键修复”尝试 chmod +x；如果仍失败，请在 WSL 中检查文件权限。"]
-            : [],
-      source: "hermes-cli-resolver",
-    }));
-
-    items.push(item({
-      id: "hermes.capabilities",
-      title: "Hermes capabilities",
-      status: validation.ok ? "pass" : "fail",
-      severity: validation.ok ? "info" : validation.kind === "capability_unsupported" ? "error" : "warning",
-      summary: validation.ok ? "capabilities --json 返回正常，满足 Forge WSL 最低门槛。" : capabilityFailureSummary(validation),
-      details: validation.ok ? undefined : validation.message,
-      evidence: validationEvidence(validation),
-      autoFixable: false,
-      userActionRequired: !validation.ok,
-      suggestedActions: validation.ok ? [] : capabilitySuggestedActions(validation),
-      source: "hermes-cli-resolver",
-    }));
+    items.push(skippedItem(
+      "hermes.legacy-wsl",
+      "Legacy WSL runtime",
+      "WSL 不再作为运行、安装或修复环境；旧数据仅通过 Legacy WSL Migration 导入。",
+      "hermes-cli-resolver",
+    ));
   }
 
   private async checkGateway(items: OneClickDiagnosticItem[], options: OneClickDiagnosticsRunOptions) {
@@ -547,6 +439,88 @@ export class OneClickDiagnosticsOrchestrator {
       suggestedActions: preflight.ok ? [] : ["先修复 Hermes 路径 / CLI capabilities，再启动 Gateway。"],
       source: "hermes-connector-service",
     }));
+  }
+
+  private async runWindowsHermesCli(rootPath: string, cliPath: string, args: string[], pythonCommand: string) {
+    const hermesHome = typeof this.hermesHomeProvider === "function"
+      ? await this.hermesHomeProvider()
+      : this.hermesHomeProvider;
+    const env = hermesCliEnv(rootPath, hermesHome);
+    if (isWindowsHermesExecutable(cliPath)) {
+      const result = await runCommand(cliPath, args, {
+        cwd: rootPath,
+        timeoutMs: 20_000,
+        runtimeKind: "windows",
+        commandId: "one-click.hermes-cli.windows",
+        env,
+      }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
+      return { ...result, command: `${cliPath} ${args.join(" ")}` };
+    }
+    const candidates = [
+      path.join(rootPath, "venv", "Scripts", "python.exe"),
+      path.join(rootPath, ".venv", "Scripts", "python.exe"),
+      pythonCommand,
+      "py -3",
+      "python",
+    ];
+    let last: { exitCode: number | null; stdout: string; stderr: string } = { exitCode: 1, stdout: "", stderr: "未找到可用 Python 解释器。" };
+    let lastCommand = "";
+    for (const candidate of candidates) {
+      if (path.isAbsolute(candidate) && !(await fs.access(candidate).then(() => true).catch(() => false))) continue;
+      const launch = windowsPythonLaunch(candidate);
+      const result = await runCommand(launch.command, [...launch.args, cliPath, ...args], {
+        cwd: rootPath,
+        timeoutMs: 20_000,
+        runtimeKind: "windows",
+        commandId: "one-click.hermes-cli.windows",
+        env,
+      }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
+      last = result;
+      lastCommand = `${launch.command} ${[...launch.args, cliPath, ...args].join(" ")}`;
+      if (result.exitCode === 0) return { ...result, command: lastCommand };
+    }
+    return { ...last, command: lastCommand || `${pythonCommand} ${cliPath} ${args.join(" ")}` };
+  }
+
+  private classifyWindowsCapabilities(stdout: string, stderr: string, exitCode: number | null) {
+    if (exitCode !== 0) {
+      return {
+        ok: false,
+        message: `capabilities --json 执行失败：${stderr || stdout || `exit ${exitCode ?? "unknown"}`}`,
+        capabilities: undefined,
+      };
+    }
+    try {
+      const parsed = JSON.parse(stdout) as {
+        cliVersion?: unknown;
+        capabilities?: {
+          supportsLaunchMetadataArg?: unknown;
+          supportsLaunchMetadataEnv?: unknown;
+          supportsResume?: unknown;
+        };
+      };
+      const capabilities = {
+        cliVersion: typeof parsed.cliVersion === "string" ? parsed.cliVersion : undefined,
+        supportsLaunchMetadataArg: parsed.capabilities?.supportsLaunchMetadataArg === true,
+        supportsLaunchMetadataEnv: parsed.capabilities?.supportsLaunchMetadataEnv === true,
+        supportsResume: parsed.capabilities?.supportsResume === true,
+      };
+      const missing = [
+        capabilities.cliVersion ? undefined : "cliVersion",
+        capabilities.supportsLaunchMetadataArg ? undefined : "supportsLaunchMetadataArg",
+        capabilities.supportsLaunchMetadataEnv ? undefined : "supportsLaunchMetadataEnv",
+        capabilities.supportsResume ? undefined : "supportsResume",
+      ].filter(Boolean);
+      return missing.length
+        ? { ok: false, message: `Hermes CLI 存在，但官方版本缺少 Forge capability：${missing.join(", ")}。`, capabilities }
+        : { ok: true, message: "capabilities ok", capabilities };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `capabilities --json 返回内容不是有效 JSON：${error instanceof Error ? error.message : String(error)}`,
+        capabilities: undefined,
+      };
+    }
   }
 
   private async checkModels(items: OneClickDiagnosticItem[], options: OneClickDiagnosticsRunOptions) {
@@ -745,34 +719,26 @@ export class OneClickDiagnosticsOrchestrator {
     options: OneClickDiagnosticsRunOptions,
   ) {
     this.setStage("python.deps", "正在检查 Python 关键依赖...");
-    const isWsl = context.runtime.mode === "wsl";
-    const distro = context.runtime.distro?.trim();
     const configuredPython = context.runtime.pythonCommand?.trim() || "python3";
 
-    if (!isWsl && !resolvedCli) {
-      items.push(skippedItem("python.deps", "Python 依赖", "当前不是 WSL runtime 且未配置 Windows Hermes，跳过 Python 依赖检查。", "hermes-cli-resolver"));
+    if (!resolvedCli) {
+      items.push(skippedItem("python.deps", "Python 依赖", "未解析到 Windows Hermes，跳过 Python 依赖检查。", "hermes-cli-resolver"));
       return;
     }
 
-    // 1. 构建候选 Python 命令列表
     const candidates: string[] = [];
-    if (resolvedCli) {
-      if (isWsl) {
-        candidates.push(`${resolvedCli.rootPath.replace(/\/+$/, "")}/.venv/bin/python`);
-      } else {
-        candidates.push(path.join(resolvedCli.rootPath, ".venv", "Scripts", "python.exe"));
-        candidates.push(path.join(resolvedCli.rootPath, ".venv", "bin", "python"));
-      }
-    }
+    candidates.push(path.join(resolvedCli.rootPath, "venv", "Scripts", "python.exe"));
+    candidates.push(path.join(resolvedCli.rootPath, ".venv", "Scripts", "python.exe"));
+    candidates.push(path.join(resolvedCli.rootPath, ".venv", "bin", "python"));
     candidates.push(configuredPython);
-    if (!isWsl && configuredPython !== "python") candidates.push("python");
-    if (!isWsl && configuredPython !== "python3") candidates.push("python3");
+    if (configuredPython !== "python") candidates.push("python");
+    if (configuredPython !== "python3") candidates.push("python3");
+    if (configuredPython !== "py -3") candidates.push("py -3");
 
-    // 2. 找到第一个可用的 Python
     let pythonCmd: string | undefined;
     let pythonCheckOutput = "";
     for (const cmd of candidates) {
-      const check = await this.runPythonCheck(cmd, isWsl, distro);
+      const check = await this.runPythonCheck(cmd);
       if (check.ok) {
         pythonCmd = cmd;
         break;
@@ -790,56 +756,38 @@ export class OneClickDiagnosticsOrchestrator {
         details: pythonCheckOutput || undefined,
         autoFixable: false,
         userActionRequired: true,
-        suggestedActions: isWsl
-          ? ["在 WSL 中安装 python3（如 apt-get install python3），或在设置中指定正确的 Python 命令。"]
-          : ["安装 Python（建议 3.10+），或在设置中指定正确的 Python 命令。"],
+        suggestedActions: ["安装 Python（建议 3.10+），或在设置中指定正确的 Python 命令。"],
         source: "hermes-cli-resolver",
       }));
       return;
     }
 
-    // 3. 检查 pip 可用性（不能用 runPythonScript，因为那是 python -c '...' 的形式，-m pip 不是合法 Python 代码）
-    const pipCheck = await this.runPipVersionCheck(pythonCmd, isWsl, distro);
+    const pipCheck = await this.runPipVersionCheck(pythonCmd);
     if (pipCheck.exitCode !== 0) {
-      let pipFixed = false;
-      if (options.autoFix && isWsl) {
-        pipFixed = await this.installPipViaApt(distro);
-        if (pipFixed) {
-          const recheck = await this.runPipVersionCheck(pythonCmd, isWsl, distro);
-          pipFixed = recheck.exitCode === 0;
-        }
-      }
       items.push(item({
         id: "python.deps",
         title: "Python 依赖",
-        status: pipFixed ? "fixed" : "fail",
+        status: "fail",
         severity: "error",
-        summary: pipFixed
-          ? "已自动安装 pip，可以安装 PyYAML / python-dotenv。"
-          : "Python 环境缺少 pip（python3-pip），无法安装 PyYAML / python-dotenv。",
+        summary: "Python 环境缺少 pip，无法安装 PyYAML / python-dotenv。",
         details: (pipCheck.stderr || pipCheck.stdout).trim() || undefined,
         evidence: { pythonCommand: pythonCmd },
-        autoFixable: isWsl,
-        fixed: pipFixed,
-        userActionRequired: !pipFixed,
-        suggestedActions: isWsl
-          ? ["点击“一键修复”自动安装 python3-pip，或在 WSL 中执行 sudo apt-get install python3-pip。"]
-          : ["安装 pip：https://pip.pypa.io/en/stable/installation/"],
+        autoFixable: false,
+        userActionRequired: true,
+        suggestedActions: ["安装 pip：https://pip.pypa.io/en/stable/installation/"],
         source: "hermes-cli-resolver",
       }));
       return;
     }
 
-    // 4. 探测 yaml 和 dotenv
-    const probe = await this.probePythonModules(pythonCmd, isWsl, distro);
+    const probe = await this.probePythonModules(pythonCmd);
 
-    // 5. autoFix：尝试 pip install
     let fixed = false;
     let pipFailure: { reason: string; stderr: string; stdout: string } | undefined;
     if (options.autoFix && !probe.ok && probe.missingModules.length > 0) {
-      const installResult = await this.installPythonModules(pythonCmd, probe.missingModules, isWsl, distro);
+      const installResult = await this.installPythonModules(pythonCmd, probe.missingModules);
       if (installResult.success) {
-        const recheck = await this.probePythonModules(pythonCmd, isWsl, distro);
+        const recheck = await this.probePythonModules(pythonCmd);
         if (recheck.ok) {
           fixed = true;
           probe.ok = true;
@@ -850,7 +798,6 @@ export class OneClickDiagnosticsOrchestrator {
       }
     }
 
-    // 6. 推送诊断项
     items.push(item({
       id: "python.deps",
       title: "Python 依赖",
@@ -871,31 +818,16 @@ export class OneClickDiagnosticsOrchestrator {
       suggestedActions: probe.ok
         ? []
         : pipFailure
-          ? [pipFailure.reason, "或尝试在 WSL 中手动执行 pip install。"]
-          : this.pythonDepFixSuggestions(pythonCmd, probe.missingModules, isWsl),
+          ? [pipFailure.reason, "或在 Hermes 官方安装目录的 venv 中手动执行 pip install。"]
+          : this.pythonDepFixSuggestions(pythonCmd, probe.missingModules),
       source: "hermes-cli-resolver",
     }));
   }
 
-  private async runPythonCheck(cmd: string, isWsl: boolean, distro?: string): Promise<{ ok: boolean; output?: string }> {
+  private async runPythonCheck(cmd: string): Promise<{ ok: boolean; output?: string }> {
     const script = `print("python_ok")`;
-    if (isWsl) {
-      const args = [
-        ...(distro ? ["-d", distro] : []),
-        "--",
-        "bash",
-        "-lc",
-        `${cmd} -c '${script}'`,
-      ];
-      const result = await runCommand("wsl.exe", args, {
-        cwd: process.cwd(),
-        timeoutMs: 10_000,
-        commandId: "one-click.python-check",
-        runtimeKind: "wsl",
-      });
-      return { ok: result.exitCode === 0, output: (result.stderr || result.stdout).trim() || undefined };
-    }
-    const result = await runCommand(cmd, ["-c", script], {
+    const launch = windowsPythonLaunch(cmd);
+    const result = await runCommand(launch.command, [...launch.args, "-c", script], {
       cwd: process.cwd(),
       timeoutMs: 10_000,
       commandId: "one-click.python-check",
@@ -904,9 +836,9 @@ export class OneClickDiagnosticsOrchestrator {
     return { ok: result.exitCode === 0, output: (result.stderr || result.stdout).trim() || undefined };
   }
 
-  private async probePythonModules(cmd: string, isWsl: boolean, distro?: string): Promise<{ ok: boolean; missingModules: string[]; details?: string; rawOutput?: string }> {
+  private async probePythonModules(cmd: string): Promise<{ ok: boolean; missingModules: string[]; details?: string; rawOutput?: string }> {
     const combinedScript = `import yaml, dotenv; print("ok")`;
-    const combined = await this.runPythonScript(cmd, combinedScript, isWsl, distro, "one-click.python-modules");
+    const combined = await this.runPythonScript(cmd, combinedScript, "one-click.python-modules");
     if (combined.exitCode === 0) {
       return { ok: true, missingModules: [] };
     }
@@ -914,9 +846,8 @@ export class OneClickDiagnosticsOrchestrator {
     const output = (combined.stderr || combined.stdout || "").trim();
     const missing: string[] = [];
 
-    // 分别探测，确定具体缺哪个
     for (const mod of ["yaml", "dotenv"]) {
-      const modResult = await this.runPythonScript(cmd, `import ${mod}; print("${mod}_ok")`, isWsl, distro, `one-click.python-module-${mod}`);
+      const modResult = await this.runPythonScript(cmd, `import ${mod}; print("${mod}_ok")`, `one-click.python-module-${mod}`);
       if (modResult.exitCode !== 0) missing.push(mod);
     }
 
@@ -928,23 +859,9 @@ export class OneClickDiagnosticsOrchestrator {
     };
   }
 
-  private async runPipVersionCheck(cmd: string, isWsl: boolean, distro: string | undefined) {
-    if (isWsl) {
-      const args = [
-        ...(distro ? ["-d", distro] : []),
-        "--",
-        "bash",
-        "-lc",
-        `${cmd} -m pip --version`,
-      ];
-      return runCommand("wsl.exe", args, {
-        cwd: process.cwd(),
-        timeoutMs: 10_000,
-        commandId: "one-click.pip-check",
-        runtimeKind: "wsl",
-      });
-    }
-    return runCommand(cmd, ["-m", "pip", "--version"], {
+  private async runPipVersionCheck(cmd: string) {
+    const launch = windowsPythonLaunch(cmd);
+    return runCommand(launch.command, [...launch.args, "-m", "pip", "--version"], {
       cwd: process.cwd(),
       timeoutMs: 10_000,
       commandId: "one-click.pip-check",
@@ -952,23 +869,9 @@ export class OneClickDiagnosticsOrchestrator {
     });
   }
 
-  private async runPythonScript(cmd: string, script: string, isWsl: boolean, distro: string | undefined, commandId: string) {
-    if (isWsl) {
-      const args = [
-        ...(distro ? ["-d", distro] : []),
-        "--",
-        "bash",
-        "-lc",
-        `${cmd} -c '${script}'`,
-      ];
-      return runCommand("wsl.exe", args, {
-        cwd: process.cwd(),
-        timeoutMs: 10_000,
-        commandId,
-        runtimeKind: "wsl",
-      });
-    }
-    return runCommand(cmd, ["-c", script], {
+  private async runPythonScript(cmd: string, script: string, commandId: string) {
+    const launch = windowsPythonLaunch(cmd);
+    return runCommand(launch.command, [...launch.args, "-c", script], {
       cwd: process.cwd(),
       timeoutMs: 10_000,
       commandId,
@@ -979,29 +882,10 @@ export class OneClickDiagnosticsOrchestrator {
   private async installPythonModules(
     cmd: string,
     missingModules: string[],
-    isWsl: boolean,
-    distro?: string,
   ): Promise<{ success: boolean; reason: string; stderr: string; stdout: string }> {
     const packages = missingModules.map((m) => (m === "yaml" ? "pyyaml" : "python-dotenv"));
-    if (isWsl) {
-      const args = [
-        ...(distro ? ["-d", distro] : []),
-        "--",
-        "bash",
-        "-lc",
-        `${cmd} -m pip install ${packages.join(" ")}`,
-      ];
-      const result = await runCommand("wsl.exe", args, {
-        cwd: process.cwd(),
-        timeoutMs: 60_000,
-        commandId: "one-click.python-install",
-        runtimeKind: "wsl",
-      });
-      if (result.exitCode === 0) return { success: true, reason: "", stderr: "", stdout: result.stdout };
-      const reason = this.analyzePipFailure(result.stderr || "", result.stdout || "");
-      return { success: false, reason, stderr: result.stderr || "", stdout: result.stdout || "" };
-    }
-    const result = await runCommand(cmd, ["-m", "pip", "install", ...packages], {
+    const launch = windowsPythonLaunch(cmd);
+    const result = await runCommand(launch.command, [...launch.args, "-m", "pip", "install", ...packages], {
       cwd: process.cwd(),
       timeoutMs: 60_000,
       commandId: "one-click.python-install",
@@ -1015,7 +899,7 @@ export class OneClickDiagnosticsOrchestrator {
   private analyzePipFailure(stderr: string, stdout: string): string {
     const combined = `${stderr}\n${stdout}`;
     if (/permission denied|permission error|Errno 13/i.test(combined)) {
-      return "pip install 因权限不足失败。可尝试添加 --user 参数，或在 WSL 中使用 sudo。";
+      return "pip install 因权限不足失败。可尝试添加 --user 参数，或使用管理员权限重新运行。";
     }
     if (/externally-managed|PEP 668|externally managed/i.test(combined)) {
       return "当前 Python 为系统级外部管理环境（PEP 668）。请使用 python3 -m pip install --break-system-packages，或在 venv 中安装。";
@@ -1033,31 +917,8 @@ export class OneClickDiagnosticsOrchestrator {
     return `pip install 失败${preview ? `：${preview}` : "。"}`;
   }
 
-  private async installPipViaApt(distro?: string): Promise<boolean> {
-    const args = [
-      ...(distro ? ["-d", distro] : []),
-      "--",
-      "bash",
-      "-lc",
-      "sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip",
-    ];
-    const result = await runCommand("wsl.exe", args, {
-      cwd: process.cwd(),
-      timeoutMs: 120_000,
-      commandId: "one-click.pip-apt-install",
-      runtimeKind: "wsl",
-    });
-    return result.exitCode === 0;
-  }
-
-  private pythonDepFixSuggestions(pythonCmd: string, missingModules: string[], isWsl: boolean): string[] {
+  private pythonDepFixSuggestions(pythonCmd: string, missingModules: string[]): string[] {
     const packages = missingModules.map((m) => (m === "yaml" ? "pyyaml" : "python-dotenv")).join(" ");
-    if (isWsl) {
-      return [
-        `在 WSL 中执行：${pythonCmd} -m pip install ${packages}`,
-        "或者点击“一键修复”让 Forge 自动安装。",
-      ];
-    }
     return [
       `执行：${pythonCmd} -m pip install ${packages}`,
       "或者点击“一键修复”让 Forge 自动安装。",
@@ -1202,47 +1063,16 @@ function summarize(items: OneClickDiagnosticItem[]): OneClickDiagnosticsReport["
 
 function normalizeRuntime(config: RuntimeConfig): NonNullable<RuntimeConfig["hermesRuntime"]> {
   return {
-    mode: config.hermesRuntime?.mode ?? "windows",
-    distro: config.hermesRuntime?.distro?.trim() || undefined,
+    mode: "windows",
+    distro: undefined,
     pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
     managedRoot: config.hermesRuntime?.managedRoot?.trim() || undefined,
     windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
     cliPermissionMode: config.hermesRuntime?.cliPermissionMode ?? "yolo",
     permissionPolicy: config.hermesRuntime?.permissionPolicy ?? "bridge_guarded",
     installSource: config.hermesRuntime?.installSource,
+    workerMode: "off",
   };
-}
-
-function wslProbeEvidence(probe: Awaited<ReturnType<RuntimeProbeService["probe"]>>) {
-  return {
-    runtimeMode: probe.runtimeMode,
-    wslAvailable: probe.wslAvailable,
-    wslStatus: probe.wslStatus,
-    distroName: probe.distroName,
-    distroExists: probe.distroExists,
-    distroReachable: probe.distroReachable,
-    wslPythonAvailable: probe.wslPythonAvailable,
-    issues: probe.issues,
-  };
-}
-
-function validationEvidence(validation: HermesCliValidationResult) {
-  return validation.ok
-    ? {
-        ok: true,
-        command: validation.command,
-        exitCode: validation.result.exitCode,
-        capabilities: trimCapabilities(validation.capabilities),
-      }
-    : {
-        ok: false,
-        kind: validation.kind,
-        command: validation.command,
-        exitCode: validation.result?.exitCode,
-        stderr: previewDiagnosticText(validation.result?.stderr),
-        stdout: previewDiagnosticText(validation.result?.stdout),
-        capabilities: validation.capabilities ? trimCapabilities(validation.capabilities) : undefined,
-      };
 }
 
 function trimDiagnosticItem(value: OneClickDiagnosticItem): OneClickDiagnosticItem {
@@ -1269,75 +1099,31 @@ function trimDiagnosticValue(value: unknown, depth = 0): unknown {
   return result;
 }
 
-function trimCapabilities(capabilities: NonNullable<ResolvedHermesCli["capabilities"]>) {
-  return {
-    ...capabilities,
-    raw: previewDiagnosticText(capabilities.raw),
-  };
-}
-
 function previewDiagnosticText(value: string | undefined) {
   if (!value) return value;
   return value.length > 6000 ? `${value.slice(0, 6000)}\n...[truncated]` : value;
 }
 
-function capabilityFailureSummary(validation: HermesCliValidationResult) {
-  if (validation.ok) return "capabilities --json 正常。";
-  if (validation.kind === "file_missing") return "Hermes CLI 文件不存在，无法执行 capabilities --json。";
-  if (validation.kind === "permission_denied") return "Hermes CLI 权限不足，无法执行 capabilities --json。";
-  if (validation.kind === "capability_unsupported") return "Hermes CLI 存在，但版本或 capability 不满足最低门槛。";
-  if (validation.message.includes("不是有效 JSON")) return "capabilities --json 返回内容不是有效 JSON。";
-  const missingModule = detectMissingPythonModuleFromMessage(validation.message);
-  if (missingModule) return `capabilities --json 执行失败：Hermes CLI 的 Python 环境缺少 ${missingModule}。`;
-  return "capabilities --json 执行失败。";
+function hermesCliEnv(rootPath: string, hermesHome?: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUNBUFFERED: "1",
+    PYTHONPATH: `${rootPath}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
+    NO_COLOR: "1",
+    FORCE_COLOR: "0",
+    ...(hermesHome ? { HERMES_HOME: hermesHome } : {}),
+  };
 }
 
-function capabilitySuggestedActions(validation: HermesCliValidationResult) {
-  if (validation.ok) return [];
-  if (validation.kind === "file_missing") return ["Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。"];
-  if (validation.kind === "permission_denied") return ["修复 WSL 文件权限后重试。"];
-  if (validation.kind === "capability_unsupported") return ["更新或修复 Hermes Agent，使 capabilities 包含 launch metadata 与 resume 支持。"];
-  if (validation.message.includes("不是有效 JSON")) return ["检查 Hermes CLI 是否输出了错误栈，必要时重新安装 Agent。"];
-  const missingModule = detectMissingPythonModuleFromMessage(validation.message);
-  if (missingModule) {
-    const packageName = missingModule === "PyYAML" ? "pyyaml" : missingModule === "python-dotenv" ? "python-dotenv" : missingModule;
-    return [
-      `Hermes CLI 的 Python 环境缺少 ${missingModule}，请进入 Hermes 目录执行 pip install ${packageName}。`,
-      "或者先运行一键诊断的“一键修复”，让 Forge 自动补齐依赖。",
-    ];
+function windowsPythonLaunch(command: string) {
+  const trimmed = command.trim();
+  const pyLauncher = trimmed.match(/^py(?:\.exe)?\s+(-3(?:\.\d+)?)$/i);
+  if (pyLauncher) {
+    return { command: "py", args: [pyLauncher[1] ?? "-3"] };
   }
-  return ["查看 stderr 并修复 Hermes CLI 运行错误。"];
-}
-
-function detectMissingPythonModuleFromMessage(message: string): string | undefined {
-  const match = message.match(/缺少依赖\s+([\w-]+)/i);
-  if (match) return match[1];
-  const match2 = message.match(/ModuleNotFoundError:\s+No module named ['"]([^'"]+)['"]/i);
-  if (match2) {
-    const mod = match2[1];
-    if (mod === "yaml") return "PyYAML";
-    if (mod === "dotenv") return "python-dotenv";
-    return mod;
-  }
-  return undefined;
-}
-
-async function chmodWslExecutable(runtime: HermesRuntimeConfig, cliPath: string) {
-  const args = [
-    ...(runtime.distro?.trim() ? ["-d", runtime.distro.trim()] : []),
-    "--",
-    "bash",
-    "-lc",
-    "chmod +x \"$1\"",
-    "bash",
-    cliPath,
-  ];
-  return runCommand("wsl.exe", args, {
-    cwd: process.cwd(),
-    timeoutMs: 10_000,
-    commandId: "one-click.hermes-cli.chmod",
-    runtimeKind: "wsl",
-  });
+  return { command: trimmed, args: [] };
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> | undefined {

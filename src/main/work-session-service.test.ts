@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppPaths } from "./app-paths";
 import { WorkSessionService } from "./work-session-service";
 
@@ -22,6 +22,33 @@ afterEach(async () => {
 });
 
 describe("WorkSessionService.delete", () => {
+  it("creates, renames, and deletes the mapped official Hermes session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "zhenghebao-session-"));
+    tempRoots.push(root);
+    const appPaths = new AppPaths(root);
+    await appPaths.ensureBaseLayout();
+    const bridge = {
+      createSession: vi.fn(async (input: { sessionId?: string; title?: string; source?: string }) => ({
+        id: input.sessionId ?? "hermes-session",
+        title: input.title,
+        source: input.source,
+        messageCount: 0,
+      })),
+      renameSession: vi.fn(async () => true),
+      deleteSession: vi.fn(async () => true),
+    };
+    const service = new WorkSessionService(appPaths, bridge);
+
+    const session = await service.create("官方会话");
+    await service.update(session.id, { title: "新标题" });
+    await service.delete(session.id);
+
+    expect(bridge.createSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.id, source: "zhenghebao-client" }));
+    expect(session.hermesSessionId).toBe(session.id);
+    expect(bridge.renameSession).toHaveBeenCalledWith(session.id, "新标题");
+    expect(bridge.deleteSession).toHaveBeenCalledWith(session.id);
+  });
+
   it("removes session workspace logs and snapshot index without touching workspace files", async () => {
     const { root, appPaths, service } = await createHarness();
     const workspacePath = path.join(root, "real-workspace");

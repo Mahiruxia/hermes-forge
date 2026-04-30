@@ -25,8 +25,6 @@ describe("OneClickDiagnosticsOrchestrator", () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
-      {} as any,
       diagnosticsService as any,
       {} as any,
       {} as any,
@@ -42,24 +40,17 @@ describe("OneClickDiagnosticsOrchestrator", () => {
     expect(oneClickReport.items[0]?.status).toBe("skipped");
   });
 
-  it("does not run the WSL doctor when the active runtime is Windows", async () => {
+  it("checks Windows runtime without running WSL diagnostics", async () => {
     const probe = vi.fn(async () => ({
       runtimeMode: "windows",
-      wslAvailable: false,
-      wslStatus: "not_checked",
-      distroName: undefined,
-      distroExists: undefined,
-      distroReachable: false,
-      wslPythonAvailable: false,
+      overallStatus: "ready",
+      commands: {},
       issues: [],
     }));
-    const diagnose = vi.fn(async () => ({ ok: false }));
     const orchestrator = new OneClickDiagnosticsOrchestrator(
       {} as any,
       {} as any,
       { probe } as any,
-      { diagnose } as any,
-      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -69,7 +60,7 @@ describe("OneClickDiagnosticsOrchestrator", () => {
     );
     const items: Array<{ id: string; status: string; evidence?: unknown }> = [];
 
-    await (orchestrator as any).checkWsl(
+    await (orchestrator as any).checkWindowsRuntime(
       items,
       {
         config: {},
@@ -83,10 +74,8 @@ describe("OneClickDiagnosticsOrchestrator", () => {
     );
 
     expect(probe).toHaveBeenCalledTimes(1);
-    expect(diagnose).not.toHaveBeenCalled();
-    expect(items.map((entry) => entry.id)).toEqual(["wsl.runtime", "wsl.distro", "wsl.command"]);
-    expect(items[0]?.status).toBe("warn");
-    expect(items[0]?.evidence).not.toHaveProperty("doctor");
+    expect(items.map((entry) => entry.id)).toEqual(["runtime.windows"]);
+    expect(items[0]?.status).toBe("pass");
   });
 
   it("adds a real model connection failure to one-click diagnostics", async () => {
@@ -134,13 +123,12 @@ describe("OneClickDiagnosticsOrchestrator", () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
-      {} as any,
       { syncRuntimeConfig: vi.fn() } as any,
       {} as any,
       {} as any,
       {} as any,
       {} as any,
+      undefined,
       testModelConnection as any,
     );
     const items: Array<{ id: string; status: string; summary?: string }> = [];

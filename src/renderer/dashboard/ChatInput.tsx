@@ -1,6 +1,8 @@
-import { Command, Mic, MicOff, Paperclip, Plus, Send, Square, X } from "lucide-react";
+import { Command, Gauge, Mic, MicOff, Paperclip, Plus, Send, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ClipboardEvent, DragEvent, ReactNode } from "react";
+import type { EngineEvent, SessionAgentInsightUsage } from "../../shared/types";
 import { useAppStore } from "../store";
 import { cn } from "./DashboardPrimitives";
 import { buildPreflightState, preflightChipsForUser, preflightDetailForUser, preflightSummaryForUser } from "./permissionModel";
@@ -32,6 +34,11 @@ export function ChatInput(props: {
   const [isDraggingAttachment, setIsDraggingAttachment] = useState(false);
   const [isImportingAttachment, setIsImportingAttachment] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const listeningRef = useRef(false);
+  const stoppingVoiceRef = useRef(false);
+  const voiceRestartTimerRef = useRef<number | null>(null);
+  const voiceBaseInputRef = useRef("");
+  const voiceFinalResultsRef = useRef<Record<number, string>>({});
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const preflight = buildPreflightState({
     runtimeConfig: store.runtimeConfig,
@@ -46,6 +53,30 @@ export function ChatInput(props: {
   const currentModelProfile = store.runtimeConfig?.modelProfiles.find((profile) => profile.id === store.runtimeConfig?.defaultModelProfileId)
     ?? store.runtimeConfig?.modelProfiles[0];
   const currentModelLabel = currentModelProfile?.model || currentModelProfile?.name || currentModelProfile?.id || "未配置模型";
+  const contextMeter = useMemo(
+    () => buildContextMeter({
+      activeSessionId: store.activeSessionId,
+      userInput: store.userInput,
+      projections: store.taskRunProjectionsById,
+      runOrder: store.taskRunOrderBySession,
+      taskEventsByRunId: store.taskEventsByRunId,
+      sessionInsightUsage: store.sessionAgentInsight?.usage,
+      conversationMessages: store.conversationMessages,
+      contextWindow: currentModelProfile?.maxTokens,
+      attachmentCount: store.attachments.length,
+    }),
+    [
+      currentModelProfile?.maxTokens,
+      store.activeSessionId,
+      store.attachments.length,
+      store.conversationMessages,
+      store.sessionAgentInsight?.usage,
+      store.taskEventsByRunId,
+      store.taskRunOrderBySession,
+      store.taskRunProjectionsById,
+      store.userInput,
+    ],
+  );
   const statusTone = props.sendBlockTarget ? "action" : props.sendBlockReason ? "blocked" : "ready";
   const statusText = props.sendBlockReason
     ? props.sendBlockReason
@@ -60,6 +91,12 @@ export function ChatInput(props: {
 
   useEffect(() => {
     return () => {
+      listeningRef.current = false;
+      stoppingVoiceRef.current = true;
+      if (voiceRestartTimerRef.current) {
+        window.clearTimeout(voiceRestartTimerRef.current);
+        voiceRestartTimerRef.current = null;
+      }
       if (recognitionRef.current) {
         recognitionRef.current.stop();
         recognitionRef.current = null;
@@ -100,8 +137,12 @@ export function ChatInput(props: {
     }
   }
 
+  function getSpeechRecognitionCtor() {
+    return window.SpeechRecognition || window.webkitSpeechRecognition;
+  }
+
   function initRecognition() {
-    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SpeechRecognitionCtor = getSpeechRecognitionCtor();
     if (!SpeechRecognitionCtor) {
       store.error("语音识别不可用", "当前环境不支持语音输入");
       return null;
@@ -115,8 +156,12 @@ export function ChatInput(props: {
   }
 
   async function toggleVoiceInput() {
-    if (isListening) {
+    if (listeningRef.current || isListening) {
       stopVoiceInput();
+      return;
+    }
+    if (!getSpeechRecognitionCtor()) {
+      store.error("语音识别不可用", "当前环境不支持语音输入");
       return;
     }
     const hasPermission = await requestMicrophonePermission();
@@ -124,65 +169,112 @@ export function ChatInput(props: {
       store.error("麦克风权限被拒绝", "请在系统设置中允许麦克风权限");
       return;
     }
+    setPlusMenuOpen(false);
     startVoiceInput();
   }
 
   function startVoiceInput() {
+    if (recognitionRef.current) return;
     const recognition = initRecognition();
     if (!recognition) return;
+    listeningRef.current = true;
+    stoppingVoiceRef.current = false;
+    voiceBaseInputRef.current = useAppStore.getState().userInput.trim();
+    voiceFinalResultsRef.current = {};
+    setIsListening(true);
 
     recognition.onstart = () => {
+      listeningRef.current = true;
       setIsListening(true);
       store.info("语音输入已启动", "正在监听你的语音");
     };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let transcript = "";
+      let interimTranscript = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        if (event.results[i].isFinal) {
-          transcript += event.results[i][0].transcript;
+        const result = event.results[i];
+        const transcript = result[0]?.transcript?.trim() ?? "";
+        if (!transcript) continue;
+        if (result.isFinal) {
+          voiceFinalResultsRef.current[i] = transcript;
         } else {
-          store.setUserInput(`${store.userInput.trimEnd()} ${event.results[i][0].transcript}`.trim());
-          return;
+          interimTranscript = joinVoiceText(interimTranscript, transcript);
         }
       }
-      if (transcript) {
-        const currentInput = store.userInput.trim();
-        store.setUserInput(currentInput ? `${currentInput} ${transcript}` : transcript);
-      }
+      const finalTranscript = Object.keys(voiceFinalResultsRef.current)
+        .map(Number)
+        .sort((left, right) => left - right)
+        .map((index) => voiceFinalResultsRef.current[index])
+        .join(" ");
+      useAppStore.getState().setUserInput(joinVoiceText(voiceBaseInputRef.current, finalTranscript, interimTranscript));
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error === "aborted" && stoppingVoiceRef.current) return;
+      listeningRef.current = false;
+      stoppingVoiceRef.current = false;
       setIsListening(false);
       recognitionRef.current = null;
       if (event.error === "not-allowed") {
         store.error("语音输入失败", "麦克风权限未授予");
       } else if (event.error === "audio-capture") {
         store.error("麦克风不可用", "未检测到麦克风设备");
+      } else if (event.error === "no-speech") {
+        store.warning("没有听到语音", "可以再点一次麦克风重新开始");
       } else {
         store.error("语音识别错误", `错误类型：${event.error}`);
       }
     };
 
     recognition.onend = () => {
-      if (isListening) {
-        recognition.start();
-      } else {
+      if (!listeningRef.current || stoppingVoiceRef.current) {
+        stoppingVoiceRef.current = false;
         recognitionRef.current = null;
+        setIsListening(false);
+        return;
       }
+      voiceRestartTimerRef.current = window.setTimeout(() => {
+        if (!listeningRef.current || recognitionRef.current !== recognition) return;
+        try {
+          recognition.start();
+        } catch (error) {
+          listeningRef.current = false;
+          recognitionRef.current = null;
+          setIsListening(false);
+          store.error("语音输入已停止", error instanceof Error ? error.message : "无法重新开始监听");
+        }
+      }, 180);
     };
 
     recognitionRef.current = recognition;
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (error) {
+      listeningRef.current = false;
+      recognitionRef.current = null;
+      setIsListening(false);
+      store.error("语音输入启动失败", error instanceof Error ? error.message : "无法开始监听");
+    }
   }
 
   function stopVoiceInput() {
+    const wasListening = listeningRef.current || Boolean(recognitionRef.current);
+    listeningRef.current = false;
+    stoppingVoiceRef.current = true;
+    if (voiceRestartTimerRef.current) {
+      window.clearTimeout(voiceRestartTimerRef.current);
+      voiceRestartTimerRef.current = null;
+    }
     setIsListening(false);
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // The recognizer may already be stopped by Chromium.
+      }
       recognitionRef.current = null;
     }
-    store.info("语音输入已停止", "已完成语音转文字");
+    if (wasListening) store.info("语音输入已停止", "已完成语音转文字");
   }
 
   function handleSubmit() {
@@ -496,7 +588,7 @@ export function ChatInput(props: {
 
         <div
           className={cn(
-            "hermes-composer-card relative overflow-hidden rounded-3xl border border-[var(--hermes-card-border)] bg-white shadow-[0_16px_48px_rgba(15,23,42,0.07)] focus-within:hermes-purple-focus",
+            "hermes-composer-card relative overflow-visible rounded-3xl border border-[var(--hermes-card-border)] bg-white shadow-[0_16px_48px_rgba(15,23,42,0.07)] focus-within:hermes-purple-focus",
             isDraggingAttachment && "ring-2 ring-[var(--hermes-primary-border)]",
           )}
           onDragEnter={handleAttachmentDragEnter}
@@ -505,7 +597,7 @@ export function ChatInput(props: {
           onDrop={handleAttachmentDrop}
         >
           {isDraggingAttachment ? (
-            <div className="pointer-events-none absolute inset-0 z-30 grid place-items-center bg-slate-50/90">
+            <div className="pointer-events-none absolute inset-0 z-30 grid place-items-center rounded-3xl bg-slate-50/90">
               <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-3 text-center shadow-sm">
                 <p className="text-sm font-semibold text-slate-800">{store.runningTaskRunId ? "当前任务运行中" : "松开即可添加附件"}</p>
                 <p className="mt-1 text-xs text-slate-500">{store.runningTaskRunId ? "请等 Hermes 完成后再上传文件" : "支持图片和常见文档，最多一次 12 个"}</p>
@@ -554,8 +646,15 @@ export function ChatInput(props: {
               <div className="relative" ref={plusMenuRef}>
                 <button
                   className="grid h-10 w-10 place-items-center rounded-full border border-[var(--hermes-primary-border)] text-[var(--hermes-primary)] transition hover:bg-[var(--hermes-primary-soft)]"
-                  onClick={() => setPlusMenuOpen((value) => !value)}
-                  aria-label="打开更多输入入口"
+                  onClick={() => {
+                    if (isListening) {
+                      stopVoiceInput();
+                      return;
+                    }
+                    setPlusMenuOpen((value) => !value);
+                  }}
+                  aria-label={isListening ? "停止语音输入" : "打开更多输入入口"}
+                  title={isListening ? "停止语音输入" : "打开更多输入入口"}
                   type="button"
                 >
                   {isListening ? <MicOff size={16} /> : <Plus size={16} />}
@@ -629,6 +728,7 @@ export function ChatInput(props: {
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+              <ContextMeterPill meter={contextMeter} />
               {store.runningTaskRunId ? (
                 <button
                   className="grid h-10 w-10 place-items-center rounded-full border border-rose-200 bg-rose-50 text-rose-600 transition hover:bg-rose-100"
@@ -670,7 +770,7 @@ export function ChatInput(props: {
             {props.sendBlockTarget ? " · 点击修复" : ""}
           </button>
           <span className="shrink-0 text-slate-400">
-            {store.attachments.length ? `${store.attachments.length} 个附件` : "仅显示关键信息"}
+            {store.attachments.length ? `${store.attachments.length} 个附件 · 文件内容另计` : "仅显示关键信息"}
           </span>
         </div>
 
@@ -713,6 +813,162 @@ function MenuItem(props: { icon: typeof Plus; label: string; disabled?: boolean;
       <Icon size={15} />
       {props.label}
     </button>
+  );
+}
+
+type ContextMeter = {
+  displayTokens: number;
+  draftTokens: number;
+  contextWindow?: number;
+  percent?: number;
+  tone: "slate" | "emerald" | "amber" | "rose";
+  attachmentCount: number;
+  source: "actual" | "estimated" | "draft";
+  outputTokens?: number;
+  measuredAt?: string;
+};
+
+function ContextMeterPill(props: { meter: ContextMeter }) {
+  const { meter } = props;
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [panelPosition, setPanelPosition] = useState({ right: 16, bottom: 120, width: 264 });
+  const sourceLabel = meter.source === "actual" ? "实测" : meter.source === "estimated" ? "估算" : "草稿约";
+  const title = meter.contextWindow
+    ? `${sourceLabel}上下文：${meter.displayTokens.toLocaleString()} / ${meter.contextWindow.toLocaleString()} input tokens${meter.outputTokens ? `；最近输出 ${meter.outputTokens.toLocaleString()} tokens` : ""}${meter.draftTokens ? `；当前草稿约增加 ${meter.draftTokens.toLocaleString()} tokens` : ""}${meter.attachmentCount ? "；附件正文会在发送时另行计入" : ""}${meter.measuredAt ? `；实测时间 ${meter.measuredAt}` : ""}`
+    : `${sourceLabel}上下文：${meter.displayTokens.toLocaleString()} input tokens${meter.outputTokens ? `；最近输出 ${meter.outputTokens.toLocaleString()} tokens` : ""}${meter.draftTokens ? `；当前草稿约增加 ${meter.draftTokens.toLocaleString()} tokens` : ""}${meter.attachmentCount ? "；附件正文会在发送时另行计入" : ""}${meter.measuredAt ? `；实测时间 ${meter.measuredAt}` : ""}`;
+  const meterClass = meter.tone === "rose"
+    ? "border-rose-200/80 bg-rose-50/80 text-rose-700 shadow-rose-100/80"
+    : meter.tone === "amber"
+      ? "border-amber-200/80 bg-amber-50/80 text-amber-700 shadow-amber-100/80"
+      : meter.tone === "emerald"
+        ? "border-emerald-200/80 bg-emerald-50/75 text-emerald-700 shadow-emerald-100/80"
+        : "border-slate-200/80 bg-white/70 text-slate-500 shadow-slate-200/70";
+  const barClass = meter.tone === "rose"
+    ? "bg-rose-500"
+    : meter.tone === "amber"
+      ? "bg-amber-500"
+      : meter.tone === "emerald"
+        ? "bg-emerald-500"
+        : "bg-slate-400";
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function updatePanelPosition() {
+      const button = buttonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      const width = Math.min(264, Math.max(232, viewportWidth - 32));
+      const desiredRight = viewportWidth - rect.right;
+      const maxRight = Math.max(16, viewportWidth - width - 16);
+      setPanelPosition({
+        right: Math.min(Math.max(desiredRight, 16), maxRight),
+        bottom: Math.max(16, viewportHeight - rect.top + 10),
+        width,
+      });
+    }
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    updatePanelPosition();
+    window.addEventListener("resize", updatePanelPosition);
+    window.addEventListener("scroll", updatePanelPosition, true);
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("resize", updatePanelPosition);
+      window.removeEventListener("scroll", updatePanelPosition, true);
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  const detailPanel = open && typeof document !== "undefined"
+    ? createPortal(
+        <div
+          ref={panelRef}
+          className="fixed z-[60] max-h-[min(320px,calc(100vh-96px))] overflow-auto rounded-[20px] border border-white/80 bg-white/90 p-3 text-[12px] text-slate-600 shadow-[0_24px_70px_rgba(15,23,42,0.16)] backdrop-blur-2xl ring-1 ring-slate-900/5"
+          style={{ right: panelPosition.right, bottom: panelPosition.bottom, width: panelPosition.width }}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[13px] font-semibold text-slate-950">{meter.source === "actual" ? "真实上下文" : "等待真实上下文"}</p>
+              <p className="mt-0.5 text-[11px] text-slate-400">{meter.source === "actual" ? "来自 Hermes usage 的 input tokens" : "发送完成后会替换为 Hermes 实测值"}</p>
+            </div>
+            <span className={cn("rounded-full px-2 py-1 text-[10px] font-semibold", meter.source === "actual" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>
+              {sourceLabel}
+            </span>
+          </div>
+          <div className="mt-3 space-y-1.5">
+            <ContextDetailRow label="输入上下文" value={`${meter.displayTokens.toLocaleString()} tokens`} />
+            {typeof meter.outputTokens === "number" ? <ContextDetailRow label="最近输出" value={`${meter.outputTokens.toLocaleString()} tokens`} /> : null}
+            <ContextDetailRow label="当前草稿" value={`约 +${meter.draftTokens.toLocaleString()} tokens`} />
+            <ContextDetailRow label="窗口上限" value={meter.contextWindow ? `${meter.contextWindow.toLocaleString()} tokens` : "未知"} />
+          </div>
+          {typeof meter.percent === "number" ? (
+            <div className="mt-3">
+              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
+                <span>占用比例</span>
+                <span>{meter.percent}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100 shadow-inner">
+                <div className={cn("h-full rounded-full transition-all duration-500", barClass)} style={{ width: `${meter.percent}%` }} />
+              </div>
+            </div>
+          ) : null}
+          {meter.attachmentCount ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">附件正文会在发送时由 Hermes 读取，可能额外增加上下文。</p> : null}
+        </div>,
+        document.body,
+      )
+    : null;
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        ref={buttonRef}
+        className={cn(
+          "group inline-flex h-9 max-w-[156px] items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl transition duration-200 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_16px_34px_rgba(15,23,42,0.09)] active:translate-y-0 max-sm:max-w-[118px]",
+          meterClass,
+        )}
+        title={title}
+        aria-label={title}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/75 shadow-inner ring-1 ring-white/80">
+          <Gauge size={11} />
+        </span>
+        <span className="min-w-0 truncate">
+          {sourceLabel} {formatCompactTokenCount(meter.displayTokens)}
+          {typeof meter.percent === "number" ? ` / ${meter.percent}%` : ""}
+        </span>
+        {typeof meter.percent === "number" ? (
+          <span className="h-1 w-7 shrink-0 overflow-hidden rounded-full bg-white/75 ring-1 ring-black/5 max-sm:hidden">
+            <span className={cn("block h-full rounded-full transition-all duration-500", barClass)} style={{ width: `${meter.percent}%` }} />
+          </span>
+        ) : null}
+      </button>
+      {detailPanel}
+    </div>
+  );
+}
+
+function ContextDetailRow(props: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50/75 px-3 py-2">
+      <span className="text-slate-400">{props.label}</span>
+      <span className="font-mono font-semibold text-slate-700">{props.value}</span>
+    </div>
   );
 }
 
@@ -760,6 +1016,130 @@ function PreflightStrip(props: { preflight: ReturnType<typeof buildPreflightStat
       ) : null}
     </div>
   );
+}
+
+function buildContextMeter(input: {
+  activeSessionId?: string;
+  userInput: string;
+  projections: ReturnType<typeof useAppStore.getState>["taskRunProjectionsById"];
+  runOrder: ReturnType<typeof useAppStore.getState>["taskRunOrderBySession"];
+  taskEventsByRunId: ReturnType<typeof useAppStore.getState>["taskEventsByRunId"];
+  sessionInsightUsage?: SessionAgentInsightUsage;
+  conversationMessages: ReturnType<typeof useAppStore.getState>["conversationMessages"];
+  contextWindow?: number;
+  attachmentCount: number;
+}): ContextMeter {
+  const latestUsage = latestUsageForSession(input.activeSessionId, input.taskEventsByRunId, input.sessionInsightUsage);
+  const historyText = contextTextFromProjections(input.activeSessionId, input.projections, input.runOrder)
+    || contextTextFromMessages(input.activeSessionId, input.conversationMessages);
+  const attachmentOverhead = input.attachmentCount * 48;
+  const draftTokens = Math.max(0, estimateTokens(input.userInput) + attachmentOverhead);
+  const fallbackTokens = Math.max(0, estimateTokens(`${historyText}\n${input.userInput}`) + attachmentOverhead);
+  const displayTokens = latestUsage?.inputTokens ?? fallbackTokens;
+  const source = latestUsage?.source ?? "draft";
+  const percent = input.contextWindow && input.contextWindow > 0
+    ? Math.min(100, Math.round((displayTokens / input.contextWindow) * 100))
+    : undefined;
+  const tone = typeof percent !== "number"
+    ? "slate"
+    : percent >= 90
+      ? "rose"
+      : percent >= 70
+        ? "amber"
+        : percent > 0
+          ? "emerald"
+          : "slate";
+  return {
+    displayTokens,
+    draftTokens,
+    contextWindow: input.contextWindow,
+    percent,
+    tone,
+    attachmentCount: input.attachmentCount,
+    source,
+    outputTokens: latestUsage?.outputTokens,
+    measuredAt: latestUsage?.at,
+  };
+}
+
+function latestUsageForSession(
+  activeSessionId: string | undefined,
+  eventsByRunId: ReturnType<typeof useAppStore.getState>["taskEventsByRunId"],
+  insightUsage?: SessionAgentInsightUsage,
+): { inputTokens: number; outputTokens: number; source: "actual" | "estimated"; at?: string } | undefined {
+  const usageEvents = Object.values(eventsByRunId)
+    .flat()
+    .filter((event) => (!activeSessionId || event.workSessionId === activeSessionId) && event.event.type === "usage")
+    .map((event) => event.event as Extract<EngineEvent, { type: "usage" }>);
+  const actualEvents = usageEvents.filter((event) => event.source === "actual");
+  const preferred = latestByTimestamp(actualEvents.length ? actualEvents : usageEvents);
+  if (preferred) {
+    return {
+      inputTokens: preferred.inputTokens,
+      outputTokens: preferred.outputTokens,
+      source: preferred.source === "actual" ? "actual" : "estimated",
+      at: preferred.at,
+    };
+  }
+  if (!insightUsage) return undefined;
+  return {
+    inputTokens: insightUsage.latestInputTokens,
+    outputTokens: insightUsage.latestOutputTokens,
+    source: insightUsage.source === "actual" ? "actual" : "estimated",
+  };
+}
+
+function latestByTimestamp<T extends { at: string }>(events: T[]) {
+  return events.reduce<T | undefined>((latest, event) => (!latest || event.at >= latest.at ? event : latest), undefined);
+}
+
+function contextTextFromProjections(
+  activeSessionId: string | undefined,
+  projections: ReturnType<typeof useAppStore.getState>["taskRunProjectionsById"],
+  runOrder: ReturnType<typeof useAppStore.getState>["taskRunOrderBySession"],
+) {
+  const projectionList = activeSessionId && runOrder[activeSessionId]?.length
+    ? runOrder[activeSessionId].map((id) => projections[id]).filter(Boolean)
+    : Object.values(projections).filter((projection) => !activeSessionId || projection.workSessionId === activeSessionId);
+  return projectionList
+    .map((projection) => [
+      projection.userMessage?.content,
+      projection.assistantMessage.content,
+      ...projection.toolEvents.map((tool) => tool.summary ?? tool.command ?? tool.path ?? ""),
+    ].filter(Boolean).join("\n"))
+    .join("\n");
+}
+
+function contextTextFromMessages(
+  activeSessionId: string | undefined,
+  messages: ReturnType<typeof useAppStore.getState>["conversationMessages"],
+) {
+  return messages
+    .filter((message) => message.visibleInChat !== false)
+    .filter((message) => !activeSessionId || message.sessionId === activeSessionId)
+    .map((message) => message.content)
+    .join("\n");
+}
+
+function estimateTokens(text: string) {
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const char of text) {
+    if (/\s/.test(char)) continue;
+    if (char.charCodeAt(0) <= 0x7f) ascii += 1;
+    else nonAscii += 1;
+  }
+  return Math.ceil(ascii / 4 + nonAscii * 0.9);
+}
+
+function formatCompactTokenCount(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(value);
+}
+
+function joinVoiceText(...parts: Array<string | undefined>) {
+  return parts.map((part) => part?.trim()).filter(Boolean).join(" ");
 }
 
 function toFileUrl(filePath: string) {

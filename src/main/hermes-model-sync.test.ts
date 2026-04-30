@@ -21,11 +21,13 @@ describe("HermesModelSyncService helpers", () => {
       provider: "custom",
       model: "gpt-5.4",
       baseUrl: "http://127.0.0.1:8080/v1",
+      contextLength: 128000,
     });
 
     expect(next).toContain("provider: \"custom\"");
     expect(next).toContain("default: \"gpt-5.4\"");
     expect(next).toContain("base_url: \"http://127.0.0.1:8080/v1\"");
+    expect(next).toContain("context_length: 128000");
     expect(next).toContain("mcp_servers:");
     expect(next).not.toContain("old-model");
   });
@@ -69,6 +71,7 @@ describe("HermesModelSyncService", () => {
         model: "gpt-5.4",
         baseUrl: "http://127.0.0.1:8080/v1",
         secretRef: "provider.local.apiKey",
+        maxTokens: 128000,
       }],
       updateSources: {},
     };
@@ -94,8 +97,51 @@ describe("HermesModelSyncService", () => {
 
     expect(result.synced).toBe(true);
     await expect(fs.readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toContain("default: \"gpt-5.4\"");
+    await expect(fs.readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toContain("context_length: 128000");
     await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.toContain("HERMES_INFERENCE_PROVIDER=custom");
     await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.toContain("OPENAI_API_KEY=pwd");
+  });
+
+  it("persists the stable upstream URL while runtime env can use a local proxy", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-model-sync-proxy-"));
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "mimo-token-plan",
+      modelProfiles: [{
+        id: "mimo-token-plan",
+        provider: "custom",
+        sourceType: "mimo_token_plan_api_key",
+        model: "mimo-v2.5-pro",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        secretRef: "provider.mimo-token-plan.apiKey",
+      }],
+      updateSources: {},
+    };
+    const resolver = {
+      resolveFromConfig: async () => ({
+        profileId: "mimo-token-plan",
+        provider: "custom",
+        sourceType: "mimo_token_plan_api_key",
+        model: "mimo-v2.5-pro",
+        baseUrl: "http://127.0.0.1:49001/profiles/stable/v1",
+        env: {
+          AI_PROVIDER: "custom",
+          AI_MODEL: "mimo-v2.5-pro",
+          AI_BASE_URL: "http://127.0.0.1:49001/profiles/stable/v1",
+          OPENAI_BASE_URL: "http://127.0.0.1:49001/profiles/stable/v1",
+          OPENAI_API_KEY: "proxy-key",
+          HERMES_FORGE_UPSTREAM_BASE_URL: "https://token-plan-cn.xiaomimimo.com/v1",
+        },
+      }),
+    };
+
+    const service = new HermesModelSyncService(resolver as never, () => home);
+    await service.syncRuntimeConfig(config);
+
+    const yaml = await fs.readFile(path.join(home, "config.yaml"), "utf8");
+    expect(yaml).toContain("base_url: \"https://token-plan-cn.xiaomimimo.com/v1\"");
+    expect(yaml).not.toContain("127.0.0.1:49001");
+    const env = await fs.readFile(path.join(home, ".env"), "utf8");
+    expect(env).toContain("OPENAI_BASE_URL=http://127.0.0.1:49001/profiles/stable/v1");
   });
 
   it("writes the canonical Hermes provider name for Coding Plan chat profiles", async () => {

@@ -77,6 +77,17 @@ type ConfigOverview = {
 
 type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 
+function defaultHermesRuntime(): HermesRuntimeConfig {
+  return {
+    mode: "windows",
+    pythonCommand: "python3",
+    windowsAgentMode: "hermes_native",
+    cliPermissionMode: "yolo",
+    permissionPolicy: "bridge_guarded",
+    workerMode: "off",
+  };
+}
+
 function SettingsView(props: {
   overview?: ConfigOverview;
   initialSection?: ConfigSectionId;
@@ -88,13 +99,10 @@ function SettingsView(props: {
   const overview = props.overview;
   const store = useAppStore();
   const permissionOverview = usePermissionOverview({ autoLoad: false });
-  const currentRuntimeMode = ((overview?.runtimeConfig as RuntimeConfig | undefined)?.hermesRuntime?.mode
-    ?? store.runtimeConfig?.hermesRuntime?.mode
-    ?? "windows") === "wsl" ? "WSL" : "Windows";
   const [activeSection, setActiveSection] = useState<ConfigSectionId>(props.initialSection ?? "general");
   const [rootPath, setRootPath] = useState(overview?.hermes.rootPath ?? "");
   const [warmupMode, setWarmupMode] = useState(overview?.hermes.warmupMode ?? "cheap");
-  const [runtime, setRuntime] = useState<HermesRuntimeConfig>(overview?.hermes.runtime ?? { mode: "wsl", pythonCommand: "python3", windowsAgentMode: "hermes_native", cliPermissionMode: "yolo", permissionPolicy: "bridge_guarded" });
+  const [runtime, setRuntime] = useState<HermesRuntimeConfig>(overview?.hermes.runtime ?? defaultHermesRuntime());
   const [bridge, setBridge] = useState<WindowsBridgeStatus | undefined>(overview?.hermes.bridge);
   const [permissions, setPermissions] = useState(overview?.hermes.permissions ?? {
     enabled: true,
@@ -116,6 +124,9 @@ function SettingsView(props: {
   const [diagnosticsExporting, setDiagnosticsExporting] = useState(false);
   const [oneClickDiagnostics, setOneClickDiagnostics] = useState<OneClickDiagnosticsReport | undefined>();
   const [importingHermesConfig, setImportingHermesConfig] = useState(false);
+  const [migrationPreview, setMigrationPreview] = useState<Awaited<ReturnType<Window["workbenchClient"]["legacyWslMigrationDetect"]>> | undefined>();
+  const [scanningMigration, setScanningMigration] = useState(false);
+  const [importingLegacyWsl, setImportingLegacyWsl] = useState(false);
 
   function showSaveNotice(message: string) {
     setSaveNotice(message);
@@ -167,7 +178,7 @@ function SettingsView(props: {
   useEffect(() => {
     setRootPath(overview?.hermes.rootPath ?? "");
     setWarmupMode(overview?.hermes.warmupMode ?? "cheap");
-    setRuntime(overview?.hermes.runtime ?? { mode: "wsl", pythonCommand: "python3", windowsAgentMode: "hermes_native", cliPermissionMode: "yolo", permissionPolicy: "bridge_guarded" });
+    setRuntime(overview?.hermes.runtime ?? defaultHermesRuntime());
     setBridge(overview?.hermes.bridge);
     setPermissions(overview?.hermes.permissions ?? {
       enabled: true,
@@ -258,49 +269,11 @@ function SettingsView(props: {
       const result = await window.workbenchClient.runOneClickDiagnostics({ autoFix, workspacePath });
       setOneClickDiagnostics(result);
       await props.onRefresh();
-      if (autoFix && needsManagedWslHermesInstall(result)) {
-        const confirmed = window.confirm(
-          "一键修复未能完成，原因是当前缺少 WSL 下的 Hermes Agent，或 WSL/Ubuntu 环境尚不可用。\n\n是否现在自动执行“安装 WSL 版 Hermes Agent”？",
-        );
-        if (confirmed) {
-          await runManagedWslHermesInstallFromDiagnostics();
-          return;
-        }
-        showSaveNotice("一键修复未完成：请在 Hermes 设置中点击“安装 WSL 版 Hermes Agent”。");
-        return;
-      }
       showSaveNotice(autoFix ? "一键修复已完成并完成二次验证" : "一键诊断已完成");
     } catch (error) {
       showSaveNotice(error instanceof Error ? error.message : "一键诊断失败");
     } finally {
       setOneClickDiagnosticsRunning(false);
-    }
-  }
-
-  async function runManagedWslHermesInstallFromDiagnostics() {
-    const store = useAppStore.getState();
-    if (store.managedWslInstallerLoadingAction) {
-      showSaveNotice("WSL Hermes Agent 安装正在运行，请等待当前安装完成。");
-      return;
-    }
-    store.setManagedWslInstallerLoadingAction("install");
-    try {
-      setActiveSection("general");
-      showSaveNotice("正在安装 WSL 版 Hermes Agent...");
-      const installResult = await window.workbenchClient.installerInstall();
-      useAppStore.getState().setManagedWslInstaller(installResult);
-      await props.onRefresh();
-      if (installResult.ok) {
-        showSaveNotice("WSL 版 Hermes Agent 已安装并通过验证。");
-        return;
-      }
-      showSaveNotice(
-        `${installResult.summary} ${installResult.fixHint ?? installResult.detail ?? "安装器已保存报告，可在 Hermes 设置的安装器区域查看。"}`,
-      );
-    } catch (error) {
-      showSaveNotice(error instanceof Error ? error.message : "WSL 版 Hermes Agent 安装失败");
-    } finally {
-      useAppStore.getState().setManagedWslInstallerLoadingAction(undefined);
     }
   }
 
@@ -383,6 +356,37 @@ function SettingsView(props: {
     }
   }
 
+  async function scanLegacyWsl() {
+    setScanningMigration(true);
+    try {
+      const preview = await window.workbenchClient.legacyWslMigrationDetect();
+      setMigrationPreview(preview);
+      showSaveNotice(preview.message);
+    } catch (error) {
+      showSaveNotice(error instanceof Error ? error.message : "扫描旧数据失败");
+    } finally {
+      setScanningMigration(false);
+    }
+  }
+
+  async function importLegacyWsl() {
+    setImportingLegacyWsl(true);
+    try {
+      const result = await window.workbenchClient.legacyWslMigrationImport();
+      await props.onRefresh();
+      showSaveNotice(result.message);
+    } catch (error) {
+      showSaveNotice(error instanceof Error ? error.message : "导入旧数据失败");
+    } finally {
+      setImportingLegacyWsl(false);
+    }
+  }
+
+  function openWorkbenchPanel(panel: "skills" | "connectors") {
+    store.setActivePanel(panel);
+    store.setView("home");
+  }
+
   return (
     <ConfigCenterLayout
       activeSection={activeSection}
@@ -414,6 +418,46 @@ function SettingsView(props: {
             onRefresh={props.onRefresh}
             onSaved={showSaveNotice}
           />
+        </section>
+      ) : null}
+
+      {activeSection === "integrations" ? (
+        <section className="space-y-4">
+          <SettingsSectionHeader
+            label="Skills & Connectors"
+            title="技能与连接器"
+            description="这里保留状态和入口；详细编辑继续在工作台里的 Skills 与连接器面板完成。"
+          />
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatusMetric label="Skills" value={`${store.webUiOverview?.skills.length ?? 0}`} tone={(store.webUiOverview?.skills.length ?? 0) > 0 ? "ok" : "neutral"} />
+            <StatusMetric label="连接器" value="Windows Native" tone="ok" />
+            <StatusMetric label="Gateway" value={store.setupSummary?.blocking.some((check) => check.id.includes("gateway")) ? "需检查" : "按需启动"} tone={store.setupSummary?.blocking.some((check) => check.id.includes("gateway")) ? "warning" : "neutral"} />
+          </div>
+          <SettingsPanelCard title="管理入口">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:bg-slate-50"
+                onClick={() => openWorkbenchPanel("skills")}
+                type="button"
+              >
+                <span className="block text-[13px] font-semibold text-slate-900">打开 Skills</span>
+                <span className="mt-1 block text-[12px] leading-5 text-slate-500">查看、上传、启用或编辑 Windows Hermes home 下的 skills。</span>
+              </button>
+              <button
+                className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:bg-slate-50"
+                onClick={() => openWorkbenchPanel("connectors")}
+                type="button"
+              >
+                <span className="block text-[13px] font-semibold text-slate-900">打开连接器</span>
+                <span className="mt-1 block text-[12px] leading-5 text-slate-500">配置微信、邮箱等连接器，并同步 Windows Hermes .env。</span>
+              </button>
+            </div>
+          </SettingsPanelCard>
+          <SettingsPanelCard title="兼容说明">
+            <p className="text-[12px] leading-5 text-slate-500">
+              Skills 与连接器继续使用现有数据和 IPC。旧 WSL 数据只通过 Diagnostics 里的导入流程迁移，不会作为运行环境启动。
+            </p>
+          </SettingsPanelCard>
         </section>
       ) : null}
 
@@ -471,7 +515,7 @@ function SettingsView(props: {
           <SettingsSectionHeader
             label="Diagnostics"
             title="一键诊断与修复"
-            description="统一检查 WSL、Hermes、Gateway、模型和任务锁；低风险问题可一键修复并自动复查。"
+            description="统一检查当前运行环境、Hermes、Gateway、模型和任务锁；低风险问题可一键修复并自动复查。"
           />
           <div className="grid gap-3 sm:grid-cols-3">
             <StatusMetric label="整体状态" value={oneClickDiagnostics ? (oneClickDiagnostics.summary.failed ? "需处理" : oneClickDiagnostics.summary.warnings ? "有提醒" : "通过") : overview?.health?.ready ? "就绪" : "需处理"} tone={oneClickDiagnostics ? oneClickDiagnostics.summary.failed ? "danger" : oneClickDiagnostics.summary.warnings ? "warning" : "ok" : overview?.health?.ready ? "ok" : "danger"} />
@@ -515,6 +559,31 @@ function SettingsView(props: {
             <p className="text-[12px] leading-5 text-slate-500">
               普通诊断不会静默执行跨目录写入测试；深度审计能力已保留给后续显式入口。
             </p>
+          </SettingsPanelCard>
+          <SettingsPanelCard title="旧 WSL 数据导入">
+            <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-semibold text-slate-900">只导入旧数据，不启用 WSL 运行环境</p>
+                  <p className="mt-1 text-[12px] leading-5 text-slate-500">
+                    {migrationPreview?.source
+                      ? `发现 ${migrationPreview.source.distro ?? "旧目录"}：skills ${migrationPreview.source.skillsCount} 个，配置文件 ${migrationPreview.source.hasConfig || migrationPreview.source.hasEnv ? "可导入" : "未发现"}。`
+                      : migrationPreview
+                        ? migrationPreview.message
+                        : "可迁移旧 WSL Hermes 的 config.yaml、.env 与 skills 到当前 Windows Hermes home。"}
+                  </p>
+                  {migrationPreview?.source ? <p className="mt-1 break-all font-mono text-[11px] text-slate-400">{migrationPreview.source.homePath}</p> : null}
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <button className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60" disabled={scanningMigration} onClick={() => void scanLegacyWsl()} type="button">
+                    {scanningMigration ? "扫描中" : "扫描旧数据"}
+                  </button>
+                  <button className="rounded-xl bg-slate-950 px-3 py-2 text-[12px] font-semibold text-white hover:bg-slate-800 disabled:opacity-60" disabled={importingLegacyWsl} onClick={() => void importLegacyWsl()} type="button">
+                    {importingLegacyWsl ? "导入中" : "导入"}
+                  </button>
+                </div>
+              </div>
+            </div>
           </SettingsPanelCard>
           {oneClickDiagnostics ? <OneClickDiagnosticsResultView report={oneClickDiagnostics} /> : null}
 
@@ -680,22 +749,6 @@ function oneClickStatusLabel(status: OneClickDiagnosticItem["status"]) {
     skipped: "跳过",
   };
   return labels[status];
-}
-
-function needsManagedWslHermesInstall(report: OneClickDiagnosticsReport) {
-  if (!report.summary.failed && !report.summary.unresolved) return false;
-  const installRelatedIds = new Set(["wsl.runtime", "wsl.distro", "wsl.command", "wsl.essentials.python3", "wsl.essentials.git", "wsl.essentials.pip", "wsl.essentials.venv", "hermes.path", "hermes.cli", "hermes.capabilities"]);
-  return report.items.some((diagnostic) => {
-    if (diagnostic.status !== "fail") return false;
-    const text = [
-      diagnostic.id,
-      diagnostic.title,
-      diagnostic.summary,
-      diagnostic.details,
-      ...(diagnostic.suggestedActions ?? []),
-    ].join("\n");
-    return installRelatedIds.has(diagnostic.id) && /WSL|wsl\.exe|Ubuntu|Hermes Agent|Hermes CLI|Hermes root|capabilities|ModuleNotFoundError|No module named|dotenv|yaml|python-dotenv|PyYAML|hermes_root_missing|hermes_cli_missing|不存在|未安装|不可用|无法找到|依赖缺失/i.test(text);
-  });
 }
 
 function setupStatusTone(status: SetupCheck["status"]): "ok" | "warning" | "error" | "neutral" {
@@ -932,7 +985,8 @@ function App() {
     }
     const unsubscribe = window.workbenchClient.onHermesAgentCompatibilityWarning((event) => {
       if (!event.compatible) {
-        store.warning("Hermes Agent 建议更新", event.message);
+        if (useAppStore.getState().view === "settings") return;
+        store.warning("Hermes Agent 需要处理", event.message);
       }
     });
     return () => unsubscribe();
@@ -1497,7 +1551,14 @@ function App() {
           overview={configOverview}
           initialSection={settingsInitialSection}
           onBack={() => store.setView("home")}
-          onRefresh={() => loadConfigOverview(useAppStore.getState().workspacePath || undefined).then(() => undefined)}
+          onRefresh={async () => {
+            const workspacePath = useAppStore.getState().workspacePath || undefined;
+            await Promise.all([
+              loadConfigOverview(workspacePath),
+              refreshSetupSummary(),
+              refreshHermesStatus(),
+            ]);
+          }}
           onClearSession={clearActiveSession}
           onOpenSessionFolder={openActiveSessionFolder}
         />

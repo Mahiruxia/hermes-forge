@@ -43,6 +43,7 @@ Local Storage/
 Thumbs.db
 .vscode/
 .idea/
+.claude/
 
 # Debug artifacts
 debug-*.png

@@ -99,7 +99,7 @@ describe("HermesWebUiService", () => {
 
     expect(runCommand).toHaveBeenCalledWith(
       "python",
-      [path.join(tempRoot, "Hermes Agent", "hermes"), "cron", "create", "--name", "Morning check", "every 1h", "Summarize project status"],
+      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "create", "--name", "Morning check", "every 1h", "Summarize project status"],
       expect.objectContaining({ commandId: "webui.hermes" }),
     );
   });
@@ -124,7 +124,7 @@ describe("HermesWebUiService", () => {
 
     expect(runCommand).toHaveBeenCalledWith(
       "python",
-      [path.join(tempRoot, "Hermes Agent", "hermes"), "cron", "edit", "abc123", "--name", "Updated", "--schedule", "0 9 * * *", "--prompt", "New prompt"],
+      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "edit", "abc123", "--name", "Updated", "--schedule", "0 9 * * *", "--prompt", "New prompt"],
       expect.objectContaining({ commandId: "webui.hermes" }),
     );
   });
@@ -153,13 +153,13 @@ describe("HermesWebUiService", () => {
     expect(runCommand).toHaveBeenNthCalledWith(
       1,
       "python",
-      [path.join(tempRoot, "Hermes Agent", "hermes"), "cron", "run", "abc123"],
+      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "run", "abc123"],
       expect.objectContaining({ timeoutMs: 30000 }),
     );
     expect(runCommand).toHaveBeenNthCalledWith(
       2,
       "python",
-      [path.join(tempRoot, "Hermes Agent", "hermes"), "cron", "tick"],
+      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "tick"],
       expect.objectContaining({ timeoutMs: 10 * 60 * 1000 }),
     );
   });

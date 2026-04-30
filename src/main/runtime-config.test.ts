@@ -17,27 +17,28 @@ afterEach(async () => {
   __resetPreferredHermesRuntimeCacheForTests();
   runCommandMock.mockReset();
   delete process.env.HERMES_FORGE_DETECT_PREFERRED_RUNTIME_ON_STARTUP;
+  delete process.env.HERMES_FORGE_PREFER_WSL_ON_STARTUP;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
 describe("RuntimeConfigStore preferred runtime", () => {
-  it("uses WSL as the startup-safe default without probing on first run", async () => {
+  it("uses Windows as the startup-safe default without probing on first run", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
 
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("wsl");
+    expect(config.hermesRuntime?.mode).toBe("windows");
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
-      sourceLabel: "pinned",
-      repoUrl: "https://github.com/Mahiruxia/hermes-agent.git",
-      commit: "0537bad534a7ce43d683f06f8ebdf7ff9dfb4816",
+      sourceLabel: "official",
+      repoUrl: "https://github.com/NousResearch/hermes-agent.git",
+      branch: "main",
     });
   });
 
-  it("defaults to WSL when explicit startup detection is enabled and WSL has distros", async () => {
+  it("keeps Windows first when startup detection is enabled without WSL preference", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
     process.env.HERMES_FORGE_DETECT_PREFERRED_RUNTIME_ON_STARTUP = "1";
@@ -48,16 +49,91 @@ describe("RuntimeConfigStore preferred runtime", () => {
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("wsl");
-    expect(config.hermesRuntime?.distro).toBe("Ubuntu");
+    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
-      sourceLabel: "pinned",
-      repoUrl: "https://github.com/Mahiruxia/hermes-agent.git",
-      commit: "0537bad534a7ce43d683f06f8ebdf7ff9dfb4816",
+      sourceLabel: "official",
+      repoUrl: "https://github.com/NousResearch/hermes-agent.git",
+      branch: "main",
     });
   });
 
-  it("keeps WSL default without startup probing when explicit detection is disabled", async () => {
+  it("keeps Windows even when legacy explicit WSL preference is enabled and WSL has distros", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
+    tempDirs.push(dir);
+    process.env.HERMES_FORGE_DETECT_PREFERRED_RUNTIME_ON_STARTUP = "1";
+    process.env.HERMES_FORGE_PREFER_WSL_ON_STARTUP = "1";
+    runCommandMock
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "Default Distribution: Ubuntu", stderr: "" } as never)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "Ubuntu\n", stderr: "" } as never);
+
+    const store = new RuntimeConfigStore(path.join(dir, "config.json"));
+    const config = await store.read();
+
+    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.distro).toBeUndefined();
+    expect(runCommandMock).not.toHaveBeenCalled();
+    expect(config.hermesRuntime?.installSource).toMatchObject({
+      sourceLabel: "official",
+      repoUrl: "https://github.com/NousResearch/hermes-agent.git",
+      branch: "main",
+    });
+  });
+
+  it("drops legacy WSL-style Hermes paths when normalizing to Windows", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "config.json");
+    await fs.writeFile(configPath, JSON.stringify({
+      modelProfiles: [],
+      updateSources: {},
+      enginePaths: { hermes: "/root/.hermes-forge/hermes-agent" },
+      hermesRuntime: {
+        mode: "wsl",
+        distro: "Ubuntu",
+        managedRoot: "/root/.hermes-forge/hermes-agent",
+        pythonCommand: "python3",
+        windowsAgentMode: "hermes_native",
+      },
+    }), "utf8");
+
+    const store = new RuntimeConfigStore(configPath);
+    const config = await store.read();
+
+    expect(config.hermesRuntime?.mode).toBe("windows");
+    if (process.platform === "win32") {
+      expect(config.enginePaths?.hermes).toBeUndefined();
+      expect(config.hermesRuntime?.managedRoot).toBeUndefined();
+    }
+  });
+
+  it("resolves a Hermes home path to the nested Windows agent install", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
+    tempDirs.push(dir);
+    const hermesHome = path.join(dir, "hermes");
+    const agentRoot = path.join(hermesHome, "hermes-agent");
+    await fs.mkdir(agentRoot, { recursive: true });
+    await fs.writeFile(path.join(hermesHome, "config.yaml"), "model: test\n", "utf8");
+    await fs.writeFile(path.join(hermesHome, "state.db"), "", "utf8");
+    await fs.writeFile(path.join(agentRoot, "pyproject.toml"), "[project]\nname='hermes-agent'\n", "utf8");
+    const configPath = path.join(dir, "config.json");
+    await fs.writeFile(configPath, JSON.stringify({
+      modelProfiles: [],
+      updateSources: {},
+      enginePaths: { hermes: hermesHome },
+      hermesRuntime: {
+        mode: "windows",
+        pythonCommand: "python3",
+        windowsAgentMode: "hermes_native",
+      },
+    }), "utf8");
+
+    const store = new RuntimeConfigStore(configPath);
+
+    await expect(store.getEnginePath("hermes")).resolves.toBe(process.platform === "win32" ? agentRoot : hermesHome);
+  });
+
+  it("keeps Windows default without startup probing when explicit detection is disabled", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
     runCommandMock
@@ -67,12 +143,12 @@ describe("RuntimeConfigStore preferred runtime", () => {
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("wsl");
+    expect(config.hermesRuntime?.mode).toBe("windows");
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
-      sourceLabel: "pinned",
-      repoUrl: "https://github.com/Mahiruxia/hermes-agent.git",
-      commit: "0537bad534a7ce43d683f06f8ebdf7ff9dfb4816",
+      sourceLabel: "official",
+      repoUrl: "https://github.com/NousResearch/hermes-agent.git",
+      branch: "main",
     });
   });
 

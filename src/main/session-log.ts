@@ -76,6 +76,7 @@ export class SessionLog {
     let latestInputTokens = 0;
     let latestOutputTokens = 0;
     let latestEstimatedCostUsd = 0;
+    let latestSource: "estimated" | "actual" = "estimated";
     let updatedAt = "";
 
     for (const file of files.filter((name) => name.endsWith(".jsonl"))) {
@@ -93,6 +94,7 @@ export class SessionLog {
             latestInputTokens = event.event.inputTokens;
             latestOutputTokens = event.event.outputTokens;
             latestEstimatedCostUsd = event.event.estimatedCostUsd;
+            latestSource = event.event.source === "actual" ? "actual" : "estimated";
             updatedAt = event.event.at;
           }
         } catch {
@@ -121,6 +123,7 @@ export class SessionLog {
       latestInputTokens,
       latestOutputTokens,
       latestEstimatedCostUsd,
+      source: latestSource,
       updatedAt,
     };
   }

@@ -102,6 +102,7 @@ function projectionStatusFromLifecycle(stage: Extract<EngineEvent, { type: "life
 
 function contentFromEngineEvent(event: EngineEvent): string | undefined {
   if (event.type === "stdout") return displayableAssistantContent(event.line);
+  if (event.type === "message_chunk") return displayableAssistantContent(event.content);
   if (event.type === "result") return displayableAssistantContent(event.detail);
   return undefined;
 }

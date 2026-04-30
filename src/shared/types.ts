@@ -296,6 +296,12 @@ export type WorkSession = {
   title: string;
   status: WorkSessionStatus;
   sessionFilesPath: string;
+  hermesSessionId?: string;
+  hermesSource?: string;
+  parentHermesSessionId?: string;
+  messageCount?: number;
+  model?: string;
+  lastSyncedAt?: string;
   workspacePath?: string;
   workspaceStatus?: "ready" | "missing" | "unselected";
   pinned?: boolean;
@@ -310,6 +316,18 @@ export type WorkSession = {
 
 export type SessionMetaPatch = Partial<Pick<WorkSession, "pinned" | "tags" | "status">> & {
   projectId?: string | null;
+};
+
+export type HermesCoreSession = {
+  id: string;
+  title?: string;
+  source?: string;
+  parentSessionId?: string;
+  model?: string;
+  messageCount?: number;
+  startedAt?: number;
+  endedAt?: number;
+  lastActive?: number;
 };
 
 export type SessionAgentInsightRuntime = {
@@ -330,6 +348,7 @@ export type SessionAgentInsightUsage = {
   latestInputTokens: number;
   latestOutputTokens: number;
   latestEstimatedCostUsd: number;
+  source?: "estimated" | "actual";
   updatedAt: string;
 };
 
@@ -981,11 +1000,14 @@ export type TaskLifecycleStage = "queued" | "preflight" | "snapshot" | "running"
 export type EngineEvent =
   | { type: "status"; level: "info" | "success" | "warning" | "error"; message: string; at: string }
   | { type: "lifecycle"; stage: TaskLifecycleStage; message: string; at: string }
+  | { type: "message_chunk"; content: string; at: string }
+  | { type: "reasoning"; content: string; at: string }
+  | { type: "session_update"; hermesSessionId: string; previousHermesSessionId?: string; title?: string; messageCount?: number; model?: string; at: string }
   | { type: "progress"; step: string; done: boolean; message: string; at: string }
   | { type: "diagnostic"; category: string; message: string; provider?: string; model?: string; authMode?: string; durationMs?: number; at: string }
   | { type: "stdout"; line: string; at: string }
   | { type: "stderr"; line: string; at: string }
-  | { type: "usage"; inputTokens: number; outputTokens: number; estimatedCostUsd: number; message: string; at: string }
+  | { type: "usage"; inputTokens: number; outputTokens: number; estimatedCostUsd: number; message: string; at: string; source?: "estimated" | "actual"; totalTokens?: number; promptTokens?: number; completionTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number }
   | { type: "tool_call"; toolName: string; argsPreview: string; callId?: string; status?: "running" | "complete" | "failed"; summary?: string; at: string }
   | { type: "tool_result"; toolName: string; outputPreview?: string; callId?: string; success?: boolean; status?: "running" | "complete" | "failed"; summary?: string; at: string }
   | { type: "file_change"; path: string; changeType: "create" | "update" | "delete"; at: string }
@@ -1156,10 +1178,36 @@ export type SetupCheck = {
   blocking?: boolean;
 };
 
+export type HermesCompatibilityReport = {
+  installed: boolean;
+  version?: string;
+  cliPath?: string;
+  rootPath?: string;
+  launchMode: "venv-exe" | "source-python" | "unknown";
+  venvStatus: "present" | "missing" | "unknown";
+  forgeTaskReady: boolean;
+  enhancedCapabilities: {
+    supported: boolean;
+    cliVersion?: string;
+    supportsLaunchMetadataArg: boolean;
+    supportsLaunchMetadataEnv: boolean;
+    supportsResume: boolean;
+    missing: string[];
+    message: string;
+  };
+  doctorStatus: {
+    status: "not_run" | "pass" | "warning" | "fail";
+    message: string;
+  };
+  blockingIssues: string[];
+  warnings: string[];
+};
+
 export type SetupSummary = {
   ready: boolean;
   blocking: SetupCheck[];
   checks: SetupCheck[];
+  hermesCompatibility?: HermesCompatibilityReport;
 };
 
 export type SetupDependencyRepairResult = {
@@ -1216,6 +1264,42 @@ export type HermesExistingConfigImportResult = {
   importedSecretRefs: string[];
   warnings: string[];
   message: string;
+};
+
+export type LegacyWslMigrationSource = {
+  id: string;
+  distro?: string;
+  homePath: string;
+  kind: "wsl_unc" | "manual_path";
+  hasConfig: boolean;
+  hasEnv: boolean;
+  skillsCount: number;
+  message: string;
+};
+
+export type LegacyWslMigrationPreview = {
+  ok: boolean;
+  source?: LegacyWslMigrationSource;
+  sources: LegacyWslMigrationSource[];
+  importable: {
+    model: boolean;
+    connectors: boolean;
+    skillsCount: number;
+  };
+  warnings: string[];
+  message: string;
+};
+
+export type LegacyWslMigrationImportOptions = {
+  sourcePath?: string;
+  overwriteSkills?: boolean;
+};
+
+export type LegacyWslMigrationReport = HermesExistingConfigImportResult & {
+  source?: LegacyWslMigrationSource;
+  importedSkills: string[];
+  skippedSkills: string[];
+  skillConflicts: string[];
 };
 
 export type ModelSourceType =
@@ -1396,210 +1480,6 @@ export type HermesInstallEvent = {
   progress: number;
   startedAt: string;
   at: string;
-};
-
-export type ManagedWslInstallerState =
-  | "doctor_started"
-  | "doctor_blocked"
-  | "repair_planned"
-  | "repair_executing"
-  | "distro_ready"
-  | "hermes_install_started"
-  | "hermes_install_blocked"
-  | "hermes_install_failed"
-  | "hermes_install_ready"
-  | "completed";
-
-export type ManagedWslInstallerCode =
-  | "python_missing"
-  | "git_missing"
-  | "pip_missing"
-  | "venv_unavailable"
-  | "repo_invalid"
-  | "repo_clone_failed"
-  | "pip_install_failed"
-  | "hermes_healthcheck_failed"
-  | "bridge_unreachable"
-  | "distro_unavailable"
-  | "unsupported"
-  | "manual_action_required"
-  | "ok";
-
-export type ManagedWslInstallerPhase =
-  | "doctor"
-  | "repair"
-  | "distro"
-  | "install"
-  | "health_check"
-  | "completed";
-
-export type ManagedWslInstallerStatus =
-  | "pending"
-  | "running"
-  | "blocked"
-  | "failed"
-  | "ready"
-  | "completed"
-  | "skipped";
-
-export type ManagedWslInstallerResumeStage =
-  | "doctor"
-  | "repair"
-  | "create_distro"
-  | "ensure_python"
-  | "ensure_repo"
-  | "ensure_venv"
-  | "pip_install"
-  | "health_check";
-
-export type ManagedWslInstallerRecoveryDisposition =
-  | "retryable"
-  | "non_retryable"
-  | "manual_action_required";
-
-export type ManagedWslInstallerRecoveryAction =
-  | "retry_install"
-  | "retry_create_distro"
-  | "run_dry_run_repair"
-  | "run_execute_repair"
-  | "restart_bridge_and_retry"
-  | "manual_create_distro"
-  | "manual_repo_cleanup"
-  | "manual_fix_then_retry"
-  | "export_diagnostics"
-  | "none";
-
-export type ManagedWslInstallerDependencyId = "python3" | "git" | "pip" | "venv";
-
-export type ManagedWslInstallerDependencyStatus =
-  | "unknown"
-  | "ok"
-  | "missing"
-  | "repair_planned"
-  | "repair_executing"
-  | "repaired"
-  | "manual_action_required"
-  | "failed";
-
-export type ManagedWslInstallerStepResult = {
-  phase: ManagedWslInstallerPhase;
-  step: string;
-  status: ManagedWslInstallerStatus;
-  code: ManagedWslInstallerCode;
-  summary: string;
-  detail?: string;
-  fixHint?: string;
-  debugContext?: Record<string, unknown>;
-};
-
-export type ManagedWslInstallerDependencyResult = {
-  dependency: ManagedWslInstallerDependencyId;
-  status: ManagedWslInstallerDependencyStatus;
-  code: ManagedWslInstallerCode;
-  summary: string;
-  detail?: string;
-  fixHint?: string;
-  debugContext?: Record<string, unknown>;
-};
-
-export type ManagedWslInstallerRecovery = {
-  failureStage: ManagedWslInstallerResumeStage;
-  disposition: ManagedWslInstallerRecoveryDisposition;
-  code: string;
-  summary: string;
-  detail?: string;
-  fixHint?: string;
-  nextAction: ManagedWslInstallerRecoveryAction;
-  debugContext?: Record<string, unknown>;
-};
-
-export type ManagedWslInstallerFailureCommand = {
-  commandSummary: string;
-  commandId?: string;
-  exitCode?: number | null;
-  stdoutPreview?: string;
-  stderrPreview?: string;
-};
-
-export type ManagedWslInstallerFailureArtifacts = {
-  failedCommand?: ManagedWslInstallerFailureCommand;
-  distroName?: string;
-  managedRoot?: string;
-  repoStatus?: Record<string, unknown>;
-  venvStatus?: Record<string, unknown>;
-  bridgeStatus?: Record<string, unknown>;
-  lastSuccessfulStage?: ManagedWslInstallerResumeStage;
-  recommendedRecoveryAction?: ManagedWslInstallerRecoveryAction;
-};
-
-export type ManagedWslInstallerReport = {
-  startedAt: string;
-  finishedAt: string;
-  finalInstallerState: ManagedWslInstallerState;
-  phase: ManagedWslInstallerPhase;
-  step: string;
-  status: ManagedWslInstallerStatus;
-  code: ManagedWslInstallerCode;
-  summary: string;
-  detail?: string;
-  fixHint?: string;
-  debugContext?: Record<string, unknown>;
-  current: ManagedWslInstallerStepResult;
-  timeline: ManagedWslInstallerStepResult[];
-  distroName?: string;
-  managedRoot?: string;
-  hermesSource?: HermesInstallSourceConfig;
-  hermesCommit?: string;
-  hermesVersion?: string;
-  hermesCapabilityProbe?: {
-    minimumSatisfied: boolean;
-    cliVersion?: string;
-    missing?: string[];
-    supportsLaunchMetadataArg: boolean;
-    supportsLaunchMetadataEnv: boolean;
-    supportsResume: boolean;
-  };
-  pythonStatus: ManagedWslInstallerDependencyResult;
-  gitStatus: ManagedWslInstallerDependencyResult;
-  pipStatus: ManagedWslInstallerDependencyResult;
-  venvStatus: ManagedWslInstallerDependencyResult;
-  repoStatus: ManagedWslInstallerStepResult;
-  installStatus: ManagedWslInstallerStepResult;
-  healthStatus: ManagedWslInstallerStepResult;
-  reprobeStatus?: "ready" | "degraded" | "missing_dependency" | "misconfigured" | "unavailable";
-  reDoctorStatus?: "ready_to_attach_existing_wsl" | "repair_needed" | "manual_setup_required" | "unsupported";
-  resumedFromStage?: ManagedWslInstallerResumeStage;
-  lastSuccessfulStage?: ManagedWslInstallerResumeStage;
-  recovery?: ManagedWslInstallerRecovery;
-  nextRecommendedStep?: ManagedWslInstallerRecoveryAction;
-  failureArtifacts?: ManagedWslInstallerFailureArtifacts;
-  lastDoctor?: Record<string, unknown>;
-  lastDryRunRepair?: Record<string, unknown>;
-  lastRepairExecution?: Record<string, unknown>;
-  lastCreateDistro?: Record<string, unknown>;
-  lastHermesInstall?: Record<string, unknown>;
-  reportPath?: string;
-};
-
-export type ManagedWslInstallerAction =
-  | "plan"
-  | "dry_run_repair"
-  | "execute_repair"
-  | "install"
-  | "get_last_report";
-
-export type ManagedWslInstallerIpcResult = {
-  ok: boolean;
-  action: ManagedWslInstallerAction;
-  phase: ManagedWslInstallerPhase;
-  step: string;
-  status: ManagedWslInstallerStatus;
-  code: ManagedWslInstallerCode;
-  summary: string;
-  detail?: string;
-  fixHint?: string;
-  debugContext?: Record<string, unknown>;
-  report?: ManagedWslInstallerReport;
 };
 
 export type EngineProbeMetric = {

@@ -12,7 +12,6 @@ import type {
   HermesWebUiSettings,
   HermesStatusSummary,
   ModelConnectionTestResult,
-  ManagedWslInstallerIpcResult,
   OneClickDiagnosticsExportResult,
   OneClickDiagnosticsReport,
   OneClickDiagnosticsRunOptions,
@@ -36,6 +35,7 @@ import type {
   TaskEventEnvelope,
   TaskStartResult,
   WorkSession,
+  HermesCoreSession,
   ProjectGroup,
   WorkspaceSpace,
   HermesSkill,
@@ -54,6 +54,9 @@ import type {
   HermesInstallResult,
   HermesProfile,
   HermesExistingConfigImportResult,
+  LegacyWslMigrationImportOptions,
+  LegacyWslMigrationPreview,
+  LegacyWslMigrationReport,
   FilePreviewResult,
   FileBreadcrumbItem,
   WeixinQrLoginResult,
@@ -97,6 +100,11 @@ const IpcChannels = {
   importCliSession: "sessions:import-cli",
   clearSessionFiles: "sessions:clear-files",
   openSessionFolder: "sessions:open-folder",
+  hermesCoreSessionsList: "hermes-core:sessions:list",
+  hermesCoreSessionRead: "hermes-core:sessions:read",
+  hermesCoreSessionCreate: "hermes-core:sessions:create",
+  hermesCoreSessionRename: "hermes-core:sessions:rename",
+  hermesCoreSessionDelete: "hermes-core:sessions:delete",
   listProjects: "webui:projects:list",
   saveProject: "webui:projects:save",
   deleteProject: "webui:projects:delete",
@@ -139,15 +147,14 @@ const IpcChannels = {
   installHermes: "setup:install-hermes",
   installHermesEvent: "setup:install-hermes:event",
   repairSetupDependency: "setup:repair-dependency",
-  installerPlan: "installer:plan",
-  installerDryRunRepair: "installer:dry-run-repair",
-  installerExecuteRepair: "installer:execute-repair",
-  installerInstall: "installer:install",
-  installerGetLastReport: "installer:get-last-report",
   getRuntimeConfig: "config:get-runtime",
   getConfigOverview: "config:get-overview",
   getPermissionOverview: "runtime:get-permission-overview",
   importExistingHermesConfig: "config:import-existing-hermes",
+  legacyWslMigrationDetect: "legacy-wsl-migration:detect",
+  legacyWslMigrationPreview: "legacy-wsl-migration:preview",
+  legacyWslMigrationImport: "legacy-wsl-migration:import",
+  legacyWslMigrationGetLastReport: "legacy-wsl-migration:get-last-report",
   testHermesWindowsBridge: "hermes:windows-bridge:test",
   testHermesSystemAudit: "hermes:system-audit:test",
   updateHermesConfig: "config:update-hermes",
@@ -250,6 +257,16 @@ const api = {
   clearSessionFiles: (id: string) =>
     ipcRenderer.invoke(IpcChannels.clearSessionFiles, id) as Promise<{ ok: boolean; message: string; session: WorkSession }>,
   openSessionFolder: (id: string) => ipcRenderer.invoke(IpcChannels.openSessionFolder, id) as Promise<{ ok: boolean; message: string }>,
+  hermesCoreSessionsList: (limit?: number) =>
+    ipcRenderer.invoke(IpcChannels.hermesCoreSessionsList, limit) as Promise<HermesCoreSession[]>,
+  hermesCoreSessionRead: (id: string) =>
+    ipcRenderer.invoke(IpcChannels.hermesCoreSessionRead, id) as Promise<{ session?: HermesCoreSession; messages: Array<{ role: "user" | "assistant"; content: string }> } | undefined>,
+  hermesCoreSessionCreate: (input?: { sessionId?: string; title?: string; source?: string; model?: string; parentSessionId?: string }) =>
+    ipcRenderer.invoke(IpcChannels.hermesCoreSessionCreate, input) as Promise<HermesCoreSession>,
+  hermesCoreSessionRename: (id: string, title: string) =>
+    ipcRenderer.invoke(IpcChannels.hermesCoreSessionRename, id, title) as Promise<boolean>,
+  hermesCoreSessionDelete: (id: string) =>
+    ipcRenderer.invoke(IpcChannels.hermesCoreSessionDelete, id) as Promise<boolean>,
   getWebUiOverview: () => ipcRenderer.invoke(IpcChannels.getWebUiOverview) as Promise<HermesWebUiOverview>,
   getWebUiSettings: () => ipcRenderer.invoke(IpcChannels.getWebUiSettings) as Promise<HermesWebUiSettings>,
   saveWebUiSettings: (input: Partial<HermesWebUiSettings>) =>
@@ -320,16 +337,6 @@ const api = {
   installHermes: (options?: { rootPath?: string }) => ipcRenderer.invoke(IpcChannels.installHermes, options) as Promise<HermesInstallResult>,
   repairSetupDependency: (id: SetupDependencyRepairId) =>
     ipcRenderer.invoke(IpcChannels.repairSetupDependency, id) as Promise<SetupDependencyRepairResult>,
-  installerPlan: () =>
-    ipcRenderer.invoke(IpcChannels.installerPlan) as Promise<ManagedWslInstallerIpcResult>,
-  installerDryRunRepair: () =>
-    ipcRenderer.invoke(IpcChannels.installerDryRunRepair) as Promise<ManagedWslInstallerIpcResult>,
-  installerExecuteRepair: () =>
-    ipcRenderer.invoke(IpcChannels.installerExecuteRepair) as Promise<ManagedWslInstallerIpcResult>,
-  installerInstall: () =>
-    ipcRenderer.invoke(IpcChannels.installerInstall) as Promise<ManagedWslInstallerIpcResult>,
-  installerGetLastReport: () =>
-    ipcRenderer.invoke(IpcChannels.installerGetLastReport) as Promise<ManagedWslInstallerIpcResult>,
   onInstallHermesEvent: (callback: (event: HermesInstallEvent) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: HermesInstallEvent) => callback(payload);
     ipcRenderer.on(IpcChannels.installHermesEvent, wrapped);
@@ -339,6 +346,14 @@ const api = {
   getPermissionOverview: () => ipcRenderer.invoke(IpcChannels.getPermissionOverview) as Promise<PermissionOverview>,
   getConfigOverview: (workspacePath?: string) => ipcRenderer.invoke(IpcChannels.getConfigOverview, workspacePath) as Promise<any>,
   importExistingHermesConfig: () => ipcRenderer.invoke(IpcChannels.importExistingHermesConfig) as Promise<HermesExistingConfigImportResult>,
+  legacyWslMigrationDetect: () =>
+    ipcRenderer.invoke(IpcChannels.legacyWslMigrationDetect) as Promise<LegacyWslMigrationPreview>,
+  legacyWslMigrationPreview: (sourcePath?: string) =>
+    ipcRenderer.invoke(IpcChannels.legacyWslMigrationPreview, sourcePath) as Promise<LegacyWslMigrationPreview>,
+  legacyWslMigrationImport: (options?: LegacyWslMigrationImportOptions) =>
+    ipcRenderer.invoke(IpcChannels.legacyWslMigrationImport, options) as Promise<LegacyWslMigrationReport>,
+  legacyWslMigrationGetLastReport: () =>
+    ipcRenderer.invoke(IpcChannels.legacyWslMigrationGetLastReport) as Promise<LegacyWslMigrationReport | undefined>,
   testHermesWindowsBridge: () =>
     ipcRenderer.invoke(IpcChannels.testHermesWindowsBridge) as Promise<HermesWindowsBridgeTestResult>,
   testHermesSystemAudit: () =>

@@ -42,7 +42,6 @@ export function mapSourceTypeToHermesProvider(sourceType?: ModelSourceType | str
 export function resolveHermesProvider(input: { provider: string; sourceType?: ModelSourceType | string }): string {
   const mapped = mapSourceTypeToHermesProvider(input.sourceType);
   if (mapped) return mapped;
-  if (input.provider === "openai") return "openrouter";
   if (input.provider === "copilot_acp") return "copilot-acp";
   return input.provider;
 }
@@ -158,6 +157,7 @@ type LegacyRuntimeConfig = Partial<RuntimeConfig> & {
 };
 
 const PROVIDERS: ProviderId[] = ["openai", "anthropic", "openrouter", "gemini", "deepseek", "huggingface", "copilot", "copilot_acp", "local", "custom"];
+const MIN_PRIMARY_AGENT_CONTEXT = 16_000;
 
 export function stableModelProfileId(input: Pick<ModelProfile, "provider" | "model"> & { baseUrl?: string }) {
   const key = modelIdentityKey(input.provider, input.model, input.baseUrl);
@@ -231,6 +231,14 @@ function normalizeLegacyModelProfile(input: unknown): ModelProfile | undefined {
     ...(sourceType ? { sourceType } : {}),
     ...(baseUrl ? { baseUrl } : {}),
   };
+  return normalizeWindowsNativeAgentRole(profile);
+}
+
+function normalizeWindowsNativeAgentRole(profile: ModelProfile): ModelProfile {
+  const hasEnoughContext = typeof profile.maxTokens !== "number" || profile.maxTokens >= MIN_PRIMARY_AGENT_CONTEXT;
+  if (profile.agentRole === "auxiliary_model" && profile.supportsTools === false && hasEnoughContext) {
+    return { ...profile, agentRole: "primary_agent" };
+  }
   return profile;
 }
 

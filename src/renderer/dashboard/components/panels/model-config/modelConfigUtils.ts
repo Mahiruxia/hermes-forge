@@ -179,7 +179,7 @@ export function healthStepLabel(stepId: NonNullable<ModelConnectionTestResult["h
   if (stepId === "chat") return "对话测试";
   if (stepId === "agent_capability") return "Agent 能力评估";
   if (stepId === "runtime") return "运行环境";
-  if (stepId === "wsl_network") return "WSL 网络连通";
+  if (stepId === "wsl_network") return "旧 WSL 网络连通";
   return stepId;
 }
 

@@ -251,7 +251,7 @@ function DiscoveryPanel(props: { discovery: LocalModelDiscoveryResult; onApply: 
       <p className="font-semibold text-slate-900">{props.discovery.ok ? "发现可用本地接口" : "未发现本地接口"}</p>
       {hasLocalhost ? (
         <p className="mt-2 rounded-xl bg-amber-50/70 px-3 py-2 text-amber-800 ring-1 ring-amber-200/60">
-          检测到 localhost 地址。如果你使用 WSL 模式，请确认该服务已绑定到 0.0.0.0，否则 Hermes 可能无法连接。
+          检测到 localhost 地址。Windows Native Hermes 会直接访问本机服务，请确认模型服务正在运行并监听该端口。
         </p>
       ) : null}
       <div className="mt-2 grid gap-2">

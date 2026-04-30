@@ -57,7 +57,7 @@ describe("AgentRunPanel", () => {
 
     expect(screen.getByText("Agent 运行面板")).toBeInTheDocument();
     expect(screen.getByText("当前模型")).toBeInTheDocument();
-    expect(screen.getByText("Token 监控")).toBeInTheDocument();
+    expect(screen.getByText("Token 估算")).toBeInTheDocument();
     expect(screen.getByText("工具状态")).toBeInTheDocument();
     expect(screen.getByText("会话记忆")).toBeInTheDocument();
     expect(screen.getByText("任务进度")).toBeInTheDocument();
@@ -67,7 +67,7 @@ describe("AgentRunPanel", () => {
     expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
     expect(screen.getByText("128K")).toBeInTheDocument();
     expect(screen.getByText("0.6")).toBeInTheDocument();
-    expect(screen.getByText("暂无 Token 采样，运行任务后自动汇总。")).toBeInTheDocument();
+    expect(screen.getByText("暂无 Token 估算，运行任务后自动汇总。")).toBeInTheDocument();
     expect(screen.getByText("详细用量已隐藏")).toBeInTheDocument();
   });
 
@@ -119,9 +119,9 @@ describe("AgentRunPanel", () => {
 
     render(<AgentRunPanel open />);
 
-    expect(screen.getByText("2.5K total")).toBeInTheDocument();
+    expect(screen.getByText("约 2.5K")).toBeInTheDocument();
     expect(screen.getByText("$0.01")).toBeInTheDocument();
-    expect(screen.getByText("最近一次：1.2K in / 800 out")).toBeInTheDocument();
+    expect(screen.getByText("最近一次估算：1.2K in / 800 out")).toBeInTheDocument();
     expect(screen.getByText("38%")).toBeInTheDocument();
     expect(screen.getByText("48K / 128K")).toBeInTheDocument();
     expect(screen.getByText("当前会话主要讨论图像内容识别与模型信息查询。")).toBeInTheDocument();
@@ -138,8 +138,8 @@ describe("AgentRunPanel", () => {
 
     render(<AgentRunPanel open />);
 
-    expect(screen.getByText("1.4K total")).toBeInTheDocument();
-    expect(screen.queryByText("2.1K total")).toBeNull();
+    expect(screen.getByText("约 1.4K")).toBeInTheDocument();
+    expect(screen.queryByText("约 2.1K")).toBeNull();
   });
 
   it("marks file and memory activity in tool status", () => {
@@ -192,7 +192,7 @@ describe("AgentRunPanel", () => {
 
     render(<AgentRunPanel open />);
 
-    expect(screen.getByText("800 total")).toBeInTheDocument();
+    expect(screen.getByText("约 800")).toBeInTheDocument();
     expect(screen.getByText("$0.0040")).toBeInTheDocument();
     expect(screen.getByText("32K / 128K")).toBeInTheDocument();
     expect(screen.getByText("这是从后端会话洞察恢复的摘要。")).toBeInTheDocument();
