@@ -20,6 +20,7 @@ let healthCheckMock: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-setup-service-"));
+  vi.stubEnv("LOCALAPPDATA", tempRoot);
   config = { modelProfiles: [], updateSources: {}, enginePaths: {} };
   healthCheckMock = vi.fn(async () => ({
     engineId: "hermes",
@@ -107,13 +108,12 @@ describe("SetupService installHermes", () => {
     const result = await service.installHermes();
 
     expect(result.ok).toBe(false);
-    expect(result.rootPath).toBe(path.join(os.homedir(), "Hermes Agent"));
+    expect(result.rootPath).toBe(defaultWindowsInstallRoot());
     expect(config.enginePaths?.hermes).toBeUndefined();
   });
 
   it("auto-recovers the default install directory when a stale managed clone is left behind", async () => {
-    const rootPath = path.join(tempRoot, "Hermes Agent");
-    vi.spyOn(os, "homedir").mockReturnValue(tempRoot);
+    const rootPath = defaultWindowsInstallRoot();
     await fs.mkdir(rootPath, { recursive: true });
     await fs.writeFile(path.join(rootPath, ".git"), "gitdir", "utf8");
     await fs.writeFile(path.join(rootPath, "README.md"), "partial", "utf8");
@@ -141,8 +141,8 @@ describe("SetupService installHermes", () => {
     expect(result.rootPath).toBe(rootPath);
     expect(config.enginePaths?.hermes).toBe(rootPath);
     await expect(fs.readFile(path.join(rootPath, "hermes"), "utf8")).resolves.toContain("#!/usr/bin/env python");
-    const siblings = await fs.readdir(tempRoot);
-    expect(siblings.some((entry) => entry.startsWith("Hermes Agent.stale-"))).toBe(true);
+    const siblings = await fs.readdir(path.dirname(rootPath));
+    expect(siblings.some((entry) => entry.startsWith("hermes-agent.stale-"))).toBe(true);
   });
 
   it("publishes staged install progress for the first-run UI", async () => {
@@ -160,7 +160,7 @@ describe("SetupService installHermes", () => {
         label: "Hermes",
         available: true,
         mode: "cli",
-        path: path.join(tempRoot, "Hermes Agent"),
+        path: defaultWindowsInstallRoot(),
         message: "Hermes CLI ready",
       });
     const events: string[] = [];
@@ -239,9 +239,8 @@ describe("SetupService installHermes", () => {
   });
 
   it("uses the Python launcher when python is unavailable but py -3 works", async () => {
-    vi.spyOn(os, "homedir").mockReturnValue(tempRoot);
     const service = createService();
-    const rootPath = path.join(tempRoot, "Hermes Agent");
+    const rootPath = defaultWindowsInstallRoot();
     healthCheckMock
       .mockResolvedValueOnce({
         engineId: "hermes",
@@ -294,6 +293,12 @@ describe("SetupService installHermes", () => {
     );
   });
 });
+
+function defaultWindowsInstallRoot() {
+  return process.platform === "win32"
+    ? path.join(tempRoot, "hermes", "hermes-agent")
+    : path.join(os.homedir(), "Hermes Agent");
+}
 
 describe("SetupService dependency health", () => {
   it("marks missing Git and Python as first-run repairable dependencies", async () => {

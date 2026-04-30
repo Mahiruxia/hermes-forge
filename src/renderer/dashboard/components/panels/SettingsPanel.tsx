@@ -28,18 +28,14 @@ import type {
   WindowsAgentMode,
   WindowsBridgeStatus,
 } from "../../../../shared/types";
-import { ManagedWslInstallerPanel } from "./ManagedWslInstallerPanel";
 import { POLICY_OPTIONS, bridgeCapabilityRows, enforcementMatrix, policyBlockReason } from "../../permissionModel";
 import { usePermissionOverview } from "../../../hooks/usePermissionOverview";
+import { buildHermesSetupViewModel, type HermesSetupAction } from "../settings/hermesSetupViewModel";
 
-type RuntimeChoice = "auto" | "wsl" | "windows";
-type InstallState = "installed" | "missing" | "broken" | "checking";
-type ConnectionState = "normal" | "error" | "unknown";
-type HealthState = "passed" | "error" | "checking";
 type Tone = "ok" | "warn" | "danger" | "neutral";
 
 const RECOMMENDED_RUNTIME: HermesRuntimeConfig = {
-  mode: "wsl",
+  mode: "windows",
   pythonCommand: "python3",
   windowsAgentMode: "hermes_native",
   cliPermissionMode: "guarded",
@@ -54,7 +50,6 @@ export function SettingsPanel(props: {
   onOpenSessionFolder: () => void;
 }) {
   const store = useAppStore();
-  const [runtimeChoice, setRuntimeChoice] = useState<RuntimeChoice>("auto");
   const [runtime, setRuntime] = useState<HermesRuntimeConfig>(RECOMMENDED_RUNTIME);
   const [rootPath, setRootPath] = useState("");
   const [bridge, setBridge] = useState<WindowsBridgeStatus | undefined>();
@@ -66,6 +61,7 @@ export function SettingsPanel(props: {
   const [testingBridge, setTestingBridge] = useState(false);
   const [bridgeTest, setBridgeTest] = useState<HermesWindowsBridgeTestResult | undefined>();
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const permissionOverview = usePermissionOverview({ autoLoad: false });
 
@@ -85,7 +81,6 @@ export function SettingsPanel(props: {
     const overview = await window.workbenchClient.getConfigOverview().catch(() => undefined);
     const nextRuntime = overview?.hermes?.runtime ?? store.runtimeConfig?.hermesRuntime ?? RECOMMENDED_RUNTIME;
     setRuntime(withRuntimeDefaults(nextRuntime));
-    setRuntimeChoice(nextRuntime.mode === "windows" ? "windows" : "auto");
     setRootPath(overview?.hermes?.rootPath ?? "");
     setBridge(overview?.hermes?.bridge);
     if (overview?.runtimeConfig) store.setRuntimeConfig(overview.runtimeConfig);
@@ -110,7 +105,6 @@ export function SettingsPanel(props: {
   async function saveRuntime(nextRuntime = effectiveRuntime()) {
     const previousRuntime = runtime;
     const previousRootPath = rootPath;
-    const previousRuntimeChoice = runtimeChoice;
     const previousConfig = store.runtimeConfig;
     if (previousConfig) {
       store.setRuntimeConfig({ ...previousConfig, hermesRuntime: nextRuntime });
@@ -129,7 +123,6 @@ export function SettingsPanel(props: {
     } catch (error) {
       setRuntime(previousRuntime);
       setRootPath(previousRootPath);
-      setRuntimeChoice(previousRuntimeChoice);
       if (previousConfig) store.setRuntimeConfig(previousConfig);
       store.error("保存失败", error instanceof Error ? error.message : "未知错误");
     } finally {
@@ -158,15 +151,9 @@ export function SettingsPanel(props: {
     setInstallEvent(undefined);
     try {
       const nextRuntime = effectiveRuntime();
-      const saved = await window.workbenchClient.updateHermesConfig(
-        nextRuntime.mode === "windows"
-          ? { rootPath, runtime: nextRuntime }
-          : { runtime: nextRuntime },
-      );
+      const saved = await window.workbenchClient.updateHermesConfig({ rootPath, runtime: nextRuntime });
       store.setRuntimeConfig(saved);
-      const result = await window.workbenchClient.installHermes(
-        nextRuntime.mode === "windows" && rootPath.trim() ? { rootPath: rootPath.trim() } : undefined,
-      );
+      const result = await window.workbenchClient.installHermes(rootPath.trim() ? { rootPath: rootPath.trim() } : undefined);
       if (result.rootPath) setRootPath(result.rootPath);
       await reloadOverview();
       await props.onRefresh();
@@ -206,9 +193,43 @@ export function SettingsPanel(props: {
       installSource: runtime.installSource,
     };
     setRuntime(next);
-    setRuntimeChoice("auto");
     setMoreOpen(false);
     await saveRuntime(next);
+  }
+
+  async function updateHermesAgent() {
+    if (installingHermes) return;
+    setInstallingHermes(true);
+    setInstallEvent(undefined);
+    try {
+      const result = await window.workbenchClient.updateHermes();
+      await reloadOverview();
+      await props.onRefresh();
+      if (result.ok) store.success("Hermes Agent 已更新", result.message);
+      else store.warning("Hermes Agent 仍需处理", result.message);
+    } catch (error) {
+      store.error("Hermes Agent 更新失败", error instanceof Error ? error.message : "未知错误");
+    } finally {
+      setInstallingHermes(false);
+    }
+  }
+
+  function handlePrimaryAction(action: HermesSetupAction) {
+    if (action === "install" || action === "repair") {
+      void installHermes();
+      return;
+    }
+    if (action === "update") {
+      void updateHermesAgent();
+      return;
+    }
+    if (action === "diagnose") {
+      setDetailsOpen(true);
+      return;
+    }
+    if (action === "refresh") {
+      void refreshAll();
+    }
   }
 
   async function testBridge() {
@@ -225,27 +246,19 @@ export function SettingsPanel(props: {
   }
 
   function effectiveRuntime(): HermesRuntimeConfig {
-    if (runtimeChoice === "auto") {
-      return {
-        ...runtime,
-        mode: "wsl",
-        pythonCommand: runtime.pythonCommand?.trim() || "python3",
-        windowsAgentMode: runtime.windowsAgentMode ?? "hermes_native",
-        cliPermissionMode: runtime.cliPermissionMode ?? "guarded",
-        permissionPolicy: runtime.permissionPolicy ?? "bridge_guarded",
-        workerMode: runtime.workerMode ?? "off",
-      };
-    }
     return {
       ...runtime,
-      mode: runtimeChoice,
+      mode: "windows",
+      distro: undefined,
       pythonCommand: runtime.pythonCommand?.trim() || "python3",
-      workerMode: runtime.workerMode ?? "off",
+      windowsAgentMode: runtime.windowsAgentMode ?? "hermes_native",
+      cliPermissionMode: runtime.cliPermissionMode ?? "guarded",
+      permissionPolicy: runtime.permissionPolicy ?? "bridge_guarded",
+      workerMode: "off",
     };
   }
 
-  const status = useMemo(() => computeStatus({
-    runtimeChoice,
+  const status = useMemo(() => buildHermesSetupViewModel({
     runtime,
     rootPath,
     bridge,
@@ -253,10 +266,9 @@ export function SettingsPanel(props: {
     permissionOverview: permissionOverview.data,
     permissionError: permissionOverview.error,
     hermesAvailable: store.hermesStatus?.engine.available,
-    setupBlockingCount: store.setupSummary?.blocking.length ?? 0,
+    setupBlocking: store.setupSummary?.blocking ?? [],
     setupLoading: refreshing || permissionOverview.loading,
   }), [
-    runtimeChoice,
     runtime,
     rootPath,
     bridge,
@@ -274,19 +286,17 @@ export function SettingsPanel(props: {
   const bridgeCapabilities = permissionOverview.data ? overviewBridgeCapabilities(permissionOverview.data) : bridgeCapabilityRows(bridge, effectiveRuntime());
   return (
     <div className="space-y-3">
-      <HeroStatus
-        title={status.summaryTitle}
-        description={status.summaryDetail}
-        tone={status.summaryTone}
-        primaryLabel="一键修复"
+      <AgentActionCard
+        status={status}
+        detailsOpen={detailsOpen}
+        onToggleDetails={() => setDetailsOpen((value) => !value)}
         primaryLoading={installingHermes}
-        onPrimary={installHermes}
-        secondaryLabel="刷新状态"
+        onPrimary={() => handlePrimaryAction(status.primaryAction)}
         secondaryLoading={refreshing}
         onSecondary={refreshAll}
       />
 
-      {status.summaryTone === "danger" ? (
+      {status.tone === "danger" || status.tone === "warn" ? (
         <div className="flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
           <BookOpen size={14} />
           <span>自动安装遇到问题？</span>
@@ -301,18 +311,11 @@ export function SettingsPanel(props: {
         </div>
       ) : null}
 
-      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <StatusCard title="运行环境" value={status.runtime.value} detail={status.runtime.detail} tone={status.runtime.tone} />
-        <StatusCard title="安装状态" value={status.install.value} detail={status.install.detail} tone={status.install.tone} />
-        <StatusCard title="连接状态" value={status.connection.value} detail={status.connection.detail} tone={status.connection.tone} />
-        <StatusCard title="健康检查" value={status.health.value} detail={status.health.detail} tone={status.health.tone} />
-      </section>
-
       <section className="rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
         <SectionHeader
           icon={Settings}
-          title="基础设置"
-          description="日常使用只需要关注这里。推荐保持自动选择。"
+          title="Agent"
+          description="安装位置、Hermes home 与本机 Agent 状态。日常只需要关注这里。"
           action={(
             <div className="relative">
               <button
@@ -334,30 +337,10 @@ export function SettingsPanel(props: {
         />
 
         <div className="mt-4 space-y-3">
-          <div>
-            <FieldLabel label="运行环境" hint="自动选择会优先使用更稳定的 WSL 环境，普通用户推荐保持此项。" />
-            <SegmentedControl
-              value={runtimeChoice}
-              options={[
-                { value: "auto", label: "自动选择（推荐）" },
-                { value: "wsl", label: "WSL" },
-                { value: "windows", label: "Windows" },
-              ]}
-              onChange={(value) => setRuntimeChoice(value)}
-            />
-            <p className="mt-1 text-xs leading-4 text-slate-500">
-              {runtimeChoice === "auto"
-                ? `Forge 会自动选择运行方式。当前推荐：${runtime.mode === "windows" ? "Windows" : "WSL"}。`
-                : runtimeChoice === "wsl"
-                  ? "推荐。Hermes 会在 WSL 内运行，更接近原生 Linux 环境。"
-                  : "仅在不使用 WSL 时选择。部分能力可能不如 WSL 稳定。"}
-            </p>
-          </div>
-
           <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <div className="min-w-0">
-                <FieldLabel label="安装位置" hint="Forge 会在这里查找或安装 Hermes Agent。路径不确定时可以直接点一键修复。" />
+                <FieldLabel label="Agent 安装位置" hint="Forge 会在这里查找或安装 Windows Hermes Agent。路径不确定时可以直接点一键修复。" />
                 <p className="mt-0.5 break-all font-mono text-sm text-slate-700">{rootPath || "尚未选择安装位置"}</p>
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
@@ -367,7 +350,8 @@ export function SettingsPanel(props: {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">运行环境：Windows Native</span>
             <SecondaryButton icon={Save} label="保存设置" loading={savingRuntime} onClick={() => void saveRuntime()} />
           </div>
           {installEvent ? <InstallProgressView event={installEvent} /> : null}
@@ -386,38 +370,17 @@ export function SettingsPanel(props: {
         {advancedOpen ? (
           <div className="border-t border-slate-100 px-4 py-4">
             <div className="grid gap-3">
-              {runtimeChoice !== "windows" ? (
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <AdvancedTextInput
-                    label="WSL 发行版"
-                    tooltip="只在你安装了多个 WSL 发行版时需要填写。留空会使用系统默认发行版。"
-                    value={runtime.distro ?? ""}
-                    placeholder="默认发行版"
-                    onChange={(value) => setRuntime({ ...runtime, distro: value || undefined })}
-                  />
-                  <AdvancedTextInput
-                    label="Python 命令"
-                    tooltip="Hermes 在 WSL 内使用的 Python 命令。推荐保持 python3。"
-                    value={runtime.pythonCommand ?? "python3"}
-                    onChange={(value) => setRuntime({ ...runtime, pythonCommand: value || "python3" })}
-                    monospace
-                  />
-                </div>
-              ) : null}
-
-              {runtimeChoice === "windows" ? (
-                <AdvancedSelect
-                  label="Windows 联动方式"
-                  tooltip="控制 Hermes 是否可以调用 Windows 本机能力，例如文件、剪贴板、窗口和 PowerShell。推荐保持默认。"
-                  value={runtime.windowsAgentMode ?? "hermes_native"}
-                  onChange={(value) => setRuntime({ ...runtime, windowsAgentMode: value as WindowsAgentMode })}
-                  options={[
-                    { value: "hermes_native", label: "Hermes 原生联动（推荐）" },
-                    { value: "host_tool_loop", label: "宿主 Tool Loop fallback" },
-                    { value: "disabled", label: "关闭 Windows 联动" },
-                  ]}
-                />
-              ) : null}
+              <AdvancedSelect
+                label="Windows 联动方式"
+                tooltip="控制 Hermes 是否可以调用 Windows 本机能力，例如文件、剪贴板、窗口和 PowerShell。推荐保持默认。"
+                value={runtime.windowsAgentMode ?? "hermes_native"}
+                onChange={(value) => setRuntime({ ...runtime, windowsAgentMode: value as WindowsAgentMode })}
+                options={[
+                  { value: "hermes_native", label: "Hermes 原生联动（推荐）" },
+                  { value: "host_tool_loop", label: "宿主 Tool Loop fallback" },
+                  { value: "disabled", label: "关闭 Windows 联动" },
+                ]}
+              />
 
               <AdvancedSelect
                 label="文件访问保护"
@@ -439,18 +402,6 @@ export function SettingsPanel(props: {
                 ]}
               />
 
-              {runtimeChoice !== "windows" ? (
-                <AdvancedSelect
-                  label="常驻 WSL Worker"
-                  tooltip="实验性加速。开启后会复用一个 WSL worker 来减少连续任务的启动等待；失败时会自动回退普通 WSL 启动。"
-                  value={runtime.workerMode ?? "off"}
-                  onChange={(value) => setRuntime({ ...runtime, workerMode: value as HermesRuntimeConfig["workerMode"] })}
-                  options={[
-                    { value: "off", label: "关闭（默认）" },
-                    { value: "experimental_wsl", label: "实验性开启" },
-                  ]}
-                />
-              ) : null}
 
               <AdvancedSelect
                 label="启动前检查强度"
@@ -561,28 +512,21 @@ export function SettingsPanel(props: {
                   <p className="mt-2 text-xs text-red-600">Commit 应为 7-40 位十六进制字符串。</p>
                 ) : null}
                 <p className="mt-2 text-xs text-slate-500">
-                  这里改完后，下次“更新 Hermes”或“一键修复”会切到新源。WSL 与 Windows 共用此设置。
+                  这里改完后，下次“更新 Hermes”或“一键修复”会切到新源。
                 </p>
               </div>
 
               {policyBlock ? <PolicyBlockedBanner block={policyBlock} /> : null}
-              {runtimeChoice !== "windows" ? (
-                <ManagedWslInstallerPanel
-                  title="Managed WSL 安装链路"
-                  onAfterAction={props.onRefresh}
-                  onNotice={(message, detail, tone) => {
-                    if (tone === "error") store.error(message, detail);
-                    else if (tone === "warning") store.warning(message, detail);
-                    else store.success(message, detail);
-                  }}
-                />
-              ) : null}
 
               <div className="flex flex-wrap gap-2">
                 <SecondaryButton icon={RotateCcw} label="恢复推荐设置" onClick={restoreRecommendedSettings} />
                 <SecondaryButton icon={Network} label="测试 Windows 联动" loading={testingBridge} onClick={testBridge} />
               </div>
               {bridgeTest ? <BridgeTestResultView result={bridgeTest} /> : null}
+              <div className="grid gap-3 lg:grid-cols-2">
+                <BridgeCapabilityPanel capabilityRows={bridgeCapabilities} />
+                <EnforcementMatrixView rows={matrix} />
+              </div>
             </div>
           </div>
         ) : null}
@@ -604,116 +548,74 @@ function withRuntimeDefaults(runtime: HermesRuntimeConfig): HermesRuntimeConfig 
   };
 }
 
-function computeStatus(input: {
-  runtimeChoice: RuntimeChoice;
-  runtime: HermesRuntimeConfig;
-  rootPath: string;
-  bridge?: WindowsBridgeStatus;
-  installEvent?: HermesInstallEvent;
-  permissionOverview?: PermissionOverview;
-  permissionError?: string;
-  hermesAvailable?: boolean;
-  setupBlockingCount: number;
-  setupLoading: boolean;
-}) {
-  const installState: InstallState = input.installEvent && input.installEvent.stage !== "completed" && input.installEvent.stage !== "failed"
-    ? "checking"
-    : input.hermesAvailable === true
-      ? "installed"
-      : input.rootPath.trim()
-        ? "broken"
-        : "missing";
-  const connectionState: ConnectionState = input.permissionError || input.permissionOverview?.blocked
-    ? "error"
-    : input.bridge?.running || input.hermesAvailable
-      ? "normal"
-      : "unknown";
-  const healthState: HealthState = input.setupLoading
-    ? "checking"
-    : input.setupBlockingCount > 0 || input.permissionOverview?.blocked
-      ? "error"
-      : "passed";
-  const hasError = installState === "missing" || installState === "broken" || connectionState === "error" || healthState === "error";
-  return {
-    summaryTone: hasError ? "danger" as Tone : "ok" as Tone,
-    summaryTitle: hasError ? "Hermes 需要处理" : "Hermes 已准备好",
-    summaryDetail: hasError
-      ? "检测到安装、连接或健康检查存在问题。可以点击一键修复，让 Forge 自动处理。"
-      : "当前环境可以正常使用。普通用户保持推荐设置即可。",
-    runtime: {
-      value: input.runtimeChoice === "auto" ? "自动" : input.runtimeChoice === "wsl" ? "WSL" : "Windows",
-      detail: input.runtimeChoice === "auto" ? `当前推荐：${input.runtime.mode === "windows" ? "Windows" : "WSL"}` : "手动选择",
-      tone: "ok" as Tone,
-    },
-    install: installStatus(installState),
-    connection: connectionStatus(connectionState),
-    health: healthStatus(healthState),
-  };
-}
-
-function installStatus(state: InstallState) {
-  if (state === "installed") return { state, value: "已安装", detail: "Hermes Agent 已找到。", tone: "ok" as Tone };
-  if (state === "checking") return { state, value: "检测中", detail: "正在处理安装状态。", tone: "neutral" as Tone };
-  if (state === "broken") return { state, value: "安装损坏", detail: "路径存在但 Hermes 不可用。", tone: "danger" as Tone };
-  return { state, value: "未安装", detail: "可以一键安装。", tone: "danger" as Tone };
-}
-
-function connectionStatus(state: ConnectionState) {
-  if (state === "normal") return { value: "正常", detail: "可以连接 Hermes。", tone: "ok" as Tone };
-  if (state === "error") return { value: "异常", detail: "需要检查路径或运行环境。", tone: "danger" as Tone };
-  return { value: "未检测", detail: "点击重新检测。", tone: "neutral" as Tone };
-}
-
-function healthStatus(state: HealthState) {
-  if (state === "passed") return { value: "通过", detail: "暂无阻塞项。", tone: "ok" as Tone };
-  if (state === "checking") return { value: "检测中", detail: "正在刷新状态。", tone: "neutral" as Tone };
-  return { value: "异常", detail: "存在需要修复的问题。", tone: "danger" as Tone };
-}
-
-function HeroStatus(props: {
-  title: string;
-  description: string;
-  tone: Tone;
-  primaryLabel: string;
+function AgentActionCard(props: {
+  status: ReturnType<typeof buildHermesSetupViewModel>;
+  detailsOpen: boolean;
+  onToggleDetails: () => void;
   primaryLoading?: boolean;
   onPrimary: () => void;
-  secondaryLabel: string;
   secondaryLoading?: boolean;
   onSecondary: () => void;
 }) {
-  const Icon = props.tone === "ok" ? CheckCircle2 : AlertTriangle;
+  const Icon = props.status.tone === "ok" ? CheckCircle2 : props.status.tone === "danger" ? AlertTriangle : Info;
+  const primaryDisabled = props.status.primaryAction === "none";
   return (
-    <section className={cn("rounded-xl border p-4 shadow-sm", props.tone === "ok" ? "border-emerald-100 bg-emerald-50" : "border-amber-100 bg-amber-50")}>
+    <section className={cn(
+      "rounded-xl border p-4 shadow-sm",
+      props.status.tone === "ok"
+        ? "border-emerald-100 bg-emerald-50"
+        : props.status.tone === "danger"
+          ? "border-rose-100 bg-rose-50"
+          : "border-amber-100 bg-amber-50",
+    )}>
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex min-w-0 gap-2.5">
-          <div className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-lg", props.tone === "ok" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700")}>
+          <div className={cn(
+            "grid h-9 w-9 shrink-0 place-items-center rounded-lg",
+            props.status.tone === "ok"
+              ? "bg-emerald-100 text-emerald-700"
+              : props.status.tone === "danger"
+                ? "bg-rose-100 text-rose-700"
+                : "bg-amber-100 text-amber-700",
+          )}>
             <Icon size={18} />
           </div>
           <div className="min-w-0">
-            <h3 className={cn("text-sm font-semibold", props.tone === "ok" ? "text-emerald-950" : "text-amber-950")}>{props.title}</h3>
-            <p className={cn("mt-0.5 text-xs leading-5", props.tone === "ok" ? "text-emerald-700" : "text-amber-700")}>{props.description}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className={cn(
+                "text-sm font-semibold",
+                props.status.tone === "ok" ? "text-emerald-950" : props.status.tone === "danger" ? "text-rose-950" : "text-amber-950",
+              )}>{props.status.title}</h3>
+              <span className="rounded-full bg-white/75 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                {props.status.statusPill}
+              </span>
+            </div>
+            <p className={cn(
+              "mt-0.5 text-xs leading-5",
+              props.status.tone === "ok" ? "text-emerald-700" : props.status.tone === "danger" ? "text-rose-700" : "text-amber-700",
+            )}>{props.status.detail}</p>
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
-          <PrimaryButton icon={Wrench} label={props.primaryLabel} loading={props.primaryLoading} onClick={props.onPrimary} />
-          <SecondaryButton icon={RefreshCw} label={props.secondaryLabel} loading={props.secondaryLoading} onClick={props.onSecondary} />
+          <PrimaryButton icon={Wrench} label={props.status.primaryLabel} loading={props.primaryLoading} disabled={primaryDisabled} onClick={props.onPrimary} />
+          <SecondaryButton icon={RefreshCw} label="刷新" loading={props.secondaryLoading} onClick={props.onSecondary} />
+          <SecondaryButton icon={Info} label={props.detailsOpen ? "收起详情" : "查看详情"} onClick={props.onToggleDetails} />
         </div>
       </div>
+      {props.detailsOpen ? (
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {props.status.detailRows.map((row) => (
+            <div key={row.id} className="rounded-lg bg-white/75 px-3 py-2 ring-1 ring-white/70">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-slate-500">{row.label}</span>
+                <span className={cn("text-xs font-semibold", toneText(row.tone))}>{row.value}</span>
+              </div>
+              {row.detail ? <p className="mt-1 break-words text-xs leading-4 text-slate-500">{row.detail}</p> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </section>
-  );
-}
-
-function StatusCard(props: { title: string; value: string; detail: string; tone: Tone }) {
-  const Icon = props.tone === "ok" ? CheckCircle2 : props.tone === "danger" ? XCircle : props.tone === "warn" ? AlertTriangle : Info;
-  return (
-    <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm font-medium text-slate-500">{props.title}</p>
-        <Icon size={16} className={toneText(props.tone)} />
-      </div>
-      <p className="mt-2 text-base font-semibold text-slate-950">{props.value}</p>
-      <p className="mt-0.5 text-xs leading-4 text-slate-500">{props.detail}</p>
-    </div>
   );
 }
 
@@ -755,30 +657,6 @@ function Tooltip(props: { text: string }) {
   );
 }
 
-function SegmentedControl(props: {
-  value: RuntimeChoice;
-  options: Array<{ value: RuntimeChoice; label: string }>;
-  onChange: (value: RuntimeChoice) => void;
-}) {
-  return (
-    <div className="mt-2 grid rounded-lg bg-slate-100 p-1 sm:grid-cols-3">
-      {props.options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          className={cn(
-            "rounded-md px-3 py-1.5 text-sm font-medium transition",
-            props.value === option.value ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:text-slate-800",
-          )}
-          onClick={() => props.onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function AdvancedTextInput(props: { label: string; tooltip: string; value: string; placeholder?: string; monospace?: boolean; onChange: (value: string) => void }) {
   return (
     <label className="grid gap-1.5 text-sm">
@@ -808,15 +686,15 @@ function AdvancedSelect(props: { label: string; tooltip: string; value: string; 
   );
 }
 
-function PrimaryButton(props: { icon: typeof Folder; label: string; onClick: () => void; loading?: boolean }) {
+function PrimaryButton(props: { icon: typeof Folder; label: string; onClick: () => void; loading?: boolean; disabled?: boolean }) {
   return <ActionButton {...props} variant="primary" />;
 }
 
-function SecondaryButton(props: { icon: typeof Folder; label: string; onClick: () => void; loading?: boolean }) {
+function SecondaryButton(props: { icon: typeof Folder; label: string; onClick: () => void; loading?: boolean; disabled?: boolean }) {
   return <ActionButton {...props} variant="secondary" />;
 }
 
-function ActionButton(props: { icon: typeof Folder; label: string; onClick: () => void; loading?: boolean; variant: "primary" | "secondary" }) {
+function ActionButton(props: { icon: typeof Folder; label: string; onClick: () => void; loading?: boolean; disabled?: boolean; variant: "primary" | "secondary" }) {
   const Icon = props.icon;
   return (
     <button
@@ -828,7 +706,7 @@ function ActionButton(props: { icon: typeof Folder; label: string; onClick: () =
           : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
       )}
       onClick={props.onClick}
-      disabled={props.loading}
+      disabled={props.loading || props.disabled}
     >
       {props.loading ? <RefreshCw size={14} className="animate-spin" /> : <Icon size={14} />}
       {props.label}

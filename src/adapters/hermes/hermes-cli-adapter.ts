@@ -17,8 +17,9 @@ import {
 import { runCommand, streamCommand } from "../../process/command-runner";
 import type { CommandLineEvent } from "../../process/command-runner";
 import { validateWslHermesCli, type HermesCliValidationFailureKind } from "../../runtime/hermes-cli-resolver";
+import { defaultWindowsHermesCliPath, resolveWindowsHermesCliPathSync } from "../../runtime/hermes-cli-paths";
 import type { RuntimeAdapterFactory } from "../../runtime/runtime-adapter";
-import { toWslPath as runtimeToWslPath, sanitizeEnvForWsl } from "../../runtime/runtime-resolver";
+import { toWslPath as runtimeToWslPath } from "../../runtime/runtime-resolver";
 import { extractHermesCliLifecycleSessionId, isHermesCliLifecycleLine } from "../../shared/hermes-cli-output";
 import { mapSourceTypeToHermesProvider, normalizeModelIdForSource, normalizeSourceTypeForProfile, resolveHermesProvider } from "../../shared/model-config";
 import { createPermissionBoundaryAudit, createPermissionPolicyBlockReason, type PermissionBoundaryAudit } from "../../shared/permission-audit";
@@ -217,18 +218,22 @@ export class HermesCliAdapter implements EngineAdapter {
       env: launch.env,
       detached: launch.detached,
     });
-    const failure = [result.stderr, result.stdout].filter(Boolean).join("\n").trim()
+    const versionOutput = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+    const versionLooksValid = result.exitCode === 0 && versionOutput.length > 0;
+    const failure = versionOutput
       || `命令 ${launch.command} ${launch.args.join(" ")} 退出码 ${result.exitCode ?? "unknown"}`;
     return {
       engineId: this.id,
       label: this.label,
-      available: result.exitCode === 0,
+      available: versionLooksValid,
       mode: "cli",
-      version: result.stdout.split(/\r?\n/)[0]?.trim(),
+      version: versionLooksValid ? versionOutput.split(/\r?\n/)[0]?.trim() : undefined,
       path: rootPath,
-      message: result.exitCode === 0
+      message: versionLooksValid
         ? "Hermes CLI 已接入真实本地安装。"
-        : `Hermes 检测失败：${failure}`,
+        : result.exitCode === 0
+          ? "Hermes 检测失败：CLI 退出成功但没有输出版本信息，可能只是残留占位文件。请重新安装 / 修复安装。"
+          : `Hermes 检测失败：${failure}`,
     };
   }
 
@@ -728,14 +733,20 @@ export class HermesCliAdapter implements EngineAdapter {
   ): AsyncIterable<EngineEvent> {
     const env = await this.hermesEnv(rootPath, runtime, request);
     const runnerPath = await this.windowsAgentRunnerPath();
+    const historyPath = await this.writeWindowsAgentHistoryFile(request);
+    const workspacePath = request.workspacePath ?? rootPath;
     const args = [
       runnerPath,
       "--root-path", rootPath,
       "--query", request.userInput,
       "--session-id", request.conversationId || request.sessionId,
+      "--workspace-path", workspacePath,
       "--source", "zhenghebao-client",
       "--max-turns", "90",
     ];
+    if (historyPath) {
+      args.push("--history-file", historyPath);
+    }
     const firstImage = request.attachments?.find((attachment) => attachment.kind === "image");
     if (firstImage) {
       args.push("--image-path", firstImage.path);
@@ -746,8 +757,8 @@ export class HermesCliAdapter implements EngineAdapter {
     const python = await this.windowsPythonSpec(rootPath, this.hermesCliPath(rootPath, runtime), env);
 
     const proc = spawn(python.command, [...python.argsPrefix, ...args], {
-      cwd: request.workspacePath ?? rootPath,
-      env: { ...process.env, ...env },
+      cwd: workspacePath,
+      env: { ...process.env, ...env, TERMINAL_CWD: workspacePath },
       windowsHide: true,
       shell: false,
       detached: false,
@@ -762,6 +773,21 @@ export class HermesCliAdapter implements EngineAdapter {
         proc.kill();
       }
     }
+  }
+
+  private async writeWindowsAgentHistoryFile(request: EngineRunRequest) {
+    const history = (request.conversationHistory ?? [])
+      .filter((entry) => (entry.role === "user" || entry.role === "assistant") && typeof entry.content === "string" && entry.content.trim())
+      .slice(-48)
+      .map((entry) => ({ role: entry.role, content: entry.content }));
+    if (history.length === 0) return undefined;
+
+    const forgeSessionId = request.conversationId || request.sessionId;
+    const dir = path.join(this.appPaths.sessionDir(this.safeForgeSessionId(forgeSessionId)), "hermes-windows-agent");
+    await fs.mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, `history-${this.safeForgeSessionId(request.sessionId)}.json`);
+    await fs.writeFile(filePath, JSON.stringify(history, null, 2), "utf8");
+    return filePath;
   }
 
   private async *streamWslInvocation(
@@ -1010,13 +1036,13 @@ export class HermesCliAdapter implements EngineAdapter {
         ? "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。"
         : permissionDenied
           ? "Hermes CLI 无执行权限"
-          : "Hermes CLI 不满足 Forge WSL 最低能力门槛",
+          : "Hermes CLI 不满足 Forge 最低能力门槛",
       detail: [
         missingFile
-          ? "capabilities --json 尚未执行，因为 WSL 内 Hermes CLI 文件不存在。"
+          ? "capabilities --json 尚未执行，因为 Hermes CLI 文件不存在。"
           : permissionDenied
-            ? "capabilities --json 尚未执行，因为 WSL 内 Hermes CLI 文件不可读取或无执行权限。"
-            : "Forge WSL 主链路现在要求 Hermes CLI 原生支持 launch metadata 和 session resume。",
+            ? "capabilities --json 尚未执行，因为 Hermes CLI 文件不可读取或无执行权限。"
+            : "Forge 主链路现在要求 Hermes CLI 原生支持 launch metadata 和 session resume。",
         `当前能力状态：${capabilities.support}。`,
         capabilities.missing.length ? `缺失能力：${capabilities.missing.join(", ")}。` : "",
         capabilities.reason ? `探测原因：${capabilities.reason}。` : "",
@@ -1024,8 +1050,8 @@ export class HermesCliAdapter implements EngineAdapter {
       fixHint: missingFile
         ? "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。"
         : permissionDenied
-          ? "请在 WSL 中修复 Hermes CLI 文件权限后重试。"
-          : "请升级 WSL 内 Hermes CLI 到支持 `hermes capabilities --json`、`--launch-metadata`、`HERMES_FORGE_LAUNCH_METADATA` 和 `--resume` 的版本后重试。",
+          ? "请修复 Hermes CLI 文件权限后重试。"
+          : "请升级 Hermes CLI 到支持 `hermes capabilities --json`、`--launch-metadata`、`HERMES_FORGE_LAUNCH_METADATA` 和 `--resume` 的版本后重试。",
       debugContext: {
         capabilityProbe: capabilities,
         allowedTransports: ["native-arg-env"],
@@ -1578,22 +1604,7 @@ export class HermesCliAdapter implements EngineAdapter {
         detached: false,
       };
     }
-    const linuxCwd = toWslPath(cwd);
-    return {
-      command: "wsl.exe",
-      args: [
-        ...this.wslDistroArgs(runtime),
-        "--cd",
-        linuxCwd,
-        "env",
-        ...this.envArgs(env),
-        runtime.pythonCommand?.trim() || "python3",
-        ...pythonArgs,
-      ],
-      cwd: process.cwd(),
-      env: process.env,
-      detached: false,
-    };
+    throw new Error("WSL runtime 已停用；请使用 Windows Native Hermes。");
   }
 
   private async commandSpec(runtime: HermesRuntimeConfig, rootPath: string, commandArgs: string[]) {
@@ -1601,12 +1612,7 @@ export class HermesCliAdapter implements EngineAdapter {
       const [command, ...args] = commandArgs;
       return { command, args, cwd: rootPath, env: process.env };
     }
-    return {
-      command: "wsl.exe",
-      args: [...this.wslDistroArgs(runtime), "--cd", rootPath, ...commandArgs],
-      cwd: process.cwd(),
-      env: process.env,
-    };
+    throw new Error("WSL runtime 已停用；请使用 Windows Native Hermes。");
   }
 
   private runtimeAdapter(runtime: HermesRuntimeConfig) {
@@ -1639,16 +1645,6 @@ export class HermesCliAdapter implements EngineAdapter {
     return { command: "python", argsPrefix: [], lastError };
   }
 
-  private wslDistroArgs(runtime: HermesRuntimeConfig) {
-    return runtime.distro?.trim() ? ["-d", runtime.distro.trim()] : [];
-  }
-
-  private envArgs(env: NodeJS.ProcessEnv) {
-    return Object.entries(sanitizeEnvForWsl(env))
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-      .map(([key, value]) => `${key}=${value}`);
-  }
-
   private async hermesRuntime(): Promise<HermesRuntimeConfig> {
     const config = await this.readRuntimeConfig?.().catch(() => undefined);
     return {
@@ -1668,7 +1664,7 @@ export class HermesCliAdapter implements EngineAdapter {
   private hermesCliPath(rootPath: string, runtime: HermesRuntimeConfig) {
     return runtime.mode === "wsl"
       ? `${rootPath.replace(/\/+$/, "")}/hermes`
-      : path.join(rootPath, "hermes");
+      : resolveWindowsHermesCliPathSync(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
   }
 
   private async rootPath() {

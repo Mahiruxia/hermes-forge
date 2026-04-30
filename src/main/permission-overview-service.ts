@@ -32,30 +32,18 @@ export async function buildPermissionOverview(input: {
   const bridgeCapabilities = input.bridge.capabilities ?? [];
   const audit = createPermissionBoundaryAudit({ runtime, permissions, bridgeRunning: input.bridge.running });
   const policyBlock = createPermissionPolicyBlockReason({ runtime, audit });
-  const capabilityProbe = runtime.mode === "wsl"
-    ? await probeCapabilities({
-      runtime,
-      resolveHermesRoot: input.resolveHermesRoot,
-      runtimeAdapterFactory: input.runtimeAdapterFactory,
-      appPaths: input.appPaths,
-    })
-    : null;
-  const capabilityBlock = capabilityProbe && !capabilityProbe.minimumSatisfied
-    ? capabilityBlockReason(capabilityProbe)
-    : undefined;
+  const capabilityProbe: PermissionOverview["capabilityProbe"] = null;
+  const capabilityBlock = undefined;
   const blockReason = policyBlock ?? capabilityBlock ?? null;
   const notes = [
-    runtime.mode !== "wsl" ? "Native Windows mode does not use WSL launch metadata transport." : undefined,
-    runtime.mode === "wsl" && !capabilityProbe ? "Capability probe unavailable." : undefined,
-    runtime.mode === "wsl" && capabilityProbe?.minimumSatisfied ? "WSL transport is native-arg-env." : undefined,
-    runtime.mode === "wsl" && capabilityProbe && !capabilityProbe.minimumSatisfied ? "WSL main path is blocked until CLI meets minimum capability gate." : undefined,
+    "Native Windows mode does not use WSL launch metadata transport.",
     bridgeCapabilities.length ? undefined : "Backend did not report bridge capabilities.",
   ].filter((item): item is string => Boolean(item));
   return {
-    runtime: runtime.mode === "wsl" ? "wsl" : "native",
+    runtime: "native",
     permissionPolicy: runtime.permissionPolicy,
     cliPermissionMode: runtime.cliPermissionMode,
-    transport: runtime.mode === "wsl" && capabilityProbe?.minimumSatisfied ? "native-arg-env" : null,
+    transport: null,
     sessionMode: null,
     bridge: {
       enabled: bridgeEnabled,
@@ -71,14 +59,7 @@ export async function buildPermissionOverview(input: {
     },
     blocked: Boolean(blockReason),
     blockReason,
-    capabilityProbe: capabilityProbe ? {
-      minimumSatisfied: capabilityProbe.minimumSatisfied,
-      cliVersion: capabilityProbe.cliVersion,
-      missing: capabilityProbe.missing,
-      allowedTransports: capabilityProbe.minimumSatisfied ? ["native-arg-env"] : [],
-      support: capabilityProbe.support,
-      reason: capabilityProbe.reason,
-    } : null,
+    capabilityProbe,
     runtimeReady: !blockReason,
     notes,
   };
@@ -92,8 +73,8 @@ function runtimeWithDefaults(runtime: RuntimeConfig["hermesRuntime"]): HermesRun
   permissionPolicy: HermesPermissionPolicyMode;
 } {
   return {
-    mode: runtime?.mode ?? "wsl",
-    distro: runtime?.distro,
+    mode: "windows",
+    distro: undefined,
     managedRoot: runtime?.managedRoot,
     pythonCommand: runtime?.pythonCommand ?? "python3",
     windowsAgentMode: runtime?.windowsAgentMode ?? "hermes_native",
@@ -177,17 +158,17 @@ function capabilityBlockReason(probe: CapabilityProbe): PermissionOverviewBlockR
       ? "Hermes Agent 未安装或路径不存在"
       : permissionDenied
         ? "Hermes CLI 无执行权限"
-        : "Hermes CLI 不满足 Forge WSL 最低能力门槛",
+        : "Hermes CLI 不满足 Forge 最低能力门槛",
     detail: missingFile
-      ? `capabilities --json 尚未执行。${probe.reason ?? "WSL 内 Hermes CLI 文件不存在。"}`
+      ? `capabilities --json 尚未执行。${probe.reason ?? "Hermes CLI 文件不存在。"}`
       : permissionDenied
-        ? `capabilities --json 尚未执行。${probe.reason ?? "WSL 内 Hermes CLI 文件不可读取。"}`
-        : `Forge WSL 主链路要求 capabilities --json、cliVersion、supportsLaunchMetadataArg、supportsLaunchMetadataEnv、supportsResume。缺失：${probe.missing?.join(", ") || "unknown"}。${probe.reason ? `原因：${probe.reason}` : ""}`,
+        ? `capabilities --json 尚未执行。${probe.reason ?? "Hermes CLI 文件不可读取。"}`
+        : `Forge 主链路要求 capabilities --json、cliVersion、supportsLaunchMetadataArg、supportsLaunchMetadataEnv、supportsResume。缺失：${probe.missing?.join(", ") || "unknown"}。${probe.reason ? `原因：${probe.reason}` : ""}`,
     fixHint: missingFile
       ? "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。"
       : permissionDenied
-        ? "请在 WSL 中修复 Hermes CLI 文件权限后重试。"
-        : "请升级 WSL 内 Hermes CLI 到支持原生 launch metadata 和 resume capability 的版本。",
+        ? "请修复 Hermes CLI 文件权限后重试。"
+        : "请升级 Hermes CLI 到支持原生 launch metadata 和 resume capability 的版本。",
     debugContext: {
       capabilityProbe: probe,
       allowedTransports: ["native-arg-env"],

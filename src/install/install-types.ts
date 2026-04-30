@@ -7,7 +7,6 @@ import type {
   SetupDependencyRepairResult,
 } from "../shared/types";
 import type { RuntimeIssue, RuntimePreflightResult, RuntimeProbeResult } from "../runtime/runtime-types";
-import type { WslRepairDryRunResult } from "./wsl-doctor-types";
 
 export type InstallTargetMode = HermesRuntimeConfig["mode"];
 
@@ -44,7 +43,6 @@ export type InstallPlan = {
   issues: RuntimeIssue[];
   runtimeProbe?: RuntimeProbeResult;
   runtimePreflight?: RuntimePreflightResult;
-  repairDryRun?: WslRepairDryRunResult;
 };
 
 export type InstallPublisher = (event: HermesInstallEvent) => void;
@@ -66,7 +64,7 @@ export type InstallStrategyRepairResult = SetupDependencyRepairResult & {
   plan?: InstallPlan;
 };
 
-export type InstallStrategyKind = "native" | "managed-wsl";
+export type InstallStrategyKind = "native";
 
 export function installStep(input: InstallStep): InstallStep {
   return input;

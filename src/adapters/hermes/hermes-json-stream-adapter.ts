@@ -10,6 +10,11 @@ export type ParsedJsonEvent =
   | { type: "tool_call"; tool: string; input?: Record<string, unknown>; session_id?: string; timestamp: string }
   | { type: "tool_result"; tool: string; output?: string; success?: boolean; session_id?: string; timestamp: string }
   | { type: "message_chunk"; content: string; session_id?: string; timestamp: string }
+  | { type: "reasoning"; content: string; session_id?: string; timestamp: string }
+  | { type: "status"; level?: string; message: string; session_id?: string; timestamp: string }
+  | { type: "progress"; step: string; done?: boolean; message: string; session_id?: string; timestamp: string }
+  | { type: "usage"; source?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; prompt_tokens?: number; completion_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number; reasoning_tokens?: number; estimated_cost_usd?: number; session_id?: string; timestamp: string }
+  | { type: "session_update"; session_id: string; previous_session_id?: string; title?: string; message_count?: number; model?: string; timestamp: string }
   | { type: "result"; success: boolean; content: string; session_id?: string; timestamp: string }
   | { type: "error"; message: string; error_type?: string; traceback?: string; session_id?: string; timestamp: string }
   | Record<string, unknown>;
@@ -51,6 +56,7 @@ function toEngineEvent(parsed: ParsedJsonEvent): EngineEvent | undefined {
         type: "tool_call",
         toolName: tool,
         argsPreview: JSON.stringify(input ?? {}),
+        callId: typeof (parsed as Record<string, unknown>).call_id === "string" ? String((parsed as Record<string, unknown>).call_id) : undefined,
         status: "running",
         at: now(),
       };
@@ -63,6 +69,7 @@ function toEngineEvent(parsed: ParsedJsonEvent): EngineEvent | undefined {
         type: "tool_result",
         toolName: tool,
         outputPreview: output.slice(0, 400),
+        callId: typeof (parsed as Record<string, unknown>).call_id === "string" ? String((parsed as Record<string, unknown>).call_id) : undefined,
         success,
         status: "complete",
         at: now(),
@@ -70,10 +77,71 @@ function toEngineEvent(parsed: ParsedJsonEvent): EngineEvent | undefined {
     }
     case "message_chunk": {
       const content = String((parsed as Record<string, unknown>).content ?? "");
-      // message_chunk 映射为 stdout 事件，让前端按现有逻辑渲染
       return {
-        type: "stdout",
-        line: content,
+        type: "message_chunk",
+        content,
+        at: now(),
+      };
+    }
+    case "reasoning": {
+      return {
+        type: "reasoning",
+        content: String((parsed as Record<string, unknown>).content ?? ""),
+        at: now(),
+      };
+    }
+    case "status": {
+      const rawLevel = String((parsed as Record<string, unknown>).level ?? "info").toLowerCase();
+      const level = rawLevel === "success" || rawLevel === "warning" || rawLevel === "error" ? rawLevel : "info";
+      return {
+        type: "status",
+        level,
+        message: String((parsed as Record<string, unknown>).message ?? ""),
+        at: now(),
+      };
+    }
+    case "progress": {
+      return {
+        type: "progress",
+        step: String((parsed as Record<string, unknown>).step ?? "agent-step"),
+        done: Boolean((parsed as Record<string, unknown>).done ?? false),
+        message: String((parsed as Record<string, unknown>).message ?? ""),
+        at: now(),
+      };
+    }
+    case "usage": {
+      const inputTokens = numberFrom(parsed, "input_tokens") ?? numberFrom(parsed, "inputTokens") ?? numberFrom(parsed, "prompt_tokens") ?? 0;
+      const outputTokens = numberFrom(parsed, "output_tokens") ?? numberFrom(parsed, "outputTokens") ?? numberFrom(parsed, "completion_tokens") ?? 0;
+      const totalTokens = numberFrom(parsed, "total_tokens") ?? numberFrom(parsed, "totalTokens") ?? inputTokens + outputTokens;
+      const source = String((parsed as Record<string, unknown>).source ?? "").toLowerCase() === "actual" ? "actual" : "estimated";
+      return {
+        type: "usage",
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        promptTokens: numberFrom(parsed, "prompt_tokens"),
+        completionTokens: numberFrom(parsed, "completion_tokens"),
+        cacheReadTokens: numberFrom(parsed, "cache_read_tokens"),
+        cacheWriteTokens: numberFrom(parsed, "cache_write_tokens"),
+        reasoningTokens: numberFrom(parsed, "reasoning_tokens"),
+        estimatedCostUsd: numberFrom(parsed, "estimated_cost_usd") ?? 0,
+        source,
+        message: source === "actual"
+          ? `实测 Token：输入 ${inputTokens}，输出 ${outputTokens}。`
+          : `估算 Token：输入 ${inputTokens}，输出 ${outputTokens}。`,
+        at: now(),
+      };
+    }
+    case "session_update": {
+      return {
+        type: "session_update",
+        hermesSessionId: String((parsed as Record<string, unknown>).session_id ?? ""),
+        previousHermesSessionId: typeof (parsed as Record<string, unknown>).previous_session_id === "string"
+          ? String((parsed as Record<string, unknown>).previous_session_id)
+          : undefined,
+        title: typeof (parsed as Record<string, unknown>).title === "string" ? String((parsed as Record<string, unknown>).title) : undefined,
+        messageCount: typeof (parsed as Record<string, unknown>).message_count === "number" ? Number((parsed as Record<string, unknown>).message_count) : undefined,
+        model: typeof (parsed as Record<string, unknown>).model === "string" ? String((parsed as Record<string, unknown>).model) : undefined,
         at: now(),
       };
     }
@@ -102,6 +170,16 @@ function toEngineEvent(parsed: ParsedJsonEvent): EngineEvent | undefined {
     default:
       return undefined;
   }
+}
+
+function numberFrom(source: unknown, key: string) {
+  const value = (source as Record<string, unknown>)?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
 }
 
 export async function* readHermesJsonStream(

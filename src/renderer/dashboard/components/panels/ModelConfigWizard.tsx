@@ -193,7 +193,7 @@ export function ModelConfigWizard(props: {
     setOperationNotice({
       tone: "info",
       title: "正在探测本地模型",
-      message: "正在检查常见 localhost / WSL 可达地址，完成后会把可用地址和模型填回表单。",
+      message: "正在检查常见本机模型接口，完成后会把可用地址和模型填回表单。",
     });
     revealFeedbackPanel();
     try {
@@ -235,7 +235,7 @@ export function ModelConfigWizard(props: {
     setOperationNotice({
       tone: "info",
       title: "正在测试模型连接",
-      message: "正在依次检查鉴权、模型可达性、最小 Chat、tool calling 和 WSL 可达性。",
+      message: "正在依次检查鉴权、模型可达性、最小 Chat、工具探针和 Windows Native 运行同步。",
     });
     revealFeedbackPanel();
     try {
@@ -262,7 +262,7 @@ export function ModelConfigWizard(props: {
       setOperationNotice({
         tone: "info",
         title: "正在测试并保存",
-        message: "正在依次检查鉴权、模型可达性、最小 Chat、tool calling 和 WSL 可达性，通过后会自动保存。",
+        message: "正在依次检查鉴权、模型可达性、最小 Chat、工具探针和 Windows Native 运行同步，通过后会自动保存。",
       });
       try {
         health = await runTestConnection();

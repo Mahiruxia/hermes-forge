@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { testOnly } from "./hermes-existing-config-import";
 import { stableModelProfileId } from "../shared/model-config";
 
@@ -40,6 +43,16 @@ describe("importExistingHermesConfig helpers", () => {
       model: "deepseek-chat",
       secretRef: "provider.deepseek.apiKey",
     });
+  });
+
+  it("falls back to legacy cli-config.yaml when config.yaml is absent", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-import-"));
+    try {
+      await fs.writeFile(path.join(dir, "cli-config.yaml"), "model:\n  default: old-model\n", "utf8");
+      await expect(testOnly.resolveHermesConfigPath(dir)).resolves.toBe(path.join(dir, "cli-config.yaml"));
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("recognizes MiniMax minimaxi.com endpoints when importing the active Hermes model", () => {

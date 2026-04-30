@@ -1,4 +1,4 @@
-import { AlertCircle, ChevronDown, Copy, Ellipsis, Loader2, RefreshCcw, Sparkles, Wrench } from "lucide-react";
+import { AlertCircle, ChevronDown, Copy, Ellipsis, Loader2, RefreshCcw, Sparkles, Timer, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { EngineEvent, TaskRunProjection, ToolEvent } from "../../shared/types";
@@ -233,6 +233,7 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
   const softStreaming = Boolean(content) && run.status === "streaming";
   const completed = run.status === "complete";
   const statusLabel = completed ? "已完成" : softStreaming ? "补充中" : waiting ? "处理中" : run.status === "cancelled" ? "已取消" : run.status === "interrupted" ? "已中断" : run.status === "failed" ? "未完成" : "回复中";
+  const activeTiming = run.status === "pending" || run.status === "routing" || run.status === "running" || run.status === "streaming";
 
   async function copyMessage() {
     try {
@@ -262,7 +263,12 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
           <div className="mb-3 flex items-center gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               {run.modelId ? <MessageMetaPill>{run.modelId}</MessageMetaPill> : null}
-              {store.webUiOverview?.settings.showUsage && usage?.type === "usage" ? <MessageMetaPill tone="emerald">{usage.inputTokens}+{usage.outputTokens} token</MessageMetaPill> : null}
+              <ElapsedTimePill startedAt={run.startedAt} completedAt={run.completedAt} active={activeTiming} />
+              {store.webUiOverview?.settings.showUsage && usage?.type === "usage" ? (
+                <MessageMetaPill tone="emerald">
+                  {usage.source === "actual" ? "实测" : "约"} {usage.inputTokens}+{usage.outputTokens} token
+                </MessageMetaPill>
+              ) : null}
             </div>
           </div>
 
@@ -386,6 +392,30 @@ function MessageMetaPill(props: { children: ReactNode; tone?: "slate" | "emerald
   );
 }
 
+function ElapsedTimePill(props: { startedAt?: string; completedAt?: string; active: boolean }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!props.active) return undefined;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [props.active]);
+
+  const startedMs = props.startedAt ? Date.parse(props.startedAt) : Number.NaN;
+  if (!Number.isFinite(startedMs)) return null;
+  const completedMs = props.completedAt ? Date.parse(props.completedAt) : Number.NaN;
+  const endMs = props.active || !Number.isFinite(completedMs) ? nowMs : completedMs;
+  const elapsedMs = Math.max(0, endMs - startedMs);
+  const label = props.active ? "已处理" : "耗时";
+  return (
+    <MessageMetaPill tone={props.active ? "amber" : "slate"}>
+      <span className="inline-flex min-w-0 items-center gap-1">
+        <Timer size={10} className="shrink-0" />
+        <span>{label} {formatElapsedMs(elapsedMs)}</span>
+      </span>
+    </MessageMetaPill>
+  );
+}
+
 function ToolSummary(props: { tools: ToolEvent[] }) {
   const [open, setOpen] = useState(false);
   const failed = props.tools.filter((tool) => tool.status === "failed").length;
@@ -495,7 +525,7 @@ function failureGuidance(status: TaskRunProjection["status"], content: string) {
   if (/NoConsoleScreenBufferError|No Windows console found|prompt_toolkit\.output\.win32|控制台初始化失败/i.test(text)) {
     return {
       hint: "当前更像是 Windows 下 Hermes CLI 拿不到可用控制台，不是模型或密钥配置错误。",
-      action: "先检查 Hermes 运行模式和 Python 环境，必要时切到 WSL 模式后重试",
+      action: "先检查 Windows Native Hermes 路径、Python 环境和模型配置后重试",
       target: "hermes" as const,
       cta: "打开 Hermes 设置",
     };
@@ -513,6 +543,13 @@ function failureGuidance(status: TaskRunProjection["status"], content: string) {
     return { hint: "本轮更像是等待过久或任务范围偏大。", action: "缩小任务范围或减少上下文后重试" };
   }
   return { hint: "建议先查看过程详情，确认失败阶段后再决定是否重试。", action: "查看过程详情或导出诊断", target: "diagnostics" as const, cta: "导出诊断" };
+}
+
+function formatElapsedMs(value: number) {
+  const totalSeconds = Math.max(0, Math.floor(value / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
 }
 
 function TypingState(props: { phase: "handoff" | "replying" }) {

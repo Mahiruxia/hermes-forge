@@ -108,6 +108,7 @@ describe("SessionLog.aggregateUsageForSession", () => {
       latestInputTokens: 30,
       latestOutputTokens: 10,
       latestEstimatedCostUsd: 0.0005,
+      source: "estimated",
       updatedAt: "2026-04-22T10:00:02.000Z",
     });
   });

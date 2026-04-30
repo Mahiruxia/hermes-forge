@@ -44,11 +44,11 @@ export function ConnectionTestResult(props: {
       {props.testResult ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {props.testResult.agentRole ? <StatusBadge label={roleLabel(props.testResult.agentRole, props.testResult.sourceType)} tone={props.testResult.agentRole === "primary_agent" ? "success" : "warning"} /> : null}
-          {typeof props.testResult.supportsTools === "boolean" ? <StatusBadge label={props.testResult.supportsTools ? "支持工具调用" : "不支持工具调用"} tone={props.testResult.supportsTools ? "success" : "warning"} /> : null}
+          {typeof props.testResult.supportsTools === "boolean" ? <StatusBadge label={props.testResult.supportsTools ? "支持工具调用" : props.testResult.ok ? "工具待运行验证" : "工具调用未通过"} tone={props.testResult.supportsTools ? "success" : "warning"} /> : null}
           {typeof props.testResult.contextWindow === "number" ? <StatusBadge label={`上下文 ${props.testResult.contextWindow}`} tone={props.testResult.contextWindow >= MIN_AGENT_CONTEXT ? "success" : "warning"} /> : null}
           {props.testResult.runtimeCompatibility ? <StatusBadge label={runtimeLabel(props.testResult.runtimeCompatibility)} tone={props.testResult.runtimeCompatibility === "connection_only" ? "warning" : "success"} /> : null}
           {props.testResult.roleCompatibility?.coding_plan?.ok ? <StatusBadge label="可作 Coding Plan" tone="success" /> : null}
-          {typeof props.testResult.wslReachable === "boolean" ? <StatusBadge label={props.testResult.wslReachable ? "WSL 可连通" : "WSL 连不上"} tone={props.testResult.wslReachable ? "success" : "warning"} /> : null}
+          {props.testResult.failureCategory === "wsl_unreachable" && typeof props.testResult.wslReachable === "boolean" ? <StatusBadge label={props.testResult.wslReachable ? "旧 WSL 可连通" : "旧 WSL 连不上"} tone={props.testResult.wslReachable ? "success" : "warning"} /> : null}
         </div>
       ) : null}
 
@@ -99,7 +99,13 @@ export function noticeForTestResult(result: ModelConnectionTestResult): Operatio
     const hint = codingPlanRuntimeHint(result.sourceType);
     return { tone: "success", title: "配置已保存（Hermes 运行时已同步）", message: result.message || hint.message };
   }
-  if (result.ok) return { tone: "success", title: "测试通过", message: result.message || "这个模型已通过连接检查。" };
+  if (result.ok) {
+    return {
+      tone: result.supportsTools === false ? "warning" : "success",
+      title: result.supportsTools === false ? "可作为主模型，工具待运行验证" : "测试通过",
+      message: result.message || "这个模型已通过连接检查。",
+    };
+  }
   const canStillSave = result.agentRole === "auxiliary_model" || result.agentRole === "provider_only";
   return {
     tone: canStillSave ? "warning" : "error",
@@ -110,13 +116,14 @@ export function noticeForTestResult(result: ModelConnectionTestResult): Operatio
 
 function resultTone(result?: ModelConnectionTestResult): OperationNotice["tone"] | undefined {
   if (!result) return undefined;
-  if (result.ok) return "success";
+  if (result.ok) return result.supportsTools === false ? "warning" : "success";
   return result.agentRole === "auxiliary_model" || result.agentRole === "provider_only" ? "warning" : "error";
 }
 
 function resultTitle(result?: ModelConnectionTestResult) {
   if (!result) return undefined;
   if (result.ok && isCodingPlanSourceType(result.sourceType)) return "配置已保存（Hermes 运行时已同步）";
+  if (result.ok && result.supportsTools === false) return "可作为主模型，工具待运行验证";
   return result.ok ? "测试通过" : "测试失败";
 }
 

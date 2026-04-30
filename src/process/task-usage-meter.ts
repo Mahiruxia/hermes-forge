@@ -6,6 +6,7 @@ export type TaskUsageState = {
   estimatedCostUsd: number;
   inputCostPer1kUsd: number;
   outputCostPer1kUsd: number;
+  source: "estimated" | "actual";
 };
 
 const FALLBACK_INPUT_COST_PER_1K = 0.002;
@@ -19,11 +20,20 @@ export function createTaskUsageState(inputTokens: number, runtimeEnv: EngineRunt
     estimatedCostUsd: 0,
     inputCostPer1kUsd: pricing.inputCostPer1kUsd,
     outputCostPer1kUsd: pricing.outputCostPer1kUsd,
+    source: "estimated",
   };
 }
 
 export function trackTaskUsage(usage: TaskUsageState | undefined, event: EngineEvent, estimateTokens: (text: string) => number) {
   if (!usage) return;
+  if (event.type === "usage" && event.source === "actual") {
+    usage.inputTokens = event.inputTokens;
+    usage.outputTokens = event.outputTokens;
+    usage.estimatedCostUsd = event.estimatedCostUsd;
+    usage.source = "actual";
+    return;
+  }
+  if (usage.source === "actual") return;
   if (event.type !== "stdout" && event.type !== "stderr" && event.type !== "result") return;
   const text = event.type === "result" ? `${event.title} ${event.detail}` : event.line;
   usage.outputTokens += estimateTokens(text);

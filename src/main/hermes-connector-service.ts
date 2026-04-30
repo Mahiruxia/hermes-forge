@@ -6,6 +6,7 @@ import type { AppPaths } from "./app-paths";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import { validateWslHermesCli } from "../runtime/hermes-cli-resolver";
+import { defaultWindowsHermesCliPath, resolveWindowsHermesCliPathSync } from "../runtime/hermes-cli-paths";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { summarizePreflightFailure } from "../runtime/runtime-preflight";
 import type { SecretVault } from "../auth/secret-vault";
@@ -1373,7 +1374,7 @@ export class HermesConnectorService {
 
   private async preflightGatewayRuntime(runtime: Extract<ConnectorRuntimeContext, { ok: true }>): Promise<{ ok: true } | { ok: false; message: string }> {
     const runtimeRoot = runtime.adapter.toRuntimePath(runtime.root);
-    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : path.join(runtime.root, "hermes");
+    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : this.windowsHermesCliPath(runtime.root);
     if (runtime.runtime.mode === "wsl") {
       const validation = await validateWslHermesCli(runtime.runtime, cliPath);
       console.info("[Hermes Forge] Gateway WSL preflight", {
@@ -1419,7 +1420,7 @@ export class HermesConnectorService {
 
   private async gatewayLaunchFromRuntime(runtime: Extract<ConnectorRuntimeContext, { ok: true }>, hermesEnv: Record<string, string>) {
     const runtimeRoot = runtime.adapter.toRuntimePath(runtime.root);
-    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : path.join(runtime.root, "hermes");
+    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : this.windowsHermesCliPath(runtime.root);
     const launch = await runtime.adapter.buildHermesLaunch({
       runtime: runtime.runtime,
       rootPath: runtimeRoot,
@@ -1441,7 +1442,7 @@ export class HermesConnectorService {
     const python = await this.resolvePythonCommand(root);
     return {
       command: python.command,
-      args: [...python.args, path.join(root, "hermes"), "gateway", "run", "--replace"],
+      args: [...python.args, this.windowsHermesCliPath(root), "gateway", "run", "--replace"],
       cwd: root,
       env: buildGatewayEnv(process.env, hermesEnv, root),
       label: `${python.label} (legacy fallback: ${reason})`,
@@ -1465,7 +1466,7 @@ export class HermesConnectorService {
     const python = await this.resolvePythonCommand(root);
     return {
       command: python.command,
-      args: [...python.args, path.join(root, "hermes"), "gateway", "status"],
+      args: [...python.args, this.windowsHermesCliPath(root), "gateway", "status"],
       cwd: root,
       env: PYTHON_ENV,
     };
@@ -1474,12 +1475,7 @@ export class HermesConnectorService {
   private async gatewayStatusFallback(root: string, reason: string) {
     const config = await this.readRuntimeConfig?.().catch(() => undefined);
     if (config?.hermesRuntime?.mode === "wsl") {
-      return {
-        command: "wsl.exe",
-        args: ["--", "bash", "-lc", "printf %s \"$1\" >&2; exit 1", "bash", reason],
-        cwd: process.cwd(),
-        env: process.env,
-      };
+      throw new Error(`WSL runtime 已停用；请使用 Windows Native Hermes。${reason}`);
     }
     return this.legacyGatewayStatusLaunch(root);
   }
@@ -1560,7 +1556,7 @@ export class HermesConnectorService {
         failures.push(`${candidate.label}: 文件不存在`);
         continue;
       }
-      const result = await runCommand(candidate.command, [...candidate.args, path.join(root, "hermes"), "--version"], {
+      const result = await runCommand(candidate.command, [...candidate.args, this.windowsHermesCliPath(root), "--version"], {
         cwd: root,
         timeoutMs: 5000,
         env: { ...PYTHON_ENV, PYTHONPATH: root },
@@ -1585,7 +1581,7 @@ export class HermesConnectorService {
       ? await runtime.adapter.buildHermesLaunch({
         runtime: runtime.runtime,
         rootPath: runtime.adapter.toRuntimePath(root),
-        pythonArgs: [runtime.runtime.mode === "wsl" ? `${runtime.adapter.toRuntimePath(root).replace(/\/+$/, "")}/hermes` : path.join(root, "hermes"), "gateway", "status"],
+        pythonArgs: [runtime.runtime.mode === "wsl" ? `${runtime.adapter.toRuntimePath(root).replace(/\/+$/, "")}/hermes` : this.windowsHermesCliPath(root), "gateway", "status"],
         cwd: root,
         env: { ...PYTHON_ENV, PYTHONPATH: runtime.adapter.toRuntimePath(root) },
       })
@@ -1616,6 +1612,10 @@ export class HermesConnectorService {
 
   private envPath() {
     return path.join(this.appPaths.hermesDir(), ".env");
+  }
+
+  private windowsHermesCliPath(root: string) {
+    return resolveWindowsHermesCliPathSync(root) ?? defaultWindowsHermesCliPath(root);
   }
 
   private weixinQrLoginScriptPath() {

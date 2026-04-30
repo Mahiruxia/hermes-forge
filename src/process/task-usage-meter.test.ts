@@ -46,4 +46,35 @@ describe("task usage meter", () => {
     trackTaskUsage(usage, { type: "stdout", line: "abcd", at: new Date().toISOString() }, () => 1000);
     expect(usage.estimatedCostUsd).toBeCloseTo(0.008);
   });
+
+  it("prefers actual usage events over local text estimates", () => {
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "default",
+      modelProfiles: [{ id: "default", provider: "openai", model: "gpt-5.4" }],
+      updateSources: {},
+    };
+    const runtimeEnv: EngineRuntimeEnv = {
+      profileId: "default",
+      provider: "openai",
+      model: "gpt-5.4",
+      env: {},
+    };
+
+    const usage = createTaskUsageState(1000, runtimeEnv, config);
+    trackTaskUsage(usage, {
+      type: "usage",
+      source: "actual",
+      inputTokens: 120,
+      outputTokens: 80,
+      estimatedCostUsd: 0.0042,
+      message: "actual",
+      at: new Date().toISOString(),
+    }, () => 9999);
+    trackTaskUsage(usage, { type: "stdout", line: "this should not inflate actual usage", at: new Date().toISOString() }, () => 9999);
+
+    expect(usage.source).toBe("actual");
+    expect(usage.inputTokens).toBe(120);
+    expect(usage.outputTokens).toBe(80);
+    expect(usage.estimatedCostUsd).toBe(0.0042);
+  });
 });

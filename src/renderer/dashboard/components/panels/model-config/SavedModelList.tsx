@@ -74,7 +74,7 @@ export function SavedModelList(props: {
                   {provider.runtimeCompatibility === "connection_only" ? <StatusBadge label="仅测试" tone="warning" /> : null}
                   {provider.runtimeCompatibility === "proxy" ? <StatusBadge label="proxy" tone="default" /> : null}
                   {profile.agentRole ? <StatusBadge label={roleLabel(profile.agentRole)} tone={profile.agentRole === "primary_agent" ? "success" : "warning"} /> : null}
-                  {typeof profile.supportsTools === "boolean" ? <StatusBadge label={profile.supportsTools ? "tools" : "no tools"} tone={profile.supportsTools ? "success" : "warning"} /> : null}
+                  {typeof profile.supportsTools === "boolean" ? <StatusBadge label={profile.supportsTools ? "tools" : "tools 待验"} tone={profile.supportsTools ? "success" : "warning"} /> : null}
                 </div>
 
                 {profile.baseUrl ? <p className="mt-3 truncate font-mono text-[11px] text-slate-400">{profile.baseUrl}</p> : null}

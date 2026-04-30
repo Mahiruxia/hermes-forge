@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen, Monitor, RefreshCw } from "lucide-react";
+import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen } from "lucide-react";
 import { useAppStore } from "../store";
 import type { HermesInstallEvent, SetupCheck, SetupDependencyRepairId } from "../../shared/types";
 
 export function WelcomePage(props: { onComplete: () => void }) {
   const store = useAppStore();
-  const [status, setStatus] = useState<"detecting" | "found" | "not-found" | "installing" | "wsl-setup-needed">("detecting");
+  const [status, setStatus] = useState<"detecting" | "found" | "not-found" | "installing">("detecting");
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("正在检测本地 Hermes...");
   const [detail, setDetail] = useState("");
@@ -23,39 +23,7 @@ export function WelcomePage(props: { onComplete: () => void }) {
   }, []);
 
   async function runPreflightThenDeploy() {
-    try {
-      const config = await window.workbenchClient.getRuntimeConfig();
-      const isWslMode = config.hermesRuntime?.mode === "wsl";
-      if (!isWslMode) {
-        void handleAutoDeploy();
-        return;
-      }
-
-      setMessage("正在检查 WSL 环境是否就绪...");
-      const plan = await window.workbenchClient.installerPlan();
-      const blocked = plan.report?.finalInstallerState === "doctor_blocked" || plan.code === "unsupported";
-      const needsRepair = plan.report?.finalInstallerState === "repair_planned";
-
-      if (blocked) {
-        setStatus("wsl-setup-needed");
-        setMessage("需要先启用 WSL2 才能继续安装");
-        setDetail(plan.fixHint ?? plan.detail ?? "检测到 WSL 尚未安装或不可用。");
-        return;
-      }
-
-      if (needsRepair) {
-        setStatus("not-found");
-        setMessage("WSL 环境需要修复");
-        setDetail(plan.detail ?? "检测到部分依赖缺失，尝试自动修复后安装。");
-        void handleAutoDeploy();
-        return;
-      }
-
-      void handleAutoDeploy();
-    } catch (error) {
-      console.warn("WSL preflight failed, falling back to auto-deploy:", error);
-      void handleAutoDeploy();
-    }
+    void handleAutoDeploy();
   }
 
   useEffect(() => {
@@ -255,59 +223,6 @@ export function WelcomePage(props: { onComplete: () => void }) {
             </div>
           )}
 
-          {status === "wsl-setup-needed" && (
-            <div className="text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-50">
-                <Monitor size={28} className="text-indigo-600" />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-900">需要先启用 WSL2</h3>
-              <p className="mt-2 text-sm text-slate-500">{message}</p>
-              {detail ? <p className="mt-2 break-all text-xs leading-5 text-slate-400">{detail}</p> : null}
-
-              <div className="mt-6 space-y-3">
-                <button
-                  className="w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
-                  onClick={() => {
-                    setStatus("detecting");
-                    setMessage("正在重新检测 WSL 状态...");
-                    void runPreflightThenDeploy();
-                  }}
-                >
-                  <span className="flex items-center justify-center gap-2">
-                    <RefreshCw size={16} /> 我已重启，重新检测
-                  </span>
-                </button>
-
-                <button
-                  className="w-full rounded-xl border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"
-                  onClick={handleManualConfig}
-                >
-                  <span className="flex items-center justify-center gap-2">
-                    <Settings size={16} /> 手动配置路径
-                  </span>
-                </button>
-
-                <button
-                  className="w-full rounded-xl px-6 py-3 text-sm text-slate-500 transition-colors hover:text-slate-700"
-                  onClick={handleSkip}
-                >
-                  <span className="flex items-center justify-center gap-2">
-                    <HelpCircle size={16} /> 跳过，稍后配置
-                  </span>
-                </button>
-              </div>
-
-              <div className="mt-4 text-left">
-                <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-                  <p className="font-semibold">为什么需要 WSL2？</p>
-                  <p className="mt-1">Hermes Forge 默认将 Hermes Agent 安装到 WSL2 的 Ubuntu 中，这样可以获得更稳定的 Python 环境和更完整的 Linux 工具链支持。</p>
-                </div>
-              </div>
-
-              <ManualInstallGuide defaultOpen />
-            </div>
-          )}
-
           {status === "not-found" && (
             <div className="text-center">
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-50">
@@ -472,17 +387,15 @@ function ManualInstallGuide(props: { defaultOpen?: boolean }) {
       </button>
       {open ? (
         <div className="space-y-4 px-4 pb-4">
-          <Step number={1} title="在管理员 PowerShell 中安装 WSL2">
-            <p className="text-xs text-slate-600">如果你还没装过 WSL，建议先参考网上的 Windows 10/11 安装 WSL2 指南，然后再执行：</p>
-            <CodeBlock>wsl --install -d Ubuntu</CodeBlock>
-            <p className="text-xs text-slate-600">执行后按提示重启电脑。重启完成后，打开 Ubuntu，设置 Linux 用户名和密码。</p>
+          <Step number={1} title="在 PowerShell 中安装 Hermes Agent">
+            <p className="text-xs text-slate-600">Windows Native 是 Hermes Forge 的默认路径。推荐优先使用本页的一键安装；手动安装时请使用 Hermes 官方 Windows 脚本。</p>
+            <CodeBlock>{`irm https://res1.hermesagent.org.cn/install.ps1 | iex`}</CodeBlock>
           </Step>
 
-          <Step number={2} title="在 WSL2 终端里运行 Linux 安装命令">
-            <CodeBlock>{`curl -fsSL https://res1.hermesagent.org.cn/install.sh | bash`}</CodeBlock>
-            <p className="text-xs text-slate-600">安装完成后，重新加载 shell：</p>
-            <CodeBlock>{`source ~/.bashrc   # 或：source ~/.zshrc
-hermes`}</CodeBlock>
+          <Step number={2} title="确认 hermes 命令可用">
+            <p className="text-xs text-slate-600">重新打开 PowerShell 后运行：</p>
+            <CodeBlock>{`hermes --version
+hermes capabilities --json`}</CodeBlock>
           </Step>
 
           <Step number={3} title="继续配置模型">
@@ -499,7 +412,7 @@ hermes setup`}</CodeBlock>
               rel="noopener noreferrer"
               className="ml-1 font-semibold underline hover:text-indigo-800"
             >
-              官方文档 — Windows 安装指南
+              Windows 安装指南
             </a>
           </div>
         </div>

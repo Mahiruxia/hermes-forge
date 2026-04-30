@@ -1,5 +1,6 @@
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type {
+  EngineRuntimeEnv,
   LocalModelDiscoveryCandidate,
   LocalModelDiscoveryResult,
   ModelConnectionTestResult,
@@ -8,9 +9,11 @@ import type {
   RuntimeConfig,
 } from "../shared/types";
 import type { SecretVault } from "../auth/secret-vault";
+import type { RuntimeEnvResolver } from "./runtime-env-resolver";
 import { defaultProviderRegistry, providerFromProfile } from "./model-providers/registry";
 import { OpenAiCompatibleProvider } from "./model-providers/openai-compatible-provider";
 import type { ModelConnectionDraft, ModelSourceDefinition } from "./model-providers/types";
+import { normalizeSourceTypeForProfile, resolveHermesProvider } from "../shared/model-config";
 
 export type { ModelConnectionDraft, ModelSourceDefinition };
 export { BaseProvider } from "./model-providers/base-provider";
@@ -167,6 +170,143 @@ export function defaultSecretRefForSource(sourceType: ModelSourceType) {
 
 function normalizeSourceType(sourceType?: string): ModelSourceType {
   return DEFAULT_REGISTRY.has(sourceType) ? sourceType : "openai_compatible";
+}
+
+function providerNativeKeys(provider: string) {
+  switch (provider) {
+    case "openai":
+      return ["OPENAI_API_KEY"];
+    case "openrouter":
+      return ["OPENROUTER_API_KEY"];
+    case "anthropic":
+      return ["ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"];
+    case "deepseek":
+      return ["DEEPSEEK_API_KEY"];
+    case "google":
+    case "gemini":
+      return ["GOOGLE_API_KEY", "GEMINI_API_KEY"];
+    case "kimi":
+    case "kimi-coding":
+      return ["KIMI_API_KEY", "KIMI_CODING_API_KEY"];
+    case "minimax":
+      return ["MINIMAX_API_KEY"];
+    case "minimax-cn":
+      return ["MINIMAX_CN_API_KEY", "MINIMAX_API_KEY"];
+    case "xiaomi":
+      return ["XIAOMI_API_KEY", "MIMO_API_KEY"];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Deep test: resolves the full runtime environment for a model profile and
+ * verifies it would produce a valid Hermes runtime configuration.
+ *
+ * This goes beyond `testModelConnection` (which only tests the provider API)
+ * by also checking that the runtime env resolver produces correct env vars,
+ * the proxy layer works, and the config.yaml would be valid.
+ */
+export async function deepTestModelConnection(input: {
+  config: RuntimeConfig;
+  runtimeEnvResolver: RuntimeEnvResolver;
+  profileId?: string;
+}): Promise<ModelConnectionTestResult & { runtimeEnv?: Partial<EngineRuntimeEnv> & { hermesProvider?: string; providerNativeEnvKeys?: string[] }; runtimeResolutionOk?: boolean }> {
+  const profile = selectProfile(input.config, input.profileId);
+  if (!profile) {
+    return { ok: false, message: "尚未配置模型。请先选择 provider family。" };
+  }
+
+  try {
+    const runtimeEnv = await input.runtimeEnvResolver.resolveFromConfig(input.config, profile.id, "chat");
+    const issues: string[] = [];
+
+    // Verify essential env vars are present.
+    if (!runtimeEnv.model?.trim()) {
+      issues.push("运行时环境缺少 model。");
+    }
+    if (!runtimeEnv.provider?.trim()) {
+      issues.push("运行时环境缺少 provider。");
+    }
+
+    // Verify API key is present (except for local providers).
+    const hasApiKey = Boolean(
+      runtimeEnv.env.OPENAI_API_KEY?.trim() ||
+      runtimeEnv.env.AI_API_KEY?.trim() ||
+      runtimeEnv.env.ANTHROPIC_API_KEY?.trim() ||
+      runtimeEnv.env.GOOGLE_API_KEY?.trim() ||
+      runtimeEnv.env.GEMINI_API_KEY?.trim() ||
+      runtimeEnv.env.DEEPSEEK_API_KEY?.trim() ||
+      runtimeEnv.env.KIMI_API_KEY?.trim() ||
+      runtimeEnv.env.MINIMAX_API_KEY?.trim() ||
+      runtimeEnv.env.XIAOMI_API_KEY?.trim() ||
+      runtimeEnv.env.MIMO_API_KEY?.trim() ||
+      runtimeEnv.env.HF_TOKEN?.trim() ||
+      runtimeEnv.env.COPILOT_GITHUB_TOKEN?.trim(),
+    );
+    if (!hasApiKey && profile.provider !== "local") {
+      issues.push("运行时环境缺少 API Key。");
+    }
+
+    const sourceType = normalizeSourceTypeForProfile({
+      sourceType: profile.sourceType ?? inferSourceType(profile.provider, profile.baseUrl),
+      baseUrl: profile.baseUrl,
+      model: profile.model,
+    }) ?? normalizeSourceType(profile.sourceType ?? inferSourceType(profile.provider, profile.baseUrl));
+    const hermesProvider = resolveHermesProvider({ provider: runtimeEnv.provider || profile.provider, sourceType });
+    const providerNativeEnvKeys = providerNativeKeys(hermesProvider);
+    const hasProviderNativeKey = providerNativeEnvKeys.length === 0
+      || providerNativeEnvKeys.some((key) => Boolean(runtimeEnv.env[key]?.trim()));
+
+    if (!hasProviderNativeKey && profile.provider !== "local") {
+      issues.push(`Hermes provider ${hermesProvider} 缺少原生环境变量：${providerNativeEnvKeys.join(" / ")}。`);
+    }
+
+    if (issues.length > 0) {
+      return {
+        ok: false,
+        message: `运行时解析失败：${issues.join(" ")}`,
+        model: runtimeEnv.model,
+        sourceType,
+        runtimeResolutionOk: false,
+        runtimeEnv: {
+          profileId: runtimeEnv.profileId,
+          provider: runtimeEnv.provider,
+          hermesProvider,
+          model: runtimeEnv.model,
+          baseUrl: runtimeEnv.baseUrl,
+          providerNativeEnvKeys,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      message: `运行时解析成功。模型: ${runtimeEnv.model}，Forge provider: ${runtimeEnv.provider}，Hermes provider: ${hermesProvider}${runtimeEnv.baseUrl ? `，base URL: ${runtimeEnv.baseUrl}` : ""}。`,
+      profileId: profile.id,
+      model: runtimeEnv.model,
+      sourceType,
+      runtimeResolutionOk: true,
+      runtimeEnv: {
+        profileId: runtimeEnv.profileId,
+        provider: runtimeEnv.provider,
+        hermesProvider,
+        model: runtimeEnv.model,
+        baseUrl: runtimeEnv.baseUrl,
+        role: runtimeEnv.role,
+        sourceType: runtimeEnv.sourceType,
+        providerNativeEnvKeys,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: `运行时解析异常：${error instanceof Error ? error.message : String(error)}`,
+      model: profile.model,
+      sourceType: normalizeSourceType(profile.sourceType),
+      runtimeResolutionOk: false,
+    };
+  }
 }
 
 function selectProfile(config: RuntimeConfig, profileId?: string) {

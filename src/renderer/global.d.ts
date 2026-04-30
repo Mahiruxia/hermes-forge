@@ -14,6 +14,10 @@ import type {
   HermesConnectorPlatformId,
   HermesConnectorSaveInput,
   HermesExistingConfigImportResult,
+  HermesCoreSession,
+  LegacyWslMigrationImportOptions,
+  LegacyWslMigrationPreview,
+  LegacyWslMigrationReport,
   HermesGatewayActionResult,
   HermesGatewayStatus,
   HermesInstallEvent,
@@ -29,7 +33,6 @@ import type {
   HermesWebUiOverview,
   HermesWebUiSettings,
   ModelConnectionTestResult,
-  ManagedWslInstallerIpcResult,
   OneClickDiagnosticsExportResult,
   OneClickDiagnosticsReport,
   OneClickDiagnosticsRunOptions,
@@ -140,6 +143,11 @@ declare global {
       importCliSession(filePath: string): Promise<WorkSession>;
       clearSessionFiles(id: string): Promise<{ ok: boolean; message: string; session: WorkSession }>;
       openSessionFolder(id: string): Promise<{ ok: boolean; message: string }>;
+      hermesCoreSessionsList(limit?: number): Promise<HermesCoreSession[]>;
+      hermesCoreSessionRead(id: string): Promise<{ session?: HermesCoreSession; messages: Array<{ role: "user" | "assistant"; content: string }> } | undefined>;
+      hermesCoreSessionCreate(input?: { sessionId?: string; title?: string; source?: string; model?: string; parentSessionId?: string }): Promise<HermesCoreSession>;
+      hermesCoreSessionRename(id: string, title: string): Promise<boolean>;
+      hermesCoreSessionDelete(id: string): Promise<boolean>;
       getWebUiOverview(): Promise<HermesWebUiOverview>;
       getWebUiSettings(): Promise<HermesWebUiSettings>;
       saveWebUiSettings(input: Partial<HermesWebUiSettings>): Promise<HermesWebUiSettings>;
@@ -193,16 +201,15 @@ declare global {
       updateHermes(): Promise<EngineMaintenanceResult>;
       installHermes(options?: { rootPath?: string }): Promise<HermesInstallResult>;
       repairSetupDependency(id: SetupDependencyRepairId): Promise<SetupDependencyRepairResult>;
-      installerPlan(): Promise<ManagedWslInstallerIpcResult>;
-      installerDryRunRepair(): Promise<ManagedWslInstallerIpcResult>;
-      installerExecuteRepair(): Promise<ManagedWslInstallerIpcResult>;
-      installerInstall(): Promise<ManagedWslInstallerIpcResult>;
-      installerGetLastReport(): Promise<ManagedWslInstallerIpcResult>;
       onInstallHermesEvent(callback: (event: HermesInstallEvent) => void): () => void;
       getRuntimeConfig(): Promise<RuntimeConfig>;
       getPermissionOverview(): Promise<PermissionOverview>;
       getConfigOverview(workspacePath?: string): Promise<any>;
       importExistingHermesConfig(): Promise<HermesExistingConfigImportResult>;
+      legacyWslMigrationDetect(): Promise<LegacyWslMigrationPreview>;
+      legacyWslMigrationPreview(sourcePath?: string): Promise<LegacyWslMigrationPreview>;
+      legacyWslMigrationImport(options?: LegacyWslMigrationImportOptions): Promise<LegacyWslMigrationReport>;
+      legacyWslMigrationGetLastReport(): Promise<LegacyWslMigrationReport | undefined>;
       testHermesWindowsBridge(): Promise<HermesWindowsBridgeTestResult>;
       testHermesSystemAudit(): Promise<HermesSystemAuditResult>;
       updateHermesConfig(input: unknown): Promise<RuntimeConfig>;

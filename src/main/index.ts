@@ -3,6 +3,7 @@ import path from "node:path";
 import { IpcChannels } from "../shared/ipc";
 import { AppPaths } from "./app-paths";
 import { AutoHotkeyService } from "./autohotkey-service";
+import { ensureOfficialHermesHomeLink, resolveActiveHermesHome } from "./hermes-home";
 import { registerIpcHandlers } from "./ipc";
 import { RuntimeConfigStore } from "./runtime-config";
 import { RuntimeEnvResolver } from "./runtime-env-resolver";
@@ -19,6 +20,7 @@ import { FileTreeService } from "../file-manager/file-tree-service";
 import { HermesConnectorService } from "./hermes-connector-service";
 import { HermesModelSyncService } from "./hermes-model-sync";
 import { HermesWebUiService } from "./hermes-webui-service";
+import { HermesCoreBridgeService } from "./hermes-core-bridge-service";
 import { testModelConnection } from "./model-connection-service";
 import { ModelRuntimeProxyService } from "./model-runtime-proxy";
 import { MemoryBudgeter } from "../memory/memory-budgeter";
@@ -28,6 +30,7 @@ import { TaskRunner } from "../process/task-runner";
 import { WorkspaceLock } from "../process/workspace-lock";
 import { EngineProbeService } from "../probes/engine-probe-service";
 import { SetupService } from "../setup/setup-service";
+import { HermesCompatibilityService } from "../setup/hermes-compatibility-service";
 import { ClientAutoUpdateService } from "../updater/client-auto-update-service";
 import { UpdateService } from "../updater/update-service";
 import { killActiveCommands, runCommand } from "../process/command-runner";
@@ -35,20 +38,12 @@ import { resolveEnginePermissions } from "../shared/types";
 import { NativeRuntimeAdapter } from "../runtime/native-runtime-adapter";
 import { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { RuntimeResolver as HermesRuntimeResolver } from "../runtime/runtime-resolver";
-import { resolveHermesCliForRuntime } from "../runtime/hermes-cli-resolver";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import { ShutdownPipeline } from "../runtime/runtime-diagnostics";
-import { WslRuntimeAdapter } from "../runtime/wsl-runtime-adapter";
 import { InstallOrchestrator } from "../install/install-orchestrator";
-import { ManagedWslInstallStrategy } from "../install/managed-wsl-install-strategy";
 import { NativeInstallStrategy } from "../install/native-install-strategy";
-import { WslDoctorService } from "../install/wsl-doctor-service";
-import { WslDoctorReportService } from "../install/wsl-doctor-report-service";
-import { WslDistroService } from "../install/wsl-distro-service";
-import { WslHermesInstallService } from "../install/wsl-hermes-install-service";
-import { WslRepairService } from "../install/wsl-repair-service";
-import { ManagedWslInstallerService } from "../install/managed-wsl-installer-service";
 import { OneClickDiagnosticsOrchestrator } from "./diagnostics/one-click-diagnostics-orchestrator";
+import { LegacyWslMigrationService } from "./legacy-wsl-migration-service";
 
 const portableRoot = process.env.PORTABLE_EXECUTABLE_DIR;
 const isPortable = Boolean(portableRoot);
@@ -84,21 +79,6 @@ app.whenReady().then(async () => {
 
   const configStore = new RuntimeConfigStore(appPaths.runtimeConfigPath());
   const resolveHermesRoot = async () => {
-    const config = await configStore.read();
-    const runtime = {
-      mode: config.hermesRuntime?.mode ?? "windows",
-      distro: config.hermesRuntime?.distro?.trim() || undefined,
-      pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
-      managedRoot: config.hermesRuntime?.managedRoot?.trim() || undefined,
-      windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
-      cliPermissionMode: config.hermesRuntime?.cliPermissionMode ?? "yolo",
-      permissionPolicy: config.hermesRuntime?.permissionPolicy ?? "bridge_guarded",
-      workerMode: config.hermesRuntime?.workerMode ?? "off",
-      installSource: config.hermesRuntime?.installSource,
-    };
-    if (runtime.mode === "wsl") {
-      return (await resolveHermesCliForRuntime(configStore, runtime)).rootPath;
-    }
     return configStore.getEnginePath("hermes");
   };
   const hermesRuntimeResolver = new HermesRuntimeResolver(appPaths, resolveHermesRoot);
@@ -107,9 +87,7 @@ app.whenReady().then(async () => {
   const autoHotkeyService = new AutoHotkeyService();
   const runtimeProbeService = new RuntimeProbeService(configStore, hermesRuntimeResolver, undefined, fetch);
   const runtimeAdapterFactory: RuntimeAdapterFactory = (runtime) =>
-    runtime.mode === "wsl"
-      ? new WslRuntimeAdapter(runtime, hermesRuntimeResolver, runtimeProbeService)
-      : new NativeRuntimeAdapter(runtime, hermesRuntimeResolver, runtimeProbeService);
+    new NativeRuntimeAdapter({ ...runtime, mode: "windows", distro: undefined, workerMode: "off" }, hermesRuntimeResolver, runtimeProbeService);
   const hermes = new HermesCliAdapter(
     appPaths,
     budgeter,
@@ -120,7 +98,8 @@ app.whenReady().then(async () => {
   );
   const sessionLog = new SessionLog(appPaths);
   const sessionAgentInsightService = new SessionAgentInsightService(appPaths, sessionLog);
-  const workSessionService = new WorkSessionService(appPaths);
+  const hermesCoreBridgeService = new HermesCoreBridgeService(appPaths, resolveHermesRoot);
+  const workSessionService = new WorkSessionService(appPaths, hermesCoreBridgeService);
   await workSessionService.ensureDefault();
   const workspaceLock = new WorkspaceLock();
   const snapshotManager = new SnapshotManager(appPaths);
@@ -131,10 +110,19 @@ app.whenReady().then(async () => {
   await secretVault.status();
   const modelRuntimeProxyService = new ModelRuntimeProxyService();
   const runtimeEnvResolver = new RuntimeEnvResolver(configStore, secretVault, modelRuntimeProxyService);
-  const hermesModelSyncService = new HermesModelSyncService(runtimeEnvResolver, () => appPaths.hermesDir(), runtimeAdapterFactory);
-  // Startup must stay lightweight: model/bridge synchronization can touch WSL,
-  // Hermes files, or local bridge processes, so it is deferred to explicit UI
-  // actions and config-save paths.
+  const hermesModelSyncService = new HermesModelSyncService(runtimeEnvResolver, () => appPaths.hermesDir());
+  // Ensure the standalone Hermes CLI can find Forge-managed config by linking
+  // the official ~/.hermes to our managed home directory.
+  ensureOfficialHermesHomeLink(appPaths.hermesDir()).then((result) => {
+    if (!result.linked && result.reason) {
+      console.warn("[Hermes Forge] Official Hermes home was left untouched:", result.reason);
+    }
+  }).catch((error) => {
+    console.warn("[Hermes Forge] Failed to link official Hermes home:", error);
+  });
+  // Startup must stay lightweight: model/bridge synchronization can touch Hermes
+  // files or local bridge processes, so it is deferred to explicit UI actions
+  // and config-save paths.
   const hermesSystemAuditService = new HermesSystemAuditService(
     appPaths,
     hermes,
@@ -143,15 +131,9 @@ app.whenReady().then(async () => {
   );
   const engineProbeService = new EngineProbeService(appPaths, hermes, configStore, runtimeProbeService);
   const nativeInstallStrategy = new NativeInstallStrategy(appPaths, hermes, configStore, runtimeProbeService, runtimeAdapterFactory);
-  const wslDoctorService = new WslDoctorService(configStore, runtimeProbeService, runtimeAdapterFactory);
-  const wslRepairService = new WslRepairService(configStore, runtimeProbeService, runtimeAdapterFactory, wslDoctorService);
-  const wslDistroService = new WslDistroService(appPaths, configStore, runtimeProbeService, runtimeAdapterFactory, wslDoctorService);
-  const wslHermesInstallService = new WslHermesInstallService(appPaths, configStore, runtimeProbeService, runtimeAdapterFactory, wslDoctorService);
-  const managedWslInstallerService = new ManagedWslInstallerService(appPaths, wslDoctorService, wslRepairService, wslDistroService, wslHermesInstallService);
-  const wslDoctorReportService = new WslDoctorReportService(appPaths, configStore, wslDoctorService, wslRepairService, managedWslInstallerService);
-  const managedWslInstallStrategy = new ManagedWslInstallStrategy(managedWslInstallerService);
-  const installOrchestrator = new InstallOrchestrator(configStore, nativeInstallStrategy, managedWslInstallStrategy);
-  const setupService = new SetupService(appPaths, hermes, configStore, secretVault, runtimeProbeService, runtimeAdapterFactory, installOrchestrator);
+  const installOrchestrator = new InstallOrchestrator(configStore, nativeInstallStrategy);
+  const hermesCompatibilityService = new HermesCompatibilityService(configStore, () => resolveActiveHermesHome(appPaths.hermesDir()));
+  const setupService = new SetupService(appPaths, hermes, configStore, secretVault, runtimeProbeService, runtimeAdapterFactory, installOrchestrator, hermesCompatibilityService);
   const diagnosticsService = new DiagnosticsService(
     appPaths,
     setupService,
@@ -168,7 +150,6 @@ app.whenReady().then(async () => {
       rendererMode: isDevMode ? "dev" : "built",
     }),
     runtimeProbeService,
-    wslDoctorReportService,
     async () => buildPermissionOverview({
       config: await configStore.read(),
       bridge: { running: false, capabilities: [] },
@@ -176,7 +157,6 @@ app.whenReady().then(async () => {
       resolveHermesRoot,
       runtimeAdapterFactory,
     }),
-    async () => managedWslInstallerService.getLastInstallReport(),
   );
   const hermesWebUiService = new HermesWebUiService(
     appPaths,
@@ -193,6 +173,7 @@ app.whenReady().then(async () => {
     runtimeAdapterFactory,
     () => configStore.read(),
   );
+  const legacyWslMigrationService = new LegacyWslMigrationService(appPaths, configStore, secretVault, hermesConnectorService);
   const preflightService = new TaskPreflightService(
     appPaths,
     workspaceLock,
@@ -291,25 +272,26 @@ app.whenReady().then(async () => {
     sessionLog,
     sessionAgentInsightService,
     () => mainWindow,
+    workSessionService,
   );
   const activeOneClickDiagnosticsOrchestrator = new OneClickDiagnosticsOrchestrator(
     configStore,
     setupService,
     runtimeProbeService,
-    wslDoctorService,
-    wslRepairService,
     hermesConnectorService,
     hermesModelSyncService,
     hermesSystemAuditService,
     diagnosticsService,
     workspaceLock,
     taskRunner,
+    hermesCompatibilityService,
     (config) => testModelConnection({
       config,
       secretVault,
       runtimeAdapterFactory,
       resolveHermesRoot,
     }),
+    () => resolveActiveHermesHome(appPaths.hermesDir()),
   );
 
   registerIpcHandlers(mainWindow, {
@@ -321,6 +303,7 @@ app.whenReady().then(async () => {
     sessionLog,
     sessionAgentInsightService,
     workSessionService,
+    hermesCoreBridgeService,
     hermes,
     updateService,
     clientAutoUpdateService,
@@ -336,7 +319,7 @@ app.whenReady().then(async () => {
     hermesSystemAuditService,
     approvalService,
     runtimeAdapterFactory,
-    managedWslInstallerService,
+    legacyWslMigrationService,
     oneClickDiagnosticsOrchestrator: activeOneClickDiagnosticsOrchestrator,
     clientInfo: () => ({
       appVersion: app.getVersion(),
@@ -384,7 +367,7 @@ app.whenReady().then(async () => {
     void (async () => {
       try {
         const check = await setupService.checkHermesAgentCompatibility();
-        if (check.status !== "ok" && mainWindow && !mainWindow.isDestroyed()) {
+        if ((check.status === "missing" || check.status === "failed") && mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IpcChannels.hermesAgentCompatibilityWarning, {
             compatible: false,
             message: check.message,

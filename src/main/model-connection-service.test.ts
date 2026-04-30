@@ -59,7 +59,7 @@ describe("model-connection-service", () => {
     expect(result.message).toContain("Gemini OAuth");
   });
 
-  it("detects custom endpoint tool calling failures and keeps it out of primary-agent role", async () => {
+  it("keeps a chat-capable Windows model usable when the Forge tool probe is inconclusive", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "my-model", context_length: 32000 }] }), { status: 200 }))
@@ -79,9 +79,12 @@ describe("model-connection-service", () => {
       resolveHermesRoot: async () => "D:\\Hermes Agent",
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.failureCategory).toBe("tool_calling_unavailable");
-    expect(result.agentRole).toBe("auxiliary_model");
+    expect(result.ok).toBe(true);
+    expect(result.failureCategory).toBeUndefined();
+    expect(result.agentRole).toBe("primary_agent");
+    expect(result.supportsTools).toBe(false);
+    expect(result.wslReachable).toBeUndefined();
+    expect(result.message).toContain("工具调用由 Hermes");
     expect(result.healthChecks?.map((step) => step.id)).toEqual(expect.arrayContaining(["auth", "models", "chat", "agent_capability"]));
     expect(result.healthChecks?.find((step) => step.id === "agent_capability")?.detail).toContain("标准 tools + required");
   });
@@ -139,7 +142,7 @@ describe("model-connection-service", () => {
     expect(result.healthChecks?.find((step) => step.id === "agent_capability")?.detail).toContain("旧版 functions + function_call");
   });
 
-  it("stops tool-calling probes on HTTP 429 to avoid burning relay quota", async () => {
+  it("keeps the model usable when the tool probe is rate-limited and stops extra probes", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "relay-model", context_length: 32000 }] }), { status: 200 }))
@@ -163,9 +166,10 @@ describe("model-connection-service", () => {
       resolveHermesRoot: async () => "D:\\Hermes Agent",
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.failureCategory).toBe("tool_calling_unavailable");
-    expect(result.message).toContain("HTTP 429");
+    expect(result.ok).toBe(true);
+    expect(result.failureCategory).toBeUndefined();
+    expect(result.agentRole).toBe("primary_agent");
+    expect(result.supportsTools).toBe(false);
     expect(result.recommendedFix).toContain("小时额度");
     expect(result.healthChecks?.find((step) => step.id === "agent_capability")?.detail).toContain("触发限额");
     expect(fetchMock).toHaveBeenCalledTimes(3);

@@ -1,8 +1,8 @@
 import type { LucideIcon } from "lucide-react";
-import { ArrowLeft, Bot, KeyRound, MonitorCog, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Bot, KeyRound, MonitorCog, PlugZap, ShieldCheck } from "lucide-react";
 import { cn } from "../../DashboardPrimitives";
 
-export type ConfigSectionId = "general" | "providers" | "secrets" | "health";
+export type ConfigSectionId = "general" | "providers" | "integrations" | "secrets" | "health";
 
 type ConfigSection = {
   id: ConfigSectionId;
@@ -15,25 +15,31 @@ const SECTIONS: ConfigSection[] = [
   {
     id: "general",
     icon: MonitorCog,
-    label: "Hermes",
-    description: "路径、预热、权限",
+    label: "Agent",
+    description: "安装、路径、状态",
   },
   {
     id: "providers",
     icon: Bot,
-    label: "模型",
+    label: "Models",
     description: "来源、测试、默认模型",
+  },
+  {
+    id: "integrations",
+    icon: PlugZap,
+    label: "Skills & Connectors",
+    description: "技能与连接器入口",
   },
   {
     id: "secrets",
     icon: KeyRound,
-    label: "密钥",
+    label: "Keys",
     description: "本地保存状态",
   },
   {
     id: "health",
     icon: ShieldCheck,
-    label: "诊断",
+    label: "Diagnostics",
     description: "阻塞项与修复",
   },
 ];
@@ -56,7 +62,7 @@ export function ConfigCenterLayout(props: {
               {props.title ?? "配置中心"}
             </h1>
             <p className="mt-1 text-[11px] leading-4 text-slate-500">
-              {props.description ?? "集中管理 Hermes、模型、密钥和系统健康状态。"}
+              {props.description ?? "集中管理 Agent、模型、Skills、连接器、密钥和诊断。"}
             </p>
           </div>
 

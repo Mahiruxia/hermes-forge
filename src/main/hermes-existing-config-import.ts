@@ -32,7 +32,7 @@ export async function importExistingHermesConfig(input: {
     warnings.push("没有在 Hermes .env 中发现可导入的连接器变量。");
   }
 
-  const configPath = path.join(hermesHome, "config.yaml");
+  const configPath = await resolveHermesConfigPath(hermesHome);
   const modelBlock = parseTopLevelModelBlock(await fs.readFile(configPath, "utf8").catch(() => ""));
   const modelImport = await importModelProfile({
     configStore: input.configStore,
@@ -114,6 +114,21 @@ async function readEnvValues(envPath: string) {
     values[trimmed.slice(0, index).trim()] = unquoteEnv(trimmed.slice(index + 1).trim());
   }
   return values;
+}
+
+async function resolveHermesConfigPath(hermesHome: string) {
+  const modern = path.join(hermesHome, "config.yaml");
+  if (await exists(modern)) return modern;
+  return path.join(hermesHome, "cli-config.yaml");
+}
+
+async function exists(targetPath: string) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function buildImportedModelProfile(envValues: Record<string, string>, modelBlock: HermesModelBlock): ModelProfile | undefined {
@@ -262,4 +277,5 @@ export const testOnly = {
   inferImportedSourceType,
   parseTopLevelModelBlock,
   readEnvValues,
+  resolveHermesConfigPath,
 };

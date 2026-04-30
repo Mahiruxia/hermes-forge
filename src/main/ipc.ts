@@ -10,6 +10,7 @@ import type { RuntimeEnvResolver } from "./runtime-env-resolver";
 import type { SessionLog } from "./session-log";
 import type { SessionAgentInsightService } from "./session-agent-insight-service";
 import type { WorkSessionService } from "./work-session-service";
+import type { HermesCoreBridgeService } from "./hermes-core-bridge-service";
 import type { HermesConnectorService } from "./hermes-connector-service";
 import type { HermesModelSyncService } from "./hermes-model-sync";
 import { modelRuntimeChanged } from "./model-runtime-snapshot";
@@ -28,13 +29,14 @@ import type { SetupService } from "../setup/setup-service";
 import type { ClientAutoUpdateService } from "../updater/client-auto-update-service";
 import type { UpdateService } from "../updater/update-service";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
-import type { ManagedWslInstallerService } from "../install/managed-wsl-installer-service";
 import type { OneClickDiagnosticsOrchestrator } from "./diagnostics/one-click-diagnostics-orchestrator";
+import type { LegacyWslMigrationService } from "./legacy-wsl-migration-service";
 import { importExistingHermesConfig } from "./hermes-existing-config-import";
 import { buildPermissionOverview } from "./permission-overview-service";
 import {
   discoverCustomEndpointSources,
   draftToModelProfile as draftToModelProfileFromConnection,
+  deepTestModelConnection,
   inferSourceType as inferConnectionSourceType,
   testModelConnection,
 } from "./model-connection-service";
@@ -59,10 +61,6 @@ import type {
   HermesStatusSummary,
   LocalModelDiscoveryResult,
   ModelConnectionTestResult,
-  ManagedWslInstallerIpcResult,
-  ManagedWslInstallerPhase,
-  ManagedWslInstallerReport,
-  ManagedWslInstallerStatus,
   ModelRole,
   ModelProfile,
   RuntimeConfig,
@@ -97,6 +95,10 @@ const attachmentSourcePathsSchema = z.array(workspacePathInputSchema).max(12);
 const setupDependencyRepairIdSchema = z.enum(["git", "python", "hermes_pyyaml", "weixin_aiohttp"]);
 const installHermesOptionsSchema = z.object({
   rootPath: z.string().trim().min(1).max(1000).optional(),
+}).optional();
+const legacyWslMigrationImportOptionsSchema = z.object({
+  sourcePath: z.string().trim().min(1).max(1000).optional(),
+  overwriteSkills: z.boolean().optional(),
 }).optional();
 const oneClickDiagnosticsRunOptionsSchema = z.object({
   autoFix: z.boolean().optional(),
@@ -192,6 +194,7 @@ export type IpcServices = {
   sessionLog: SessionLog;
   sessionAgentInsightService: SessionAgentInsightService;
   workSessionService: WorkSessionService;
+  hermesCoreBridgeService: HermesCoreBridgeService;
   hermes: EngineAdapter;
   updateService: UpdateService;
   clientAutoUpdateService: ClientAutoUpdateService;
@@ -207,71 +210,23 @@ export type IpcServices = {
   hermesSystemAuditService: HermesSystemAuditService;
   approvalService: ApprovalService;
   runtimeAdapterFactory: RuntimeAdapterFactory;
-  managedWslInstallerService: ManagedWslInstallerService;
+  legacyWslMigrationService: LegacyWslMigrationService;
   oneClickDiagnosticsOrchestrator: OneClickDiagnosticsOrchestrator;
   clientInfo: () => ClientInfo;
 };
 
 export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcServices) {
-  function installerResult(action: ManagedWslInstallerIpcResult["action"], report?: ManagedWslInstallerReport): ManagedWslInstallerIpcResult {
-    if (report) {
-      return {
-        ok: report.status !== "failed" && report.status !== "blocked",
-        action,
-        phase: report.phase,
-        step: report.step,
-        status: report.status,
-        code: report.code,
-        summary: report.summary,
-        detail: report.detail,
-        fixHint: report.fixHint,
-        debugContext: report.debugContext,
-        report,
-      };
-    }
-    return {
-      ok: false,
-      action,
-      phase: "doctor",
-      step: "report-unavailable",
-      status: "failed",
-      code: "manual_action_required",
-      summary: "当前没有可用的 Managed WSL 安装报告。",
-      fixHint: "请先执行计划或安装动作，再查看最后报告。",
-    };
-  }
-
-  function installerError(
-    action: ManagedWslInstallerIpcResult["action"],
-    error: unknown,
-    report?: ManagedWslInstallerReport,
-  ): ManagedWslInstallerIpcResult {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      action,
-      phase: report?.phase ?? "doctor",
-      step: report?.step ?? "ipc-error",
-      status: "failed",
-      code: report?.code ?? "manual_action_required",
-      summary: report?.summary ?? "Managed WSL 安装器调用失败。",
-      detail: report?.detail ?? message,
-      fixHint: report?.fixHint ?? "请查看 installer report 或导出 diagnostics 继续排查。",
-      debugContext: {
-        ...(report?.debugContext ?? {}),
-        errorMessage: message,
-      },
-      report,
-    };
-  }
-
   async function writeRuntimeConfigWithModelSync(nextConfig: RuntimeConfig, forceModelSync = false) {
     const previous = await services.configStore.read();
     const saved = await services.configStore.write(nextConfig);
     if (forceModelSync || modelRuntimeChanged(previous, saved)) {
-      const sync = await services.hermesModelSyncService.syncRuntimeConfig(saved);
-      if (sync.synced) {
-        await restartGatewayIfRunning(services);
+      try {
+        const sync = await services.hermesModelSyncService.syncRuntimeConfig(saved);
+        if (sync.synced) {
+          await restartGatewayIfRunning(services);
+        }
+      } catch (error) {
+        console.warn("[Hermes Forge] Model sync failed after config save:", error);
       }
     }
     return saved;
@@ -457,6 +412,27 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     const error = await shell.openPath(session.sessionFilesPath);
     return { ok: !error, message: error || `已打开会话文件夹：${session.sessionFilesPath}` };
   });
+  ipcMain.handle(IpcChannels.hermesCoreSessionsList, (_event, limit?: number) =>
+    services.hermesCoreBridgeService.listSessions(typeof limit === "number" ? limit : 80),
+  );
+  ipcMain.handle(IpcChannels.hermesCoreSessionRead, (_event, id: string) =>
+    services.hermesCoreBridgeService.readSession(z.string().trim().min(1).max(240).parse(id)),
+  );
+  ipcMain.handle(IpcChannels.hermesCoreSessionCreate, (_event, input) =>
+    services.hermesCoreBridgeService.createSession(z.object({
+      sessionId: z.string().trim().max(240).optional(),
+      title: z.string().trim().max(120).optional(),
+      source: z.string().trim().max(80).optional(),
+      model: z.string().trim().max(200).optional(),
+      parentSessionId: z.string().trim().max(240).optional(),
+    }).parse(input ?? {})),
+  );
+  ipcMain.handle(IpcChannels.hermesCoreSessionRename, (_event, id: string, title: string) =>
+    services.hermesCoreBridgeService.renameSession(z.string().trim().min(1).max(240).parse(id), z.string().trim().max(120).parse(title)),
+  );
+  ipcMain.handle(IpcChannels.hermesCoreSessionDelete, (_event, id: string) =>
+    services.hermesCoreBridgeService.deleteSession(z.string().trim().min(1).max(240).parse(id)),
+  );
 
   ipcMain.handle(IpcChannels.getWebUiOverview, () => services.hermesWebUiService.overview());
   ipcMain.handle(IpcChannels.getWebUiSettings, () => services.hermesWebUiService.getSettings());
@@ -571,41 +547,6 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.repairSetupDependency, (_event, id: unknown) =>
     services.setupService.repairDependency(setupDependencyRepairIdSchema.parse(id)),
   );
-  ipcMain.handle(IpcChannels.installerPlan, async (): Promise<ManagedWslInstallerIpcResult> => {
-    try {
-      return installerResult("plan", await services.managedWslInstallerService.planInstall());
-    } catch (error) {
-      return installerError("plan", error, services.managedWslInstallerService.getLastInstallReport());
-    }
-  });
-  ipcMain.handle(IpcChannels.installerDryRunRepair, async (): Promise<ManagedWslInstallerIpcResult> => {
-    try {
-      return installerResult("dry_run_repair", await services.managedWslInstallerService.dryRunRepair());
-    } catch (error) {
-      return installerError("dry_run_repair", error, services.managedWslInstallerService.getLastInstallReport());
-    }
-  });
-  ipcMain.handle(IpcChannels.installerExecuteRepair, async (): Promise<ManagedWslInstallerIpcResult> => {
-    try {
-      return installerResult("execute_repair", await services.managedWslInstallerService.executeRepair());
-    } catch (error) {
-      return installerError("execute_repair", error, services.managedWslInstallerService.getLastInstallReport());
-    }
-  });
-  ipcMain.handle(IpcChannels.installerInstall, async (): Promise<ManagedWslInstallerIpcResult> => {
-    try {
-      return installerResult("install", await services.managedWslInstallerService.install());
-    } catch (error) {
-      return installerError("install", error, services.managedWslInstallerService.getLastInstallReport());
-    }
-  });
-  ipcMain.handle(IpcChannels.installerGetLastReport, async (): Promise<ManagedWslInstallerIpcResult> => {
-    try {
-      return installerResult("get_last_report", services.managedWslInstallerService.getLastInstallReport());
-    } catch (error) {
-      return installerError("get_last_report", error, services.managedWslInstallerService.getLastInstallReport());
-    }
-  });
   ipcMain.handle(IpcChannels.getRuntimeConfig, () => readRuntimeConfigWithModelFallback(services));
   ipcMain.handle(IpcChannels.listModelProviders, () => defaultProviderRegistry.definitions());
   ipcMain.handle(IpcChannels.getPermissionOverview, async () => {
@@ -615,9 +556,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       bridge: { running: false, capabilities: [] },
       appPaths: services.appPaths,
       resolveHermesRoot: async () => {
-        return config.hermesRuntime?.mode === "wsl" && config.hermesRuntime?.managedRoot?.trim()
-          ? config.hermesRuntime.managedRoot.trim()
-          : services.configStore.getEnginePath("hermes");
+        return services.configStore.getEnginePath("hermes");
       },
       runtimeAdapterFactory: services.runtimeAdapterFactory,
     });
@@ -629,6 +568,14 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       hermesConnectorService: services.hermesConnectorService,
     }),
   );
+  ipcMain.handle(IpcChannels.legacyWslMigrationDetect, () => services.legacyWslMigrationService.detect());
+  ipcMain.handle(IpcChannels.legacyWslMigrationPreview, (_event, sourcePath?: unknown) =>
+    services.legacyWslMigrationService.preview(typeof sourcePath === "string" ? sourcePath : undefined),
+  );
+  ipcMain.handle(IpcChannels.legacyWslMigrationImport, (_event, input?: unknown) =>
+    services.legacyWslMigrationService.import(legacyWslMigrationImportOptionsSchema.parse(input ?? undefined) ?? {}),
+  );
+  ipcMain.handle(IpcChannels.legacyWslMigrationGetLastReport, () => services.legacyWslMigrationService.getLastReport());
   ipcMain.handle(IpcChannels.testHermesSystemAudit, () => services.hermesSystemAuditService.test());
   ipcMain.handle(IpcChannels.getConfigOverview, async (_event, workspacePath?: string) => {
     const runtimeConfig = await readRuntimeConfigWithModelFallback(services);
@@ -913,6 +860,15 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   );
   ipcMain.handle(IpcChannels.discoverLocalModelSources, async (): Promise<LocalModelDiscoveryResult> => {
     return discoverCustomEndpointSources();
+  });
+
+  ipcMain.handle(IpcChannels.deepTestModelConnection, async (_event, profileId?: string) => {
+    const config = await services.configStore.read();
+    return deepTestModelConnection({
+      config,
+      runtimeEnvResolver: services.runtimeEnvResolver,
+      profileId,
+    });
   });
 
   ipcMain.handle(IpcChannels.testModelConnection, async (_event, input?: string | Record<string, unknown>): Promise<ModelConnectionTestResult> => {
@@ -1704,6 +1660,7 @@ function isLocalModelSourceType(sourceType: ModelConnectionTestResult["sourceTyp
 }
 
 function modelSupportsRuntimeRole(profile: ModelProfile, role: ModelRole) {
+  const minPrimaryContext = 16_000;
   const definition = defaultProviderRegistry.definitions().find((item) => item.sourceType === profile.sourceType)
     ?? defaultProviderRegistry.getByModelOrUrl(profile.model, profile.baseUrl).definition;
   const runtimeCompatibility = definition.runtimeCompatibility ?? "runtime";
@@ -1720,10 +1677,12 @@ function modelSupportsRuntimeRole(profile: ModelProfile, role: ModelRole) {
     };
   }
   if (role === "chat" && profile.agentRole && profile.agentRole !== "primary_agent") {
-    return { ok: false, message: "这个模型的工具调用或上下文能力不足，不能作为 Hermes 主模型。" };
-  }
-  if ((role === "chat" || role === "coding_plan") && profile.supportsTools === false) {
-    return { ok: false, message: "这个模型最近一次测试没有通过 tool calling，不能同步给 Hermes runtime。" };
+    if (profile.agentRole === "provider_only") {
+      return { ok: false, message: "这个模型只支持 provider 接入，不能作为 Hermes 主模型。" };
+    }
+    if (typeof profile.maxTokens === "number" && profile.maxTokens < minPrimaryContext) {
+      return { ok: false, message: "这个模型上下文窗口不足，不能作为 Hermes 主模型。" };
+    }
   }
   if (profile.lastHealthStatus === "failed") {
     return { ok: false, message: "这个模型最近一次健康检查失败，请重新测试通过后再设置用途。" };

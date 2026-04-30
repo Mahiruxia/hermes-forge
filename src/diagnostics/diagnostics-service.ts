@@ -9,10 +9,8 @@ import type { EngineProbeService } from "../probes/engine-probe-service";
 import type { SetupService } from "../setup/setup-service";
 import type { SnapshotManager } from "../process/snapshot-manager";
 import type { WorkspaceLock } from "../process/workspace-lock";
-import type { ClientInfo, DiagnosticExportResult } from "../shared/types";
-import type { ManagedWslInstallerReport, PermissionOverview } from "../shared/types";
+import type { ClientInfo, DiagnosticExportResult, PermissionOverview } from "../shared/types";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
-import type { WslDoctorReportService } from "../install/wsl-doctor-report-service";
 import { redactSensitiveValue } from "../shared/redaction";
 
 const diagnosticsSessionMappingSchema = z.record(z.string(), z.unknown());
@@ -29,9 +27,7 @@ export class DiagnosticsService {
     private readonly workspaceLock: WorkspaceLock,
     private readonly clientInfo: () => ClientInfo,
     private readonly runtimeProbeService?: RuntimeProbeService,
-    private readonly wslDoctorReportService?: WslDoctorReportService,
     private readonly permissionOverviewProvider?: () => Promise<PermissionOverview>,
-    private readonly lastInstallReportProvider?: () => Promise<ManagedWslInstallerReport | undefined>,
   ) {}
 
   async export(workspacePath?: string): Promise<DiagnosticExportResult> {
@@ -72,9 +68,7 @@ export class DiagnosticsService {
     const locks = await capture("locks", async () => this.workspaceLock.listActive(workspaceId), []);
     const probes = await capture("probes", () => this.engineProbeService.probeHermes(workspacePath), undefined);
     const runtimeProbe = await capture("runtimeProbe", () => this.runtimeProbeService?.probe({ workspacePath }) ?? Promise.resolve(undefined), undefined);
-    const wslDoctor = await capture("wslDoctor", () => this.wslDoctorReportService?.build(workspacePath) ?? Promise.resolve(undefined), undefined);
     const permissionOverview = await capture("permissionOverview", () => this.permissionOverviewProvider?.() ?? Promise.resolve(undefined), undefined);
-    const lastInstallReport = await capture("lastInstallReport", () => this.lastInstallReportProvider?.() ?? Promise.resolve(undefined), undefined);
     const installLogs = await capture("installLogs", () => this.listInstallLogs(), []);
     const setup = await capture("setup", () => this.setupService.getSummary(workspacePath), { ready: false, blocking: [], checks: [] });
     const sessionMappings = await capture("sessionMappings", () => this.listSessionMappings(), []);
@@ -90,8 +84,6 @@ export class DiagnosticsService {
       probes,
       runtimeProbe,
       permissionOverview,
-      wslDoctor,
-      lastInstallReport,
       memory,
       snapshots,
       locks,
@@ -103,10 +95,6 @@ export class DiagnosticsService {
     });
 
     await fs.writeFile(path.join(dir, "diagnostics.json"), JSON.stringify(report, null, 2), "utf8");
-    if (wslDoctor) {
-      await fs.writeFile(path.join(dir, "wsl-doctor.json"), JSON.stringify(wslDoctor, null, 2), "utf8");
-      await fs.writeFile(path.join(dir, "WSL_DOCTOR_SUMMARY.txt"), wslDoctor.summaryText, "utf8");
-    }
     await fs.writeFile(path.join(dir, "README.txt"), [
       "诊断报告已脱敏，不包含 API Key 明文。",
       diagnosticErrors.length ? `部分诊断项读取失败，详见 diagnostics.json 的 diagnosticErrors 字段。失败项：${diagnosticErrors.map((item) => item.section).join(", ")}` : "所有诊断项已尽量读取完成。",

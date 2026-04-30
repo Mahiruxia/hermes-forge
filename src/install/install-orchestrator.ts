@@ -14,32 +14,21 @@ export class InstallOrchestrator {
   constructor(
     private readonly configStore: RuntimeConfigStore,
     private readonly nativeStrategy: InstallStrategy,
-    private readonly managedWslStrategy: InstallStrategy,
   ) {}
 
   async plan(options: InstallOptions = {}): Promise<InstallPlan> {
-    return this.strategyFor(await this.mode(options)).plan(options);
+    return this.nativeStrategy.plan({ ...options, mode: "windows" });
   }
 
   async install(publish?: InstallPublisher, options: InstallOptions = {}): Promise<InstallStrategyResult> {
-    return this.strategyFor(await this.mode(options)).install(publish, options);
+    return this.nativeStrategy.install(publish, { ...options, mode: "windows" });
   }
 
   async update(options: InstallOptions = {}): Promise<InstallStrategyUpdateResult> {
-    return this.strategyFor(await this.mode(options)).update();
+    return this.nativeStrategy.update();
   }
 
   async repairDependency(id: SetupDependencyRepairId, options: InstallOptions = {}): Promise<InstallStrategyRepairResult> {
-    return this.strategyFor(await this.mode(options)).repairDependency(id);
-  }
-
-  private async mode(options: InstallOptions) {
-    if (options.mode) return options.mode;
-    const config = await this.configStore.read();
-    return config.hermesRuntime?.mode ?? "windows";
-  }
-
-  private strategyFor(mode: "windows" | "wsl") {
-    return mode === "wsl" ? this.managedWslStrategy : this.nativeStrategy;
+    return this.nativeStrategy.repairDependency(id);
   }
 }

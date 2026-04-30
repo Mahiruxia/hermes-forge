@@ -2,13 +2,17 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppPaths } from "./app-paths";
+import type { HermesCoreBridgeService } from "./hermes-core-bridge-service";
 import type { WorkSession } from "../shared/types";
 
 const DEFAULT_SESSION_TITLE = "新的会话";
 const DEFAULT_SESSION_LIST_LIMIT = 80;
 
 export class WorkSessionService {
-  constructor(private readonly appPaths: AppPaths) {}
+  constructor(
+    private readonly appPaths: AppPaths,
+    private readonly hermesCoreBridge?: Pick<HermesCoreBridgeService, "createSession" | "renameSession" | "deleteSession">,
+  ) {}
 
   async list(includeArchived = false, limit = DEFAULT_SESSION_LIST_LIMIT): Promise<WorkSession[]> {
     await fs.mkdir(this.appPaths.sessionsRootDir(), { recursive: true });
@@ -37,11 +41,22 @@ export class WorkSessionService {
     const id = `session-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
     const at = new Date().toISOString();
     await this.ensureSessionLayout(id);
+    const hermesSession = await this.hermesCoreBridge?.createSession({
+      sessionId: id,
+      title: title.trim() || DEFAULT_SESSION_TITLE,
+      source: "zhenghebao-client",
+    }).catch(() => undefined);
     const session: WorkSession = {
       id,
       title: title.trim() || DEFAULT_SESSION_TITLE,
       status: "idle",
       sessionFilesPath: this.appPaths.sessionFilesDir(id),
+      hermesSessionId: hermesSession?.id ?? id,
+      hermesSource: hermesSession?.source ?? "zhenghebao-client",
+      parentHermesSessionId: hermesSession?.parentSessionId,
+      messageCount: hermesSession?.messageCount ?? 0,
+      model: hermesSession?.model,
+      lastSyncedAt: at,
       workspaceStatus: "unselected",
       createdAt: at,
       updatedAt: at,
@@ -64,6 +79,9 @@ export class WorkSessionService {
       updatedAt: new Date().toISOString(),
     };
     await this.write(next);
+    if (patch.title && next.hermesSessionId) {
+      await this.hermesCoreBridge?.renameSession(next.hermesSessionId, next.title).catch(() => undefined);
+    }
     return next;
   }
 
@@ -92,6 +110,7 @@ export class WorkSessionService {
       projectId: current.projectId,
       tags: current.tags,
       lastMessagePreview: current.lastMessagePreview,
+      parentHermesSessionId: current.hermesSessionId,
       updatedAt: new Date().toISOString(),
     };
     await this.write(next);
@@ -136,6 +155,9 @@ export class WorkSessionService {
   async delete(id: string): Promise<{ ok: boolean; message: string; deletedId: string }> {
     const current = await this.readOrThrow(id);
     await this.cleanupWorkspaceArtifacts(current);
+    if (current.hermesSessionId) {
+      await this.hermesCoreBridge?.deleteSession(current.hermesSessionId).catch(() => undefined);
+    }
     await fs.rm(this.appPaths.sessionAgentInsightPath(id), { force: true }).catch(() => undefined);
     await fs.rm(this.appPaths.sessionDir(id), { recursive: true, force: true });
     return {
@@ -180,6 +202,8 @@ export class WorkSessionService {
       return {
         ...parsed,
         sessionFilesPath: parsed.sessionFilesPath ?? (parsed as WorkSession & { defaultPath?: string }).defaultPath ?? this.appPaths.sessionFilesDir(parsed.id),
+        hermesSessionId: parsed.hermesSessionId ?? parsed.id,
+        hermesSource: parsed.hermesSource ?? "zhenghebao-client",
         workspaceStatus: parsed.workspaceStatus ?? (parsed.workspacePath ? "ready" : "unselected"),
       };
     } catch {
@@ -198,6 +222,19 @@ export class WorkSessionService {
   private async write(session: WorkSession) {
     await this.ensureSessionLayout(session.id);
     await fs.writeFile(this.appPaths.sessionMetadataPath(session.id), JSON.stringify(session, null, 2), "utf8");
+  }
+
+  async syncHermesSession(id: string, patch: Partial<Pick<WorkSession, "hermesSessionId" | "parentHermesSessionId" | "title" | "messageCount" | "model" | "lastMessagePreview">>): Promise<WorkSession> {
+    const current = await this.readOrThrow(id);
+    const next: WorkSession = {
+      ...current,
+      ...patch,
+      title: patch.title?.trim() || current.title,
+      lastSyncedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await this.write(next);
+    return next;
   }
 
   private async ensureSessionLayout(sessionId: string) {

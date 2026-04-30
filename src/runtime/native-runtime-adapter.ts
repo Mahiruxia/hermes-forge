@@ -6,6 +6,7 @@ import type { RuntimeProbeService } from "./runtime-probe-service";
 import type { RuntimeAdapter } from "./runtime-adapter";
 import { preflightFromProbe } from "./runtime-adapter";
 import type { BuildHermesLaunchInput, RuntimeLaunchSpec, RuntimePreflightResult, RuntimeProbeResult } from "./runtime-types";
+import { isWindowsHermesExecutable } from "./hermes-cli-paths";
 
 export class NativeRuntimeAdapter implements RuntimeAdapter {
   private pythonSpec?: Promise<{ command: string; args: string[]; label: string; lastError?: string }>;
@@ -25,7 +26,11 @@ export class NativeRuntimeAdapter implements RuntimeAdapter {
   }
 
   async buildHermesLaunch(input: BuildHermesLaunchInput): Promise<RuntimeLaunchSpec> {
-    const python = await this.resolvePython(input.rootPath, input.pythonArgs[0] ?? path.join(input.rootPath, "hermes"), input.env);
+    const cliPath = input.pythonArgs[0] ?? path.join(input.rootPath, "hermes");
+    if (isWindowsHermesExecutable(cliPath)) {
+      return this.launchFromExecutable(input, cliPath, input.pythonArgs.slice(1));
+    }
+    const python = await this.resolvePython(input.rootPath, cliPath, input.env);
     return this.launchFromPython(input, python, input.pythonArgs);
   }
 
@@ -51,6 +56,27 @@ export class NativeRuntimeAdapter implements RuntimeAdapter {
         runtimeRootPath: input.rootPath,
         runtimeCwd: input.cwd,
         pythonCommand: python.label,
+      },
+    };
+  }
+
+  private launchFromExecutable(
+    input: BuildHermesLaunchInput,
+    cliPath: string,
+    args: string[],
+  ): RuntimeLaunchSpec {
+    return {
+      command: cliPath,
+      args,
+      cwd: input.cwd,
+      env: input.env,
+      detached: false,
+      runtimeKind: "windows",
+      diagnostics: {
+        label: "Hermes CLI executable",
+        runtimeRootPath: input.rootPath,
+        runtimeCwd: input.cwd,
+        pythonCommand: cliPath,
       },
     };
   }

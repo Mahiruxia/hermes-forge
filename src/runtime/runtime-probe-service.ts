@@ -1,11 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runCommand } from "../process/command-runner";
-import type { HermesRuntimeConfig, RuntimeConfig, WindowsBridgeStatus } from "../shared/types";
+import type { HermesRuntimeConfig, WindowsBridgeStatus } from "../shared/types";
 import type { RuntimeConfigStore } from "../main/runtime-config";
-import { resolveHermesCliForRuntime, resolveWslHome } from "./hermes-cli-resolver";
 import type { RuntimeResolver, ParsedCommand } from "./runtime-resolver";
-import { parseCommandLine, parseWslHost, toWslPath } from "./runtime-resolver";
+import { parseCommandLine } from "./runtime-resolver";
+import { resolveWindowsHermesCliPath } from "./hermes-cli-paths";
 import type {
   RuntimeBridgeProbe,
   RuntimeCommandProbe,
@@ -29,7 +29,6 @@ type BridgeProvider = {
 };
 
 const COMMAND_TIMEOUT_MS = 8000;
-const WSL_TIMEOUT_MS = 10000;
 
 export class RuntimeProbeService {
   constructor(
@@ -43,49 +42,22 @@ export class RuntimeProbeService {
     const config = await this.configStore.read().catch(() => undefined);
     const runtime = input.runtime ?? this.runtimeResolver.runtimeFromConfig(config);
     const paths = await this.runtimeResolver.resolvePaths({ runtime, workspacePath: input.workspacePath });
-    let cliResolutionError: string | undefined;
-    let rootPath = runtime.mode === "wsl" && config?.hermesRuntime?.managedRoot?.trim()
-      ? config.hermesRuntime.managedRoot.trim()
-      : await this.configStore.getEnginePath("hermes");
-    if (runtime.mode === "wsl") {
-      try {
-        const resolved = await resolveHermesCliForRuntime(this.configStore, runtime, { persist: input.persistResolvedHermesPath });
-        rootPath = resolved.rootPath;
-      } catch (error) {
-        cliResolutionError = error instanceof Error ? error.message : String(error);
-        const home = await resolveWslHome(runtime).catch(() => undefined);
-        rootPath = config?.hermesRuntime?.managedRoot?.trim()
-          || (home ? `${home.replace(/\/+$/, "")}/.hermes-forge/hermes-agent` : rootPath);
-      }
-    }
-    const runtimeRootPath = runtime.mode === "wsl" ? toWslPath(rootPath) : rootPath;
-    const runtimeCliPath = runtime.mode === "wsl" ? `${runtimeRootPath.replace(/\/+$/, "")}/hermes` : path.join(rootPath, "hermes");
+    const rootPath = await this.configStore.getEnginePath("hermes");
+    const resolvedWindowsCliPath = await resolveWindowsHermesCliPath(rootPath);
 
     const [powershell, python, git, winget, wsl] = await Promise.all([
       this.probeCommand("powershell.exe", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], "PowerShell", "windows"),
-      runtime.mode === "wsl"
-        ? Promise.resolve({
-          available: true,
-          label: runtime.pythonCommand?.trim() || "python3",
-          command: runtime.pythonCommand?.trim() || "python3",
-          args: [],
-          message: "WSL runtime 使用发行版内 Python，跳过 Windows Python 探测。",
-        } satisfies RuntimeCommandProbe)
-        : this.probeNativePython(runtime, rootPath),
+      this.probeNativePython(runtime, rootPath),
       this.probeCommand("git", ["--version"], "Git", "windows"),
       process.platform === "win32"
         ? this.probeCommand("winget", ["--version"], "winget", "windows")
         : Promise.resolve({ available: false, message: "非 Windows 平台跳过 winget 检测。" } satisfies RuntimeCommandProbe),
-      this.probeWsl(runtime, runtimeRootPath),
+      this.probeWsl(),
     ]);
 
-    const hermesRootExists = runtime.mode === "wsl"
-      ? Boolean(wsl.available && await this.wslPathExists(runtime, runtimeRootPath))
-      : await exists(rootPath);
-    const hermesCliExists = runtime.mode === "wsl"
-      ? Boolean(wsl.available && await this.wslPathExists(runtime, runtimeCliPath))
-      : await exists(runtimeCliPath);
-    const bridge = await this.probeBridge(runtime, wsl.hostIp);
+    const hermesRootExists = await exists(rootPath);
+    const hermesCliExists = Boolean(resolvedWindowsCliPath);
+    const bridge = await this.probeBridge();
     const issues = this.collectIssues({
       runtime,
       powershell,
@@ -96,7 +68,6 @@ export class RuntimeProbeService {
       hermesRootExists,
       hermesCliExists,
       bridge,
-      cliResolutionError,
     });
     const overallStatus = this.overallStatus(runtime, issues);
 
@@ -207,100 +178,14 @@ export class RuntimeProbeService {
     };
   }
 
-  private async probeWsl(runtime: HermesRuntimeConfig, runtimeRootPath: string): Promise<RuntimeWslProbe> {
-    if (process.platform !== "win32") {
-      return { available: false, message: "当前不是 Windows 平台，WSL 不可用。" };
-    }
-    const status = await runCommand("wsl.exe", ["--status"], {
-      cwd: process.cwd(),
-      timeoutMs: WSL_TIMEOUT_MS,
-      commandId: "runtime.probe.wsl.status",
-      runtimeKind: "windows",
-    });
-    if (status.exitCode !== 0) {
-      return {
-        available: false,
-        status: status.stderr || status.stdout,
-        message: status.stderr || status.stdout || status.diagnostics?.spawnError || "wsl.exe 不可用。",
-      };
-    }
-    const distroName = runtime.distro?.trim();
-    const list = await runCommand("wsl.exe", ["-l", "-q"], {
-      cwd: process.cwd(),
-      timeoutMs: WSL_TIMEOUT_MS,
-      commandId: "runtime.probe.wsl.list",
-      runtimeKind: "windows",
-    });
-    const distros = list.stdout.replace(/\0/g, "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const distroExists = distroName ? distros.some((item) => item.toLowerCase() === distroName.toLowerCase()) : distros.length > 0;
-    if (runtime.mode !== "wsl") {
-      return {
-        available: true,
-        status: status.stdout || status.stderr,
-        distroExists,
-        distroName,
-        message: "WSL 可用；当前 runtime 未启用 WSL。",
-      };
-    }
-    if (!distroExists) {
-      return {
-        available: true,
-        status: status.stdout || status.stderr,
-        distroExists: false,
-        distroName,
-        message: distroName ? `未找到 WSL 发行版：${distroName}` : "没有可用 WSL 发行版。",
-      };
-    }
-    const wslArgs = [...wslDistroArgs(runtime)];
-    const reachable = await runCommand("wsl.exe", [...wslArgs, "sh", "-lc", "uname -a"], {
-      cwd: process.cwd(),
-      timeoutMs: WSL_TIMEOUT_MS,
-      commandId: "runtime.probe.wsl.uname",
-      runtimeKind: "wsl",
-    });
-    const pythonCommand = runtime.pythonCommand?.trim() || "python3";
-    const python = reachable.exitCode === 0
-      ? await runCommand("wsl.exe", [...wslArgs, pythonCommand, "--version"], {
-        cwd: process.cwd(),
-        timeoutMs: WSL_TIMEOUT_MS,
-        commandId: "runtime.probe.wsl.python",
-        runtimeKind: "wsl",
-      })
-      : undefined;
-    const route = reachable.exitCode === 0
-      ? await runCommand("wsl.exe", [...wslArgs, "ip", "route", "show", "default"], {
-        cwd: process.cwd(),
-        timeoutMs: WSL_TIMEOUT_MS,
-        commandId: "runtime.probe.wsl.route",
-        runtimeKind: "wsl",
-      })
-      : undefined;
+  private async probeWsl(): Promise<RuntimeWslProbe> {
     return {
-      available: true,
-      status: status.stdout || status.stderr,
-      distroExists,
-      distroName,
-      distroReachable: reachable.exitCode === 0,
-      pythonAvailable: python?.exitCode === 0,
-      pythonCommand,
-      hostIp: parseWslHost(route?.stdout ?? "") || "127.0.0.1",
-      message: reachable.exitCode === 0
-        ? `WSL 发行版可进入，${pythonCommand} ${python?.exitCode === 0 ? "可用" : "不可用"}。`
-        : reachable.stderr || reachable.stdout || "WSL 发行版无法进入。",
+      available: false,
+      message: "WSL 不再参与运行环境探测；旧数据导入由 Legacy WSL Migration 单独处理。",
     };
   }
 
-  private async wslPathExists(runtime: HermesRuntimeConfig, targetPath: string) {
-    const result = await runCommand("wsl.exe", [...wslDistroArgs(runtime), "--", "bash", "-lc", `test -e ${shellQuote(targetPath)}`], {
-      cwd: process.cwd(),
-      timeoutMs: WSL_TIMEOUT_MS,
-      commandId: "runtime.probe.wsl.path-exists",
-      runtimeKind: "wsl",
-    });
-    return result.exitCode === 0;
-  }
-
-  private async probeBridge(runtime: HermesRuntimeConfig, wslHost?: string): Promise<RuntimeBridgeProbe> {
+  private async probeBridge(): Promise<RuntimeBridgeProbe> {
     const status = this.bridge?.status();
     if (!this.bridge || !status?.running) {
       return {
@@ -311,7 +196,7 @@ export class RuntimeProbeService {
         message: "Windows Control Bridge 未启动。",
       };
     }
-    const host = runtime.mode === "wsl" ? wslHost || "127.0.0.1" : "127.0.0.1";
+    const host = "127.0.0.1";
     const access = this.bridge.accessForHost(host);
     if (!access) {
       return {
@@ -324,20 +209,7 @@ export class RuntimeProbeService {
         message: "Bridge access 信息不可用。",
       };
     }
-    if (runtime.mode !== "wsl") {
-      const reachable = await this.httpHealth(access);
-      return {
-        configured: true,
-        running: true,
-        reachable,
-        host,
-        port: status.port,
-        url: access.url,
-        status,
-        message: reachable ? "Bridge 本机 health 可访问。" : "Bridge 本机 health 不可访问。",
-      };
-    }
-    const reachable = await this.wslBridgeHealth(runtime, access);
+    const reachable = await this.httpHealth(access);
     return {
       configured: true,
       running: true,
@@ -346,7 +218,7 @@ export class RuntimeProbeService {
       port: status.port,
       url: access.url,
       status,
-      message: reachable ? "Bridge 可从 WSL 访问。" : "Bridge 无法从 WSL 访问。",
+      message: reachable ? "Bridge 本机 health 可访问。" : "Bridge 本机 health 不可访问。",
     };
   }
 
@@ -362,23 +234,6 @@ export class RuntimeProbeService {
     }
   }
 
-  private async wslBridgeHealth(runtime: HermesRuntimeConfig, access: BridgeAccess) {
-    const python = runtime.pythonCommand?.trim() || "python3";
-    const script = [
-      "import sys, urllib.request",
-      "req=urllib.request.Request(sys.argv[1], headers={'Authorization':'Bearer '+sys.argv[2]})",
-      "resp=urllib.request.urlopen(req, timeout=5)",
-      "print(resp.status)",
-    ].join("; ");
-    const result = await runCommand("wsl.exe", [...wslDistroArgs(runtime), python, "-c", script, `${access.url}/v1/health`, access.token], {
-      cwd: process.cwd(),
-      timeoutMs: WSL_TIMEOUT_MS,
-      commandId: "runtime.probe.bridge.wsl-health",
-      runtimeKind: "wsl",
-    });
-    return result.exitCode === 0 && result.stdout.includes("200");
-  }
-
   private collectIssues(input: {
     runtime: HermesRuntimeConfig;
     powershell: RuntimeCommandProbe;
@@ -389,7 +244,6 @@ export class RuntimeProbeService {
     hermesRootExists: boolean;
     hermesCliExists: boolean;
     bridge: RuntimeBridgeProbe;
-    cliResolutionError?: string;
   }) {
     const issues: RuntimeIssue[] = [];
     const add = (code: RuntimeIssueCode, severity: RuntimeIssue["severity"], summary: string, detail?: string, fixHint?: string, debugContext?: Record<string, unknown>) => {
@@ -402,29 +256,18 @@ export class RuntimeProbeService {
       add("python_missing", input.runtime.mode === "windows" ? "error" : "warning", "Windows Python 不可用。", input.python.message, "请安装 Python 或在设置中填写 Hermes Python 命令。");
     }
     if (!input.git.available) {
-      add("git_missing", "warning", "Git 不可用。", input.git.message, "首次自动安装 Hermes 需要 Git。");
+      add("git_missing", "warning", "Git 不可用。", input.git.message, "官网 Windows 安装脚本会优先尝试自动补齐；若失败请手动安装 Git。");
     }
     if (process.platform === "win32" && !input.winget.available) {
-      add("winget_missing", "warning", "winget 不可用。", input.winget.message, "一键修复 Git/Python 依赖需要 winget，缺失时可手动安装。");
-    }
-    if (input.runtime.mode === "wsl") {
-      if (!input.wsl.available) {
-        add("wsl_missing", "error", "WSL 不可用。", input.wsl.message, "请启用 WSL 并安装目标 Linux 发行版。");
-      } else if (input.wsl.distroExists === false) {
-        add("wsl_distro_missing", "error", "目标 WSL 发行版不存在。", input.wsl.message, "请在设置中选择已安装发行版，或安装 Managed WSL 发行版。", { distro: input.runtime.distro });
-      } else if (input.wsl.distroReachable === false) {
-        add("wsl_distro_unreachable", "error", "目标 WSL 发行版无法进入。", input.wsl.message, "请运行 wsl.exe 检查发行版状态。", { distro: input.runtime.distro });
-      } else if (!input.wsl.pythonAvailable) {
-        add("wsl_python_missing", "error", "WSL 内 Python 不可用。", input.wsl.message, "请在 WSL 中安装 Python，或修改 runtime pythonCommand。", { pythonCommand: input.runtime.pythonCommand });
-      }
+      add("winget_missing", "warning", "winget 不可用。", input.winget.message, "官网 Windows 安装脚本仍会尝试 uv/zip 等路径；缺失系统包时请按诊断日志手动安装。");
     }
     if (!input.hermesRootExists) {
-      add("hermes_root_missing", "error", "Hermes root 不存在。", input.cliResolutionError, "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。");
+      add("hermes_root_missing", "error", "Hermes root 不存在。", undefined, "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。");
     } else if (!input.hermesCliExists) {
-      add("hermes_cli_missing", "error", "Hermes CLI 文件不存在。", input.cliResolutionError, "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。");
+      add("hermes_cli_missing", "error", "Hermes CLI 文件不存在。", undefined, "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。");
     }
     if (!input.bridge.reachable) {
-      add(input.bridge.running ? "bridge_unreachable" : "bridge_disabled", "warning", "Windows Control Bridge 不可达。", input.bridge.message, "Bridge 只影响 WSL 调用 Windows 控制能力，不应阻断 Hermes CLI 检测；需要 host command 时再重启客户端或刷新 Bridge。");
+      add(input.bridge.running ? "bridge_unreachable" : "bridge_disabled", "warning", "Windows Control Bridge 不可达。", input.bridge.message, "Bridge 不应阻断 Windows Native Hermes CLI 检测；需要桌面控制能力时再重启客户端或刷新 Bridge。");
     }
     return issues;
   }
@@ -440,12 +283,8 @@ export class RuntimeProbeService {
     if (errors.some((issue) => issue.code === "hermes_root_missing" || issue.code === "hermes_cli_missing" || issue.code === "runtime_mismatch")) {
       return "misconfigured";
     }
-    return runtime.mode === "wsl" ? "unavailable" : "degraded";
+    return "degraded";
   }
-}
-
-export function wslDistroArgs(runtime: Pick<HermesRuntimeConfig, "distro">) {
-  return runtime.distro?.trim() ? ["-d", runtime.distro.trim()] : [];
 }
 
 function looksLikeFilePath(value: string) {
@@ -459,8 +298,4 @@ async function exists(targetPath: string) {
   } catch {
     return false;
   }
-}
-
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }

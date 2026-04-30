@@ -5,6 +5,7 @@ import type { AppPaths } from "./app-paths";
 import { ensureHermesHomeLayout, resolveActiveHermesHome } from "./hermes-home";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
+import { defaultWindowsHermesCliPath, resolveWindowsHermesCliPathSync } from "../runtime/hermes-cli-paths";
 import { validateSkillId, validateProfileName, validateCronSchedule, validateSkillDirectoryName, validateSkillUploadPath } from "../security";
 import type {
   FilePreviewResult,
@@ -636,7 +637,7 @@ export class HermesWebUiService {
         pythonArgs: [
           runtime.mode === "wsl"
             ? `${runtimeRoot.replace(/\/+$/, "")}/hermes`
-            : path.join(root, "hermes"),
+            : this.windowsHermesCliPath(root),
           ...args,
         ],
         cwd: root,
@@ -671,7 +672,7 @@ export class HermesWebUiService {
 
   private async legacyHermesLaunch(root: string, args: string[], hermesHome: string) {
     // Legacy fallback: kept for tests/standalone construction paths until all WebUI callers inject RuntimeAdapterFactory.
-    const cliPath = path.join(root, "hermes");
+    const cliPath = this.windowsHermesCliPath(root);
     return {
       command: "python",
       args: [cliPath, ...args],
@@ -686,6 +687,10 @@ export class HermesWebUiService {
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : "Hermes CLI 调用失败。", exitCode: null };
     }
+  }
+
+  private windowsHermesCliPath(root: string) {
+    return resolveWindowsHermesCliPathSync(root) ?? defaultWindowsHermesCliPath(root);
   }
 
   private theme(value: unknown): ThemePreference["id"] {

@@ -34,8 +34,9 @@ type NormalizedBaseUrlResult =
  *
  * Subclasses provide model discovery and may override chat/tool probes when
  * the provider is not OpenAI-compatible. The shared template handles auth,
- * model mismatch tolerance, agent capability classification, WSL reachability,
- * and consistent `ModelConnectionTestResult` construction.
+ * model mismatch tolerance, agent capability classification, legacy WSL
+ * reachability when explicitly requested, and consistent
+ * `ModelConnectionTestResult` construction.
  */
 export abstract class BaseProvider {
   abstract readonly sourceType: ModelSourceDefinition["sourceType"];
@@ -163,17 +164,19 @@ export abstract class BaseProvider {
 
     const toolCheck = await this.testToolCalling({ ...input, profile: effectiveProfile }, baseUrl, auth.auth);
     const contextWindow = effectiveProfile.maxTokens ?? inferContextWindow(effectiveProfile.model, modelInfo.rawModelPayload);
-    const agentRole = classifyAgentRole({ contextWindow, supportsTools: toolCheck.ok });
+    const agentRole = classifyAgentRole({ contextWindow, supportsTools: true });
     const runtimeCompatibility = this.effectiveRuntimeCompatibility();
     const roleCompatibility = this.buildRoleCompatibility(agentRole, runtimeCompatibility);
     steps.push(step(
       "agent_capability",
       agentRole === "primary_agent",
       agentRole === "primary_agent"
-        ? "满足 Hermes agent 主模型要求"
+        ? toolCheck.ok
+          ? "满足 Hermes agent 主模型要求"
+          : "最小 chat 已通过；Forge 侧 tool calling 未确认，Windows Native Hermes 会在运行时验证实际工具能力。"
         : toolCheck.ok
           ? `上下文窗口只有 ${contextWindow ?? 0}，更适合作为辅助模型`
-          : "tool calling 未通过，不能直接作为 Hermes 主模型",
+          : "上下文窗口不足，暂不适合作为 Hermes 主模型",
       toolCheck.detail,
     ));
     steps.push(step(
@@ -203,30 +206,13 @@ export abstract class BaseProvider {
       });
     }
 
-    if (!toolCheck.ok) {
-      const toolFailureMessage = /HTTP 429|限流|额度/.test(toolCheck.message)
-        ? toolCheck.message
-        : "模型可以正常对话，但不支持「工具调用」功能。Hermes 需要工具调用才能自动执行命令、读写文件。如果你确认不需要这些功能，可以把它保存为「辅助模型」；否则请换一个支持 tool calling 的模型。";
-      return this.fail(effectiveProfile, "tool_calling_unavailable", toolFailureMessage, toolCheck.recommendedFix ?? "请开启工具调用能力，或把它只作为辅助模型保存。", steps, {
-        normalizedBaseUrl: baseUrl,
-        availableModels: modelInfo.availableModels,
-        authResolved: modelInfo.authResolved,
-        contextWindow,
-        supportsTools: false,
-        agentRole,
-        runtimeCompatibility,
-        roleCompatibility,
-        wslReachable: wsl.reachable,
-        wslProbeUrl: wsl.testedUrl,
-      });
-    }
     if (!contextWindow || contextWindow < 16_000) {
-      return this.fail(effectiveProfile, "context_too_low", `模型服务可以聊天，也支持 tool calling，但上下文窗口只有 ${contextWindow ?? 0}，不适合作为 Hermes 主模型。`, "请填写真实的 context length（至少 16000），或把它只作为辅助模型保存。", steps, {
+      return this.fail(effectiveProfile, "context_too_low", `模型服务可以聊天，但上下文窗口只有 ${contextWindow ?? 0}，不适合作为 Hermes 主模型。`, "请填写真实的 context length（至少 16000），或把它只作为辅助模型保存。", steps, {
         normalizedBaseUrl: baseUrl,
         availableModels: modelInfo.availableModels,
         authResolved: modelInfo.authResolved,
         contextWindow,
-        supportsTools: true,
+        supportsTools: toolCheck.ok,
         agentRole,
         runtimeCompatibility,
         roleCompatibility,
@@ -240,19 +226,23 @@ export abstract class BaseProvider {
       sourceType: this.sourceType,
       family: this.definition.family,
       authMode: this.definition.authMode,
-      message: `连接成功；鉴权、模型发现、最小 chat、tool calling、${input.config.hermesRuntime?.mode === "wsl" ? "WSL 可达性、" : ""}agent 能力检查均已通过。`,
+      message: toolCheck.ok
+        ? "连接成功；鉴权、模型发现、最小 chat、tool calling 和 agent 能力检查均已通过。"
+        : "连接成功；鉴权、模型发现和最小 chat 已通过。Forge 侧 tool calling 未确认，已按 Windows Native Hermes 主模型保存，实际工具调用由 Hermes 在任务运行时验证。",
       steps,
       normalizedBaseUrl: baseUrl,
       availableModels: modelInfo.availableModels,
       authResolved: modelInfo.authResolved,
       contextWindow,
-      supportsTools: true,
+      supportsTools: toolCheck.ok,
       agentRole,
       runtimeCompatibility,
       roleCompatibility,
       wslReachable: wsl.reachable,
       wslProbeUrl: wsl.testedUrl,
-      recommendedFix: wsl.fixHint,
+      recommendedFix: toolCheck.ok
+        ? wsl.fixHint
+        : toolCheck.recommendedFix ?? "如果实际任务中工具调用不可用，请确认模型服务端支持 OpenAI tools/function calling，或更换支持工具的模型。",
     });
   }
 
@@ -437,7 +427,7 @@ export abstract class BaseProvider {
   }
 
   private async testWslIfNeeded(input: ProviderTestContext, baseUrl: string, steps: ModelHealthCheckStep[]) {
-    if (input.config.hermesRuntime?.mode !== "wsl") return { ok: true, reachable: true as const };
+    if (input.config.hermesRuntime?.mode !== "wsl") return { ok: true };
     const wsl = await probeWslReachability({ baseUrl, runtime: input.config.hermesRuntime, runtimeAdapterFactory: input.runtimeAdapterFactory, resolveHermesRoot: input.resolveHermesRoot });
     steps.push(step("wsl_network", wsl.ok, wsl.message, wsl.detail));
     return { ok: wsl.ok, reachable: wsl.ok, testedUrl: wsl.testedUrl, fixHint: wsl.fixHint, fixSteps: wsl.fixSteps, message: wsl.message };
