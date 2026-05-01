@@ -456,11 +456,20 @@ export class OneClickDiagnosticsOrchestrator {
       }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
       return { ...result, command: `${cliPath} ${args.join(" ")}` };
     }
-    const candidates = [
+    const candidates = process.platform === "win32" ? [
       path.join(rootPath, "venv", "Scripts", "python.exe"),
       path.join(rootPath, ".venv", "Scripts", "python.exe"),
       pythonCommand,
       "py -3",
+      "python",
+      "python3",
+    ] : [
+      path.join(rootPath, "venv", "bin", "python3"),
+      path.join(rootPath, ".venv", "bin", "python3"),
+      path.join(rootPath, "venv", "bin", "python"),
+      path.join(rootPath, ".venv", "bin", "python"),
+      pythonCommand,
+      "python3",
       "python",
     ];
     let last: { exitCode: number | null; stdout: string; stderr: string } = { exitCode: 1, stdout: "", stderr: "未找到可用 Python 解释器。" };
@@ -727,9 +736,15 @@ export class OneClickDiagnosticsOrchestrator {
     }
 
     const candidates: string[] = [];
-    candidates.push(path.join(resolvedCli.rootPath, "venv", "Scripts", "python.exe"));
-    candidates.push(path.join(resolvedCli.rootPath, ".venv", "Scripts", "python.exe"));
-    candidates.push(path.join(resolvedCli.rootPath, ".venv", "bin", "python"));
+    if (process.platform === "win32") {
+      candidates.push(path.join(resolvedCli.rootPath, "venv", "Scripts", "python.exe"));
+      candidates.push(path.join(resolvedCli.rootPath, ".venv", "Scripts", "python.exe"));
+    } else {
+      candidates.push(path.join(resolvedCli.rootPath, "venv", "bin", "python3"));
+      candidates.push(path.join(resolvedCli.rootPath, ".venv", "bin", "python3"));
+      candidates.push(path.join(resolvedCli.rootPath, "venv", "bin", "python"));
+      candidates.push(path.join(resolvedCli.rootPath, ".venv", "bin", "python"));
+    }
     candidates.push(configuredPython);
     if (configuredPython !== "python") candidates.push("python");
     if (configuredPython !== "python3") candidates.push("python3");

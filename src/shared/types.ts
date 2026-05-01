@@ -28,7 +28,7 @@ export type HermesInstallSourceConfig = {
 };
 
 export type HermesRuntimeConfig = {
-  mode: "windows" | "wsl";
+  mode: "windows" | "wsl" | "darwin";
   distro?: string;
   pythonCommand?: string;
   managedRoot?: string;
@@ -47,7 +47,7 @@ export type WindowsBridgeStatus = {
   message?: string;
 };
 
-export type PermissionOverviewRuntime = "wsl" | "native";
+export type PermissionOverviewRuntime = "wsl" | "native" | "darwin";
 
 export type PermissionOverviewBlockReason = {
   code: "policy_not_enforceable" | "unsupported_runtime_enforcement" | "manual_configuration_required" | "unsupported_cli_version" | "unsupported_cli_capability";
@@ -785,6 +785,8 @@ export type EngineUpdateStatus = {
   engineId: EngineId | "client";
   currentVersion?: string;
   latestVersion?: string;
+  remoteRef?: string;
+  behindCount?: number;
   updateAvailable: boolean;
   sourceConfigured: boolean;
   message: string;

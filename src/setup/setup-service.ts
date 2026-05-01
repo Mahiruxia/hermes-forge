@@ -218,15 +218,43 @@ export class SetupService {
     return suggestions;
   }
 
-  async updateHermes(): Promise<EngineMaintenanceResult> {
+  async updateHermes(publish?: InstallPublisher): Promise<EngineMaintenanceResult> {
+    const emit = (stage: HermesInstallEvent["stage"], progress: number, message: string, detail?: string) => {
+      publish?.({
+        stage,
+        message,
+        detail,
+        progress,
+        startedAt: new Date().toISOString(),
+        at: new Date().toISOString(),
+      });
+    };
+
     if (this.installOrchestrator) {
-      return this.installOrchestrator.update();
+      emit("preflight", 10, "正在准备 Hermes 更新。", "调用安装编排器...");
+      const result = await this.installOrchestrator.update();
+      if (result.ok) {
+        emit("completed", 100, result.message, "更新完成。");
+      } else {
+        emit("failed", 100, result.message, "更新失败。");
+      }
+      return { ...result, engineId: "hermes" };
     }
+
     const log: string[] = [];
     const startedAt = new Date().toISOString();
     const hermesRoot = await this.configStore.getEnginePath("hermes");
     const launch = await this.hermesMaintenanceLaunch(hermesRoot, ["update"]);
     log.push(`$ ${launch.command} ${JSON.stringify(launch.args)}`);
+
+    emit("preflight", 10, "正在准备 Hermes 更新。", `安装目录：${hermesRoot}`);
+
+    let progress = 15;
+    const progressTimer = setInterval(() => {
+      progress = Math.min(progress + 8, 85);
+      emit("installing_dependencies", progress, "正在执行更新命令...", "请保持网络连接");
+    }, 2500);
+
     const result = await runCommand(launch.command, launch.args, {
       cwd: launch.cwd,
       timeoutMs: DEFAULT_INSTALL_TIMEOUT_MS,
@@ -234,14 +262,98 @@ export class SetupService {
       commandId: "setup.hermes.update",
       runtimeKind: launch.runtimeKind,
     });
+
+    clearInterval(progressTimer);
+
     if (result.stdout.trim()) log.push(result.stdout.trim());
     if (result.stderr.trim()) log.push(result.stderr.trim());
-    const ok = result.exitCode === 0;
-    const message = ok ? "Hermes 更新完成。" : `Hermes 更新失败：exit ${result.exitCode}`;
+    let ok = result.exitCode === 0;
+    let message = ok ? "Hermes 更新完成。" : `Hermes 更新失败：exit ${result.exitCode}`;
+
+    if (ok) {
+      emit("installing_dependencies", 70, "正在同步 Git 代码...", "确保本地仓库与远程一致");
+      const branchResult = await runCommand("git", ["branch", "--show-current"], {
+        cwd: hermesRoot,
+        timeoutMs: 5000,
+      }).catch(() => undefined);
+      const branch = branchResult?.exitCode === 0 ? branchResult.stdout.trim() : "main";
+
+      const pullResult = await runCommand("git", ["pull", "origin", branch || "main"], {
+        cwd: hermesRoot,
+        timeoutMs: 60000,
+      }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) } as Awaited<ReturnType<typeof runCommand>>));
+      log.push(`git pull origin ${branch || "main"}: exit ${pullResult.exitCode}`);
+      if (pullResult.stdout.trim()) log.push(pullResult.stdout.trim());
+      if (pullResult.stderr.trim()) log.push(pullResult.stderr.trim());
+
+      if (pullResult.exitCode !== 0) {
+        emit("installing_dependencies", 75, "Git pull 失败，尝试强制同步...", pullResult.stderr.trim() || "未知错误");
+        const fetchResult = await runCommand("git", ["fetch", "origin", branch || "main"], {
+          cwd: hermesRoot,
+          timeoutMs: 60000,
+        }).catch(() => undefined);
+        if (fetchResult?.exitCode === 0) {
+          const hardReset = await runCommand("git", ["reset", "--hard", `origin/${branch || "main"}`], {
+            cwd: hermesRoot,
+            timeoutMs: 10000,
+          }).catch(() => undefined);
+          if (hardReset?.exitCode === 0) {
+            log.push("git reset --hard origin/" + (branch || "main") + " succeeded");
+          } else {
+            log.push("git reset --hard failed: " + (hardReset?.stderr ?? "unknown"));
+            ok = false;
+            message = "Hermes 更新失败：Git 代码同步失败，请检查网络或手动执行 git pull。";
+          }
+        } else {
+          ok = false;
+          message = "Hermes 更新失败：无法从远程获取最新代码，请检查网络连接。";
+        }
+      }
+
+      if (ok) {
+        const verifyResult = await runCommand("git", ["rev-list", `HEAD..origin/${branch || "main"}`, "--count"], {
+          cwd: hermesRoot,
+          timeoutMs: 5000,
+        }).catch(() => undefined);
+        const behindCount = verifyResult?.exitCode === 0 ? parseInt(verifyResult.stdout.trim(), 10) : NaN;
+        if (!isNaN(behindCount) && behindCount > 0) {
+          log.push(`Warning: still ${behindCount} commits behind after update attempt`);
+          ok = false;
+          message = `Hermes 更新后仍有 ${behindCount} 个提交未同步，可能远程分支有变或本地有冲突。请尝试一键修复。`;
+        }
+      }
+
+      if (ok && await this.exists(path.join(hermesRoot, "pyproject.toml"))) {
+        emit("installing_dependencies", 85, "正在更新 Python 依赖...", "pip install -e .");
+        const pipResult = await runCommand("python", ["-m", "pip", "install", "-e", "."], {
+          cwd: hermesRoot,
+          timeoutMs: 120000,
+          env: {
+            PYTHONUTF8: "1",
+            PYTHONIOENCODING: "utf-8",
+            PYTHONPATH: `${hermesRoot}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
+            NO_COLOR: "1",
+          },
+        }).catch(() => undefined);
+        if (pipResult) {
+          log.push(`pip install -e .: exit ${pipResult.exitCode}`);
+          if (pipResult.stdout.trim()) log.push(pipResult.stdout.trim());
+          if (pipResult.stderr.trim()) log.push(pipResult.stderr.trim());
+        }
+      }
+    }
+
     const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
     await fs.mkdir(logDir, { recursive: true });
     const logPath = path.join(logDir, `hermes-update-${startedAt.replace(/[:.]/g, "-")}.log`);
     await fs.writeFile(logPath, [message, "", ...log].join("\n"), "utf8");
+
+    if (ok) {
+      emit("completed", 100, message, "更新日志已保存。");
+    } else {
+      emit("failed", 100, message, `详情见日志：${logPath}`);
+    }
+
     return { ok, engineId: "hermes", message, log, logPath };
   }
 

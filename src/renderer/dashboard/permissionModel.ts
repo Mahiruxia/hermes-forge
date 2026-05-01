@@ -52,6 +52,7 @@ export type PreflightState = {
 export function runtimeUserLabel(value?: string) {
   if (value === "wsl") return "WSL 原生环境";
   if (value === "windows") return "Windows 本机环境";
+  if (value === "darwin") return "macOS 本机环境";
   return value || "未检测到运行环境";
 }
 
@@ -72,6 +73,7 @@ export function cliPermissionModeUserLabel(value?: string) {
 export function transportUserLabel(value?: string) {
   if (value === "native-arg-env") return "原生 WSL 启动";
   if (value === "windows-headless") return "Windows 本机启动";
+  if (value === "darwin-headless") return "macOS 本机启动";
   if (!value || value === "none") return "尚未建立";
   return value;
 }
@@ -341,7 +343,7 @@ export function buildPreflightState(input: {
   const diagnostics = extractPermissionDiagnostics(input.events);
   const block = policyBlockReason(runtime) ?? diagnostics.policyBlock;
   const bridgeEnabled = runtime.windowsAgentMode !== "disabled" && input.runtimeConfig?.enginePermissions?.hermes?.contextBridge !== false;
-  const transport = runtime.mode === "wsl" ? diagnostics.transport ?? "native-arg-env" : "windows-headless";
+  const transport = runtime.mode === "wsl" ? diagnostics.transport ?? "native-arg-env" : runtime.mode === "darwin" ? "darwin-headless" : "windows-headless";
   const sessionMode = diagnostics.sessionMode ?? (runtime.mode === "wsl" ? "fresh/resume" : "headless");
   const hasRisk = runtime.mode === "wsl" && (runtime.permissionPolicy === "passthrough" || runtime.cliPermissionMode === "yolo");
   const tone: PreflightTone = block ? "red" : input.locked || hasRisk ? "yellow" : "green";

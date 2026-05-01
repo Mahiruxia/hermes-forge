@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen } from "lucide-react";
+import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen, X, ExternalLink } from "lucide-react";
 import { useAppStore } from "../store";
 import type { HermesInstallEvent, SetupCheck, SetupDependencyRepairId } from "../../shared/types";
 
@@ -12,6 +12,8 @@ export function WelcomePage(props: { onComplete: () => void }) {
   const [detail, setDetail] = useState("");
   const [setupChecks, setSetupChecks] = useState<SetupCheck[]>([]);
   const [repairingDependency, setRepairingDependency] = useState<SetupDependencyRepairId | undefined>();
+  const [installStartTime, setInstallStartTime] = useState<number | null>(null);
+  const [macRuntime, setMacRuntime] = useState(false);
   const autoInstallAttemptedRef = useRef(false);
   const installRunningRef = useRef(false);
 
@@ -23,6 +25,13 @@ export function WelcomePage(props: { onComplete: () => void }) {
   }, []);
 
   async function runPreflightThenDeploy() {
+    if (await shouldUseManualMacSetup()) {
+      setStatus("not-found");
+      setProgress(68);
+      setMessage("未检测到可用 Hermes，请选择 macOS Hermes Agent 安装位置。");
+      setDetail("macOS 暂不使用 Windows 自动安装脚本。请先安装 Hermes Agent，然后在设置中选择 Hermes 根目录。");
+      return;
+    }
     void handleAutoDeploy();
   }
 
@@ -49,8 +58,8 @@ export function WelcomePage(props: { onComplete: () => void }) {
         }
 
         setStatus("not-found");
-        setMessage("未检测到可用 Hermes，正在准备自动安装...");
-        setDetail(probe?.probe?.message ?? "将自动尝试部署 Hermes。");
+        setMessage("未检测到可用 Hermes，正在准备下一步...");
+        setDetail(probe?.probe?.message ?? "将根据当前运行环境选择安装方式。");
 
         if (!autoInstallAttemptedRef.current) {
           autoInstallAttemptedRef.current = true;
@@ -59,9 +68,10 @@ export function WelcomePage(props: { onComplete: () => void }) {
       } catch (error) {
         console.error("Hermes detection failed:", error);
         setStatus("not-found");
-        setMessage("检测失败，正在尝试自动安装 Hermes...");
+        const manualMac = await shouldUseManualMacSetup();
+        setMessage(manualMac ? "检测失败，请手动选择 macOS Hermes 安装位置。" : "检测失败，正在尝试自动安装 Hermes...");
         setDetail(error instanceof Error ? error.message : "未知错误");
-        if (!autoInstallAttemptedRef.current) {
+        if (!manualMac && !autoInstallAttemptedRef.current) {
           autoInstallAttemptedRef.current = true;
           void handleAutoDeploy();
         }
@@ -85,12 +95,17 @@ export function WelcomePage(props: { onComplete: () => void }) {
   }, [props, status, store]);
 
   function applyInstallEvent(event: HermesInstallEvent) {
-    installRunningRef.current = event.stage !== "completed" && event.stage !== "failed";
+    const isRunning = event.stage !== "completed" && event.stage !== "failed";
+    installRunningRef.current = isRunning;
     setStatus(event.stage === "completed" ? "found" : event.stage === "failed" ? "not-found" : "installing");
     setProgress(Math.max(0, Math.min(100, event.progress)));
     setMessage(event.message);
     setDetail(event.detail ?? "");
+    if (isRunning && !installStartTime) {
+      setInstallStartTime(Date.now());
+    }
     if (event.stage === "completed" || event.stage === "failed") {
+      setInstallStartTime(null);
       void refreshSetupChecks();
     }
   }
@@ -122,8 +137,16 @@ export function WelcomePage(props: { onComplete: () => void }) {
   }
 
   async function handleAutoDeploy() {
+    if (await shouldUseManualMacSetup()) {
+      setStatus("not-found");
+      setProgress(68);
+      setMessage("macOS 暂不支持一键自动安装");
+      setDetail("请先安装 Hermes Agent，然后点击“手动配置路径”选择 Hermes 根目录。");
+      return;
+    }
     if (installRunningRef.current) return;
     installRunningRef.current = true;
+    setInstallStartTime(Date.now());
     setStatus("installing");
     setProgress((current) => Math.max(current, 12));
     setMessage("正在执行 Hermes 自动安装...");
@@ -163,6 +186,15 @@ export function WelcomePage(props: { onComplete: () => void }) {
     }
   }
 
+  function handleCancelInstall() {
+    installRunningRef.current = false;
+    setInstallStartTime(null);
+    setStatus("not-found");
+    setProgress(0);
+    setMessage("安装已取消");
+    setDetail("你可以点击「重新自动安装」重试，或点击下方链接前往官网手动下载安装包。");
+  }
+
   function handleManualConfig() {
     store.setFirstLaunch(false);
     props.onComplete();
@@ -171,6 +203,13 @@ export function WelcomePage(props: { onComplete: () => void }) {
   function handleSkip() {
     store.setFirstLaunch(false);
     props.onComplete();
+  }
+
+  async function shouldUseManualMacSetup() {
+    const config = await window.workbenchClient.getRuntimeConfig().catch(() => undefined);
+    const isMac = config?.hermesRuntime?.mode === "darwin";
+    setMacRuntime(Boolean(isMac));
+    return Boolean(isMac);
   }
 
   return (
@@ -233,22 +272,24 @@ export function WelcomePage(props: { onComplete: () => void }) {
               {detail ? <p className="mt-2 break-all text-xs leading-5 text-slate-400">{detail}</p> : null}
 
               <div className="mt-6 space-y-3">
-                <button
-                  className="w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
-                  onClick={() => void handleAutoDeploy()}
-                >
-                  <span className="flex items-center justify-center gap-2">
-                    <Sparkles size={16} /> 重新自动安装 Hermes
-                  </span>
-                </button>
+                {!macRuntime ? (
+                  <button
+                    className="w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
+                    onClick={() => void handleAutoDeploy()}
+                  >
+                    <span className="flex items-center justify-center gap-2">
+                      <Sparkles size={16} /> 重新自动安装 Hermes
+                    </span>
+                  </button>
+                ) : null}
 
                 <a
-                  href="https://hermesagent.org.cn/docs/getting-started/windows-installation"
+                  href={macRuntime ? "https://hermesagent.org.cn/" : "https://hermesagent.org.cn/docs/getting-started/windows-installation"}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"
                 >
-                  <BookOpen size={16} /> 查看手动安装教程
+                  <BookOpen size={16} /> {macRuntime ? "查看 Hermes 官网" : "查看手动安装教程"}
                 </a>
 
                 <button
@@ -280,14 +321,43 @@ export function WelcomePage(props: { onComplete: () => void }) {
                 <Loader2 size={28} className="animate-spin text-indigo-600" />
               </div>
               <p className="text-slate-600">{message}</p>
-              {detail ? <p className="mt-2 break-all text-xs leading-5 text-slate-400">{detail}</p> : null}
+              {detail ? <p className="mt-2 break-words text-xs leading-5 text-slate-400">{detail}</p> : null}
               <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-200"
                   style={{ width: `${progress}%` }}
                 />
               </div>
-              <p className="mt-2 text-xs text-slate-400">{progress}%</p>
+              <div className="mt-2 flex items-center justify-center gap-2 text-xs text-slate-400">
+                <span>{progress}%</span>
+                <span>·</span>
+                <span>{installStageLabel(progress)}</span>
+              </div>
+              {progress === 55 && installStartTime && Date.now() - installStartTime > 60_000 ? (
+                <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-left">
+                  <p className="text-[11px] font-medium text-amber-800">为什么卡在 55%？</p>
+                  <p className="mt-1 text-[11px] leading-4 text-amber-700">
+                    此阶段是 Hermes 官方 PowerShell 安装脚本在后台下载依赖包。如果网络较慢或企业防火墙限制了 PowerShell 脚本执行，可能会长时间停留在此处。你可以继续等待，也可以取消后前往官网手动下载安装包。
+                  </p>
+                </div>
+              ) : null}
+              <div className="mt-4 flex flex-col gap-2">
+                <button
+                  className="mx-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+                  onClick={handleCancelInstall}
+                  type="button"
+                >
+                  <X size={14} /> 取消安装
+                </button>
+                <a
+                  href="https://hermesagent.org.cn/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center gap-1 text-xs text-indigo-600 hover:text-indigo-700 hover:underline"
+                >
+                  <ExternalLink size={12} /> 前往 Hermes 官网下载安装包
+                </a>
+              </div>
             </div>
           )}
 
@@ -368,6 +438,14 @@ function welcomeSetupFixLabel(id: SetupDependencyRepairId) {
   if (id === "python") return "装 Python";
   if (id === "hermes_pyyaml") return "修 Hermes";
   return "修微信";
+}
+
+function installStageLabel(progress: number) {
+  if (progress <= 12) return "环境预检";
+  if (progress <= 32) return "下载安装脚本";
+  if (progress <= 62) return "执行官方安装脚本";
+  if (progress <= 82) return "健康检查";
+  return "完成";
 }
 
 function ManualInstallGuide(props: { defaultOpen?: boolean }) {

@@ -161,7 +161,7 @@ export const enginePermissionPolicySchema = z.object({
 });
 
 export const hermesRuntimeSchema = z.object({
-  mode: z.preprocess((value) => value === "wsl" ? "windows" : value, z.literal("windows")).default("windows"),
+  mode: z.preprocess((value) => value === "wsl" ? "windows" : value, z.enum(["windows", "darwin"])).default("windows"),
   distro: z.string().trim().max(120).optional(),
   pythonCommand: z.string().trim().min(1).max(120).default("python3"),
   managedRoot: z.string().trim().max(1000).optional(),
@@ -197,7 +197,7 @@ export const runtimeConfigSchema = z.object({
   enginePermissions: config.enginePermissions ? pickHermesRecord(config.enginePermissions) : undefined,
   hermesRuntime: {
     ...config.hermesRuntime,
-    mode: "windows" as const,
+    mode: (config.hermesRuntime?.mode ?? "windows") as "windows" | "darwin",
     distro: undefined,
     workerMode: "off" as const,
   },

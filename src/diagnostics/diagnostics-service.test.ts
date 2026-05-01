@@ -81,7 +81,7 @@ describe("DiagnosticsService", () => {
         enforcement: { hardEnforceable: ["session: ok"], softGuarded: ["bridge: ok"], notEnforceableYet: ["shell: no"] },
         blocked: false,
         blockReason: null,
-        capabilityProbe: { minimumSatisfied: true, cliVersion: "0.10.0", missing: [], allowedTransports: ["native-arg-env"] },
+        capabilityProbe: { minimumSatisfied: true, cliVersion: "0.12.0", missing: [], allowedTransports: ["native-arg-env"] },
         runtimeReady: true,
         notes: [],
       }),

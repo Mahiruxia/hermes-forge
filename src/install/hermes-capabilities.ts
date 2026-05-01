@@ -1,5 +1,6 @@
 import type { CommandResult } from "../process/command-runner";
 import { isAtLeastVersion, parseHermesVersion } from "./hermes-version";
+import { RESUME_SUPPORT_VERSION } from "./hermes-version-constants";
 
 /**
  * Capability probe shape used by both WSL and Native install verifiers.
@@ -70,13 +71,13 @@ export function parseCapabilityProbe(result: CommandResult): CapabilityProbe {
 }
 
 /**
- * v0.11.0 fallback recognition.
+ * v0.11.0+ fallback recognition.
  *
- * Official NousResearch/hermes-agent v0.11.0+ ships `--resume` but does NOT
+ * Official NousResearch/hermes-agent v0.11.0+ ships `--resume` but may not
  * support `capabilities --json` or `--launch-metadata`. When the capability
- * probe fails but `hermes --version` reports >= 0.11.0, we patch the probe so
- * downstream code can render a precise "use the fork" hint instead of a
- * generic "capability check failed".
+ * probe fails but `hermes --version` reports >= RESUME_SUPPORT_VERSION, we
+ * patch the probe so downstream code can render a precise "use the fork" hint
+ * instead of a generic "capability check failed".
  *
  * The probe stays `minimumSatisfied: false` — this is purely a diagnostic
  * enrichment, not an approval.
@@ -84,7 +85,7 @@ export function parseCapabilityProbe(result: CommandResult): CapabilityProbe {
 export function applyV011Fallback(probe: CapabilityProbe, versionStdout: string): CapabilityProbe {
   if (probe.minimumSatisfied) return probe;
   const detectedVersion = parseHermesVersion(versionStdout);
-  if (!detectedVersion || !isAtLeastVersion(detectedVersion, "0.11.0")) {
+  if (!detectedVersion || !isAtLeastVersion(detectedVersion, RESUME_SUPPORT_VERSION)) {
     return probe;
   }
   return {

@@ -2,6 +2,7 @@ import { runCommand, type CommandResult } from "../process/command-runner";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { HermesRuntimeConfig } from "../shared/types";
 import { isAtLeastVersion, parseHermesVersion } from "../install/hermes-version";
+import { RESUME_SUPPORT_VERSION } from "../install/hermes-version-constants";
 import type { RuntimeAdapter } from "./runtime-adapter";
 import {
   defaultWindowsHermesCliPath,
@@ -239,7 +240,7 @@ function classifyVersionFallback(
     return undefined;
   }
   const version = parseHermesVersion(versionResult.stdout);
-  if (!version || !isAtLeastVersion(version, "0.11.0")) {
+  if (!version || !isAtLeastVersion(version, RESUME_SUPPORT_VERSION)) {
     return undefined;
   }
   return {
@@ -252,6 +253,6 @@ function classifyVersionFallback(
     },
     command,
     result: versionResult,
-    message: `检测到 Hermes CLI ${version}（官方 v0.11.0+），但该版本不支持 Forge 所需的 launch metadata 增强能力；Windows Native 主聊天仍以 Forge 兼容层为准。`,
+    message: `检测到 Hermes CLI ${version}（官方 ${RESUME_SUPPORT_VERSION}+），但该版本不支持 Forge 所需的 launch metadata 增强能力；Windows Native 主聊天仍以 Forge 兼容层为准。`,
   };
 }

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import { isAtLeastVersion, parseHermesVersion } from "../install/hermes-version";
+import { RESUME_SUPPORT_VERSION } from "../install/hermes-version-constants";
 import { runCommand, type CommandResult } from "../process/command-runner";
 import type { HermesCompatibilityReport, RuntimeConfig } from "../shared/types";
 import {
@@ -123,9 +124,9 @@ export class HermesCompatibilityService {
         cliVersion: version,
         supportsLaunchMetadataArg: false,
         supportsLaunchMetadataEnv: false,
-        supportsResume: Boolean(version && isAtLeastVersion(version, "0.11.0")),
+        supportsResume: Boolean(version && isAtLeastVersion(version, RESUME_SUPPORT_VERSION)),
         missing,
-        message: version && isAtLeastVersion(version, "0.11.0")
+        message: version && isAtLeastVersion(version, RESUME_SUPPORT_VERSION)
           ? `官方 Hermes ${version} 可运行，但未提供 Forge 增强能力 ${missing.join(", ")}。`
           : `Hermes capabilities 不可用：${outputText(result).trim() || `exit ${result.exitCode ?? "unknown"}`}`,
       };
@@ -258,10 +259,19 @@ except Exception as e:
         candidates.push({ command: parsed.command, args: parsed.args, label: label ?? raw ?? parsed.command });
       }
     };
-    addFile(path.join(rootPath, "venv", "Scripts", "python.exe"), "venv Python");
-    addFile(path.join(rootPath, ".venv", "Scripts", "python.exe"), ".venv Python");
+    if (process.platform === "win32") {
+      addFile(path.join(rootPath, "venv", "Scripts", "python.exe"), "venv Python");
+      addFile(path.join(rootPath, ".venv", "Scripts", "python.exe"), ".venv Python");
+      add("py -3");
+      add("python");
+    } else {
+      addFile(path.join(rootPath, "venv", "bin", "python3"), "venv Python");
+      addFile(path.join(rootPath, ".venv", "bin", "python3"), ".venv Python");
+      addFile(path.join(rootPath, "venv", "bin", "python"), "venv Python");
+      addFile(path.join(rootPath, ".venv", "bin", "python"), ".venv Python");
+      add("python3");
+    }
     add(config.hermesRuntime?.pythonCommand, "configured Python");
-    add("py -3");
     add("python");
     add("python3");
     return candidates;
