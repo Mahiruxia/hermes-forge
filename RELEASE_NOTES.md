@@ -6,6 +6,12 @@
 
 这是一次 Hermes 更新链路与 macOS Native 兼容性的修复版本。该版本包含当前工作区内 Claude Code 和 Codex 共同完成的最新改动。
 
+### 发布资产
+
+- Windows: `Hermes-Forge-0.2.9-x64.exe`
+- macOS Apple Silicon: `Hermes-Forge-0.2.9-arm64.dmg` / `Hermes-Forge-0.2.9-arm64.zip`
+- 自动更新元数据：`latest.yml`、`latest-mac.yml` 和对应 `*.blockmap`
+
 ### 核心修复
 
 - 修复 Hermes 一键更新只提示成功但本地代码没有真正前进的问题：更新流程现在直接接管 Git fetch / fast-forward pull，并在完成后再次校验本地是否仍落后远端。
