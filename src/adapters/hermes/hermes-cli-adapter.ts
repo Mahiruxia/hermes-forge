@@ -17,9 +17,10 @@ import {
 import { runCommand, streamCommand } from "../../process/command-runner";
 import type { CommandLineEvent } from "../../process/command-runner";
 import { validateWslHermesCli, type HermesCliValidationFailureKind } from "../../runtime/hermes-cli-resolver";
-import { defaultWindowsHermesCliPath, resolveWindowsHermesCliPathSync } from "../../runtime/hermes-cli-paths";
+import { defaultHermesCliPath, resolveHermesCliPathSync } from "../../runtime/hermes-cli-paths";
 import type { RuntimeAdapterFactory } from "../../runtime/runtime-adapter";
 import { toWslPath as runtimeToWslPath } from "../../runtime/runtime-resolver";
+import { isAtLeastVersion, parseHermesVersion } from "../../install/hermes-version";
 import { extractHermesCliLifecycleSessionId, isHermesCliLifecycleLine } from "../../shared/hermes-cli-output";
 import { mapSourceTypeToHermesProvider, normalizeModelIdForSource, normalizeSourceTypeForProfile, resolveHermesProvider } from "../../shared/model-config";
 import { createPermissionBoundaryAudit, createPermissionPolicyBlockReason, type PermissionBoundaryAudit } from "../../shared/permission-audit";
@@ -42,6 +43,10 @@ import type {
 const now = () => new Date().toISOString();
 const HEADLESS_RESULT_START = "__HERMES_FORGE_RESULT_START__";
 const HEADLESS_RESULT_END = "__HERMES_FORGE_RESULT_END__";
+
+function parsePyprojectVersion(content: string) {
+  return content.match(/^\s*version\s*=\s*["']([^"']+)["']/m)?.[1]?.trim();
+}
 
 type HermesInvocation = {
   args: string[];
@@ -537,21 +542,116 @@ export class HermesCliAdapter implements EngineAdapter {
   }
 
   async checkUpdate(): Promise<EngineUpdateStatus> {
+    const health = await this.healthCheck();
     const runtime = await this.hermesRuntime();
     const rootPath = await this.normalizeRootPath(await this.rootPath(), runtime);
-    const launch = await this.commandSpec(runtime, rootPath, ["git", "status", "-sb"]);
-    const result = await runCommand(launch.command, launch.args, {
-      cwd: launch.cwd,
-      timeoutMs: 15000,
-      env: launch.env,
-    });
-    return {
-      engineId: this.id,
-      currentVersion: "0.10.0",
-      updateAvailable: false,
-      sourceConfigured: true,
-      message: result.exitCode === 0 ? "Hermes 使用本地 Git 源码安装，可通过 hermes update 或 git pull 更新。" : "Hermes 更新状态读取失败。",
-    };
+    const cliVersion = health.version ?? "unknown";
+
+    try {
+      const launch = await this.commandSpec(runtime, rootPath, ["git", "status", "-sb"]);
+      const result = await runCommand(launch.command, launch.args, {
+        cwd: launch.cwd,
+        timeoutMs: 5000,
+        env: launch.env,
+      });
+      if (result.exitCode !== 0) {
+        return {
+          engineId: this.id,
+          currentVersion: cliVersion,
+          updateAvailable: false,
+          sourceConfigured: false,
+          message: "Hermes 更新状态读取失败：不是有效的 Git 仓库。",
+        };
+      }
+
+      // Best-effort fetch to check for updates
+      const fetchLaunch = await this.commandSpec(runtime, rootPath, ["git", "fetch", "origin", "--quiet"]);
+      await runCommand(fetchLaunch.command, fetchLaunch.args, {
+        cwd: fetchLaunch.cwd,
+        timeoutMs: 10000,
+        env: fetchLaunch.env,
+      }).catch(() => undefined);
+
+      const headLaunch = await this.commandSpec(runtime, rootPath, ["git", "rev-parse", "--short", "HEAD"]);
+      const headResult = await runCommand(headLaunch.command, headLaunch.args, {
+        cwd: headLaunch.cwd,
+        timeoutMs: 5000,
+        env: headLaunch.env,
+      }).catch(() => undefined);
+      const currentCommit = headResult?.exitCode === 0 ? headResult.stdout.trim() : undefined;
+
+      // Detect current branch instead of hard-coding origin/main
+      const branchLaunch = await this.commandSpec(runtime, rootPath, ["git", "branch", "--show-current"]);
+      const branchResult = await runCommand(branchLaunch.command, branchLaunch.args, {
+        cwd: branchLaunch.cwd,
+        timeoutMs: 5000,
+        env: branchLaunch.env,
+      }).catch(() => undefined);
+      const branch = branchResult?.exitCode === 0 ? branchResult.stdout.trim() : "";
+      const remoteHeadLaunch = await this.commandSpec(runtime, rootPath, ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+      const remoteHeadResult = await runCommand(remoteHeadLaunch.command, remoteHeadLaunch.args, {
+        cwd: remoteHeadLaunch.cwd,
+        timeoutMs: 5000,
+        env: remoteHeadLaunch.env,
+      }).catch(() => undefined);
+      const remoteHead = remoteHeadResult?.exitCode === 0 ? remoteHeadResult.stdout.trim().replace(/^origin\//, "") : "";
+      const remoteRef = `origin/${branch || remoteHead || "main"}`;
+
+      const behindLaunch = await this.commandSpec(runtime, rootPath, ["git", "rev-list", `HEAD..${remoteRef}`, "--count"]);
+      const behindResult = await runCommand(behindLaunch.command, behindLaunch.args, {
+        cwd: behindLaunch.cwd,
+        timeoutMs: 5000,
+        env: behindLaunch.env,
+      }).catch(() => undefined);
+
+      const behindCount = behindResult?.exitCode === 0 ? parseInt(behindResult.stdout.trim(), 10) : 0;
+      const remoteCommitLaunch = await this.commandSpec(runtime, rootPath, ["git", "rev-parse", "--short", remoteRef]);
+      const remoteCommitResult = await runCommand(remoteCommitLaunch.command, remoteCommitLaunch.args, {
+        cwd: remoteCommitLaunch.cwd,
+        timeoutMs: 5000,
+        env: remoteCommitLaunch.env,
+      }).catch(() => undefined);
+      const latestCommit = remoteCommitResult?.exitCode === 0 ? remoteCommitResult.stdout.trim() : undefined;
+      const remotePyprojectLaunch = await this.commandSpec(runtime, rootPath, ["git", "show", `${remoteRef}:pyproject.toml`]);
+      const remotePyprojectResult = await runCommand(remotePyprojectLaunch.command, remotePyprojectLaunch.args, {
+        cwd: remotePyprojectLaunch.cwd,
+        timeoutMs: 5000,
+        env: remotePyprojectLaunch.env,
+      }).catch(() => undefined);
+      const remoteVersion = remotePyprojectResult?.exitCode === 0 ? parsePyprojectVersion(remotePyprojectResult.stdout) : undefined;
+      const currentCliVersion = parseHermesVersion(cliVersion);
+      const versionUpdateAvailable = Boolean(remoteVersion && currentCliVersion && !isAtLeastVersion(currentCliVersion, remoteVersion));
+      const sourceUpdateAvailable = !remoteVersion && !isNaN(behindCount) && behindCount > 0;
+      const updateAvailable = versionUpdateAvailable || sourceUpdateAvailable;
+      const currentVersion = currentCommit ? `${cliVersion} @ ${currentCommit}` : cliVersion;
+      const latestVersion = remoteVersion
+        ? `v${remoteVersion}${latestCommit ? ` (${remoteRef} @ ${latestCommit})` : ""}`
+        : latestCommit ? `${remoteRef} @ ${latestCommit}` : remoteRef;
+      const sourceAheadMessage = !updateAvailable && !isNaN(behindCount) && behindCount > 0
+        ? `Hermes 当前稳定版已是最新（${currentVersion}）。${remoteRef} 还有 ${behindCount} 个未发布源码提交，暂不作为更新提醒。`
+        : undefined;
+
+      return {
+        engineId: this.id,
+        currentVersion,
+        latestVersion,
+        remoteRef,
+        behindCount: isNaN(behindCount) ? undefined : behindCount,
+        updateAvailable,
+        sourceConfigured: true,
+        message: updateAvailable
+          ? `Hermes 有新版本可更新，当前版本 ${currentVersion}，最新版本 ${latestVersion}。`
+          : sourceAheadMessage ?? `Hermes 已是最新，当前版本 ${currentVersion}，最新版本 ${latestVersion}。`,
+      };
+    } catch (error) {
+      return {
+        engineId: this.id,
+        currentVersion: cliVersion,
+        updateAvailable: false,
+        sourceConfigured: true,
+        message: `Hermes 更新检查失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   private async buildPrompt(
@@ -1664,7 +1764,7 @@ export class HermesCliAdapter implements EngineAdapter {
   private hermesCliPath(rootPath: string, runtime: HermesRuntimeConfig) {
     return runtime.mode === "wsl"
       ? `${rootPath.replace(/\/+$/, "")}/hermes`
-      : resolveWindowsHermesCliPathSync(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
+      : resolveHermesCliPathSync(rootPath) ?? defaultHermesCliPath(rootPath);
   }
 
   private async rootPath() {

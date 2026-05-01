@@ -1,4 +1,5 @@
 import type {
+  EngineUpdateStatus,
   HermesInstallEvent,
   HermesRuntimeConfig,
   PermissionOverview,
@@ -44,8 +45,10 @@ export function buildHermesSetupViewModel(input: {
   hermesAvailable?: boolean;
   setupBlocking: SetupCheck[];
   setupLoading: boolean;
+  updateStatus?: EngineUpdateStatus;
+  version?: string;
 }): HermesSetupViewModel {
-  const runtimeLabel = "Windows Native";
+  const runtimeLabel = input.runtime?.mode === "darwin" ? "macOS Native" : "Windows Native";
   const rootPath = input.rootPath.trim();
   const hermesBlocking = input.setupBlocking.find((check) => check.id === "hermes" || check.id.startsWith("hermes-"));
   const modelBlocking = input.setupBlocking.find((check) => check.id === "model" || check.id === "model-secret");
@@ -53,6 +56,8 @@ export function buildHermesSetupViewModel(input: {
   const capabilityBlock = input.permissionOverview?.blockReason?.code === "unsupported_cli_capability"
     || input.permissionOverview?.blockReason?.code === "unsupported_cli_version"
     || input.permissionOverview?.capabilityProbe?.minimumSatisfied === false;
+  const currentVersion = input.version || input.updateStatus?.currentVersion;
+  const latestVersion = input.updateStatus?.latestVersion;
 
   const detailRows = [
     {
@@ -83,6 +88,20 @@ export function buildHermesSetupViewModel(input: {
       tone: input.setupLoading ? "neutral" as const : input.setupBlocking.length ? "danger" as const : "ok" as const,
       detail: firstBlocking?.message ?? "暂无阻塞项。",
     },
+    ...(currentVersion ? [{
+      id: "version",
+      label: "当前版本",
+      value: currentVersion,
+      tone: "ok" as const,
+      detail: input.updateStatus?.updateAvailable ? `有 ${input.updateStatus.behindCount ?? "?"} 个提交可更新` : "已是最新",
+    }] : []),
+    ...(latestVersion ? [{
+      id: "latestVersion",
+      label: "最新版本",
+      value: latestVersion,
+      tone: input.updateStatus?.updateAvailable ? "warn" as const : "ok" as const,
+      detail: input.updateStatus?.remoteRef,
+    }] : []),
   ];
 
   if (input.installEvent && input.installEvent.stage !== "completed" && input.installEvent.stage !== "failed") {
@@ -100,13 +119,14 @@ export function buildHermesSetupViewModel(input: {
   }
 
   if (!rootPath && input.hermesAvailable !== true) {
+    const isMac = input.runtime?.mode === "darwin";
     return {
       state: "missing",
       tone: "danger",
       title: "Hermes Agent 未安装",
-      detail: "当前电脑没有可用的 Windows Hermes Agent。可以按官方脚本自动安装。",
+      detail: `当前电脑没有可用的 ${runtimeLabel} Hermes Agent。请先选择或安装 Hermes Agent。`,
       primaryAction: "install",
-      primaryLabel: "一键安装",
+      primaryLabel: isMac ? "选择安装位置" : "一键安装",
       runtimeLabel,
       statusPill: "未安装",
       detailRows,
@@ -170,11 +190,25 @@ export function buildHermesSetupViewModel(input: {
     };
   }
 
+  if (input.updateStatus?.updateAvailable) {
+    return {
+      state: "update_required",
+      tone: "warn",
+      title: `Hermes Agent 有更新可用`,
+      detail: input.updateStatus.message || `当前版本 ${currentVersion ?? "unknown"}，最新版本 ${latestVersion ?? "unknown"}，建议更新到最新版。`,
+      primaryAction: "update",
+      primaryLabel: "一键更新",
+      runtimeLabel,
+      statusPill: "可更新",
+      detailRows,
+    };
+  }
+
   return {
     state: "ready",
     tone: "ok",
     title: "Hermes Agent 已准备好",
-    detail: "Windows Native Agent、模型配置、Skills 和连接器可以继续使用。",
+    detail: `${runtimeLabel} Agent、模型配置、Skills 和连接器可以继续使用。`,
     primaryAction: "refresh",
     primaryLabel: "刷新状态",
     runtimeLabel,

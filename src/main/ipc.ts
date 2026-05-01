@@ -90,7 +90,10 @@ const updateHermesConfigSchema = z.object({
   runtime: hermesRuntimeSchema.partial().optional(),
 });
 const ALLOWED_OPEN_PATH_EXTENSIONS = new Set([".txt", ".md", ".json", ".csv", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".log"]);
-const BLOCKED_OPEN_PATH_EXTENSIONS = new Set([".exe", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".wsh", ".msi", ".url", ".lnk", ".hta", ".html", ".htm"]);
+const BLOCKED_OPEN_PATH_EXTENSIONS = new Set([
+  ".exe", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".wsh", ".msi", ".url", ".lnk", ".hta", ".html", ".htm",
+  ".app", ".dmg", ".pkg", // macOS
+]);
 const attachmentSourcePathsSchema = z.array(workspacePathInputSchema).max(12);
 const setupDependencyRepairIdSchema = z.enum(["git", "python", "hermes_pyyaml", "weixin_aiohttp"]);
 const installHermesOptionsSchema = z.object({
@@ -280,7 +283,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
 
   ipcMain.handle(IpcChannels.createQuickTextFile, async (_event, input) => {
     const parsed = quickTextFileInputSchema.parse(input ?? {});
-    const desktopPath = path.join(os.homedir(), "Desktop");
+    const desktopPath = app.getPath("desktop");
     await fs.mkdir(desktopPath, { recursive: true });
     const fileName = normalizeTextFileName(parsed.fileName);
     const targetPath = await uniqueFilePath(desktopPath, fileName);
@@ -538,7 +541,11 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
 
   ipcMain.handle(IpcChannels.checkClientUpdate, () => services.clientAutoUpdateService.checkForUpdates(true));
 
-  ipcMain.handle(IpcChannels.updateHermes, () => services.setupService.updateHermes());
+  ipcMain.handle(IpcChannels.updateHermes, (event) =>
+    services.setupService.updateHermes((payload) => {
+      event.sender.send(IpcChannels.installHermesEvent, payload);
+    }),
+  );
   ipcMain.handle(IpcChannels.installHermes, (event, input?: unknown) =>
     services.setupService.installHermes((payload) => {
       event.sender.send(IpcChannels.installHermesEvent, payload);

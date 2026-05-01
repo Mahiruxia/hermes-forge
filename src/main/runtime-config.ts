@@ -4,6 +4,7 @@ import { runtimeConfigSchema } from "../shared/schemas";
 import { migrateRuntimeConfigModels } from "../shared/model-config";
 import { defaultEnginePermissions } from "../shared/types";
 import type { EngineId, RuntimeConfig } from "../shared/types";
+import { getDefaultHermesHome, getDefaultInstallRoot, getPlatformKind } from "../platform";
 
 export type RuntimeConfigRecovery = {
   configPath: string;
@@ -12,10 +13,9 @@ export type RuntimeConfigRecovery = {
   message: string;
 };
 
+const platform = getPlatformKind();
 const legacyHermesHome = path.join(process.env.USERPROFILE ?? process.cwd(), "Hermes Agent");
-const defaultHermesHome = process.platform === "win32"
-  ? path.join(process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? process.cwd(), "AppData", "Local"), "hermes", "hermes-agent")
-  : legacyHermesHome;
+const defaultHermesHome = getDefaultHermesHome(platform);
 const hermesPathCandidates = [
   process.env.HERMES_HOME,
   process.env.HERMES_AGENT_HOME,
@@ -73,7 +73,7 @@ const defaultConfig: RuntimeConfig = {
   startupGatewayAutoStart: false,
   enginePermissions: defaultEnginePermissions,
   hermesRuntime: {
-    mode: "windows",
+    mode: platform === "win32" ? "windows" : "darwin",
     pythonCommand: "python3",
     managedRoot: undefined,
     windowsAgentMode: "hermes_native",
@@ -118,15 +118,15 @@ export class RuntimeConfigStore {
         ...config,
         hermesRuntime: {
           ...defaultConfig.hermesRuntime!,
-          ...windowsOnlyRuntime(config.hermesRuntime),
+          ...normalizeRuntime(config.hermesRuntime),
         },
       };
     }
-    return windowsOnlyConfig(config);
+    return normalizeRuntimeConfig(config);
   }
 
   async write(config: RuntimeConfig) {
-    const parsed = runtimeConfigSchema.parse(migrateRuntimeConfigModels(windowsOnlyConfig(config)));
+    const parsed = runtimeConfigSchema.parse(migrateRuntimeConfigModels(normalizeRuntimeConfig(config)));
     await fs.mkdir(path.dirname(this.configPath), { recursive: true });
     await fs.writeFile(this.configPath, JSON.stringify(parsed, null, 2), "utf8");
     return parsed as RuntimeConfig;
@@ -225,7 +225,7 @@ export function __resetPreferredHermesRuntimeCacheForTests() {
   return;
 }
 
-function windowsOnlyConfig(config: RuntimeConfig): RuntimeConfig {
+function normalizeRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
   const enginePaths = { ...(config.enginePaths ?? {}) };
   if (process.platform === "win32" && enginePaths.hermes && isLegacyPosixPath(enginePaths.hermes)) {
     delete enginePaths.hermes;
@@ -233,17 +233,18 @@ function windowsOnlyConfig(config: RuntimeConfig): RuntimeConfig {
   return {
     ...config,
     enginePaths,
-    hermesRuntime: windowsOnlyRuntime(config.hermesRuntime),
+    hermesRuntime: normalizeRuntime(config.hermesRuntime),
   };
 }
 
-function windowsOnlyRuntime(runtime: RuntimeConfig["hermesRuntime"]): NonNullable<RuntimeConfig["hermesRuntime"]> {
+function normalizeRuntime(runtime: RuntimeConfig["hermesRuntime"]): NonNullable<RuntimeConfig["hermesRuntime"]> {
   const managedRoot = runtime?.managedRoot?.trim();
+  const mode = runtime?.mode ?? defaultConfig.hermesRuntime!.mode;
   return {
     ...defaultConfig.hermesRuntime!,
     ...(runtime ?? {}),
-    mode: "windows",
-    distro: undefined,
+    mode,
+    distro: mode === "wsl" ? runtime?.distro : undefined,
     managedRoot: process.platform === "win32" && managedRoot && isLegacyPosixPath(managedRoot) ? undefined : managedRoot || runtime?.managedRoot,
     workerMode: "off",
   };

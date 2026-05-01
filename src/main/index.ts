@@ -86,8 +86,10 @@ app.whenReady().then(async () => {
   const budgeter = new MemoryBudgeter();
   const autoHotkeyService = new AutoHotkeyService();
   const runtimeProbeService = new RuntimeProbeService(configStore, hermesRuntimeResolver, undefined, fetch);
-  const runtimeAdapterFactory: RuntimeAdapterFactory = (runtime) =>
-    new NativeRuntimeAdapter({ ...runtime, mode: "windows", distro: undefined, workerMode: "off" }, hermesRuntimeResolver, runtimeProbeService);
+  const runtimeAdapterFactory: RuntimeAdapterFactory = (runtime) => {
+    const mode = process.platform === "darwin" ? "darwin" : "windows";
+    return new NativeRuntimeAdapter({ ...runtime, mode, distro: undefined, workerMode: "off" }, hermesRuntimeResolver, runtimeProbeService);
+  };
   const hermes = new HermesCliAdapter(
     appPaths,
     budgeter,

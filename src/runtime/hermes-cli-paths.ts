@@ -1,15 +1,15 @@
 import fs from "node:fs/promises";
 import nodeFs from "node:fs";
 import path from "node:path";
+import {
+  getHermesCliCandidates,
+  getPlatformKind,
+  inferHermesRootFromCliPath,
+  isHermesExecutable,
+} from "../platform";
 
 export function windowsHermesCliCandidates(rootPath: string) {
-  return [
-    path.join(rootPath, "venv", "Scripts", "hermes.exe"),
-    path.join(rootPath, ".venv", "Scripts", "hermes.exe"),
-    path.join(rootPath, "Scripts", "hermes.exe"),
-    path.join(rootPath, "hermes.exe"),
-    path.join(rootPath, "hermes"),
-  ];
+  return getHermesCliCandidates("win32", rootPath);
 }
 
 export function defaultWindowsHermesCliPath(rootPath: string) {
@@ -31,16 +31,42 @@ export function resolveWindowsHermesCliPathSync(rootPath: string) {
 }
 
 export function isWindowsHermesExecutable(cliPath: string) {
-  return /\.(exe|cmd|bat)$/i.test(cliPath);
+  return isHermesExecutable(cliPath, "win32");
 }
 
 export function inferWindowsHermesRootFromCliPath(cliPath: string) {
-  const parent = path.dirname(cliPath);
-  const venvDir = path.basename(path.dirname(parent)).toLowerCase();
-  if (path.basename(parent).toLowerCase() === "scripts" && (venvDir === "venv" || venvDir === ".venv")) {
-    return path.dirname(path.dirname(parent));
+  return inferHermesRootFromCliPath(cliPath, "win32");
+}
+
+// Cross-platform helpers
+export function hermesCliCandidates(rootPath: string) {
+  return getHermesCliCandidates(getPlatformKind(), rootPath);
+}
+
+export function defaultHermesCliPath(rootPath: string) {
+  return hermesCliCandidates(rootPath)[0]!;
+}
+
+export async function resolveHermesCliPath(rootPath: string) {
+  for (const candidate of hermesCliCandidates(rootPath)) {
+    if (await exists(candidate)) return candidate;
   }
-  return parent;
+  return undefined;
+}
+
+export function resolveHermesCliPathSync(rootPath: string) {
+  for (const candidate of hermesCliCandidates(rootPath)) {
+    if (nodeFs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+export function isHermesCliExecutable(cliPath: string) {
+  return isHermesExecutable(cliPath, getPlatformKind());
+}
+
+export function inferHermesRootFromCliPathUniversal(cliPath: string) {
+  return inferHermesRootFromCliPath(cliPath, getPlatformKind());
 }
 
 async function exists(targetPath: string) {

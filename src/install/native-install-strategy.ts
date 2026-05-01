@@ -10,10 +10,9 @@ import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { validateNativeHermesCli } from "../runtime/hermes-cli-resolver";
 import {
-  defaultWindowsHermesCliPath,
-  inferWindowsHermesRootFromCliPath,
-  isWindowsHermesExecutable,
-  resolveWindowsHermesCliPath,
+  defaultHermesCliPath,
+  isHermesCliExecutable,
+  resolveHermesCliPath,
 } from "../runtime/hermes-cli-paths";
 import type { HermesRuntimeConfig, RuntimeConfig, SetupDependencyRepairId } from "../shared/types";
 import type { InstallStrategy } from "./install-strategy";
@@ -34,6 +33,26 @@ const OFFICIAL_WINDOWS_INSTALLER_URL = "https://res1.hermesagent.org.cn/install.
 const OFFICIAL_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
 
 type PythonLauncher = { command: string; argsPrefix: string[]; label: string };
+type GitSyncResult =
+  | {
+      ok: true;
+      branch: string;
+      remoteRef: string;
+      currentCommit?: string;
+      latestCommit?: string;
+      behindBefore: number;
+      behindAfter: number;
+    }
+  | {
+      ok: false;
+      message: string;
+      branch?: string;
+      remoteRef?: string;
+      currentCommit?: string;
+      latestCommit?: string;
+      behindBefore?: number;
+      behindAfter?: number;
+    };
 
 export class NativeInstallStrategy implements InstallStrategy {
   readonly kind = "native" as const;
@@ -104,7 +123,22 @@ export class NativeInstallStrategy implements InstallStrategy {
       };
     }
 
-    log.push("Hermes repair preflight passed; running best-effort Windows Native repair.");
+    log.push("Hermes update preflight passed; synchronizing Git repository before dependency repair.");
+    const gitSync = await this.syncHermesGitRepository(hermesRoot, log);
+    if (!gitSync.ok) {
+      const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
+      await fs.mkdir(logDir, { recursive: true });
+      const logPath = path.join(logDir, `hermes-update-${startedAt.replace(/[:.]/g, "-")}.log`);
+      await fs.writeFile(logPath, [gitSync.message, "", ...log].join("\n"), "utf8");
+      return { ok: false, engineId: "hermes", message: gitSync.message, log, logPath, plan: await this.plan({ mode: "windows" }) };
+    }
+
+    const python = await this.detectPythonLauncher(log);
+    if (python) {
+      await this.installPythonDependencies(hermesRoot, log, python);
+    } else {
+      log.push("No system Python available for dependency refresh; continuing to Hermes health check.");
+    }
     await this.repairVenvBestEffort(hermesRoot, log);
 
     const launch = await this.hermesMaintenanceLaunch(hermesRoot, ["doctor", "--fix"]);
@@ -142,8 +176,8 @@ export class NativeInstallStrategy implements InstallStrategy {
     }
     const ok = true;
     const message = result.exitCode === 0
-      ? "Hermes 一键修复完成，并已通过核心启动检查。"
-      : "Hermes 核心可用；doctor --fix 仍有非阻塞输出，请查看日志确认可选项。";
+      ? `Hermes 已同步到 ${gitSync.remoteRef}${gitSync.latestCommit ? ` @ ${gitSync.latestCommit}` : ""}，并通过核心启动检查。`
+      : `Hermes Git 代码已同步到 ${gitSync.remoteRef}${gitSync.latestCommit ? ` @ ${gitSync.latestCommit}` : ""}；doctor --fix 仍有非阻塞输出，请查看日志确认可选项。`;
     const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
     await fs.mkdir(logDir, { recursive: true });
     const logPath = path.join(logDir, `hermes-repair-${startedAt.replace(/[:.]/g, "-")}.log`);
@@ -211,8 +245,8 @@ export class NativeInstallStrategy implements InstallStrategy {
     }
     const hermesCli = await this.resolveHermesCliPath(hermesRoot);
     return {
-      command: isWindowsHermesExecutable(hermesCli) ? hermesCli : "python",
-      args: isWindowsHermesExecutable(hermesCli) ? args : [hermesCli, ...args],
+      command: isHermesCliExecutable(hermesCli) ? hermesCli : "python",
+      args: isHermesCliExecutable(hermesCli) ? args : [hermesCli, ...args],
       cwd: hermesRoot,
       env: {
         PYTHONUTF8: "1",
@@ -327,7 +361,14 @@ export class NativeInstallStrategy implements InstallStrategy {
       ];
       const install = await this.runLogged("powershell.exe", installerArgs, logDir, log, DEFAULT_INSTALL_TIMEOUT_MS, {
         heartbeatMs: 15_000,
-        onHeartbeat: (elapsedSeconds) => emit("installing_dependencies", 55, "官方安装脚本仍在运行，请保持网络连接。", `已等待 ${elapsedSeconds} 秒`),
+        onHeartbeat: (elapsedSeconds) => {
+          const minutes = Math.floor(elapsedSeconds / 60);
+          let detail = `已等待 ${elapsedSeconds} 秒。官方脚本正在后台下载并安装依赖，这是正常现象。`;
+          if (elapsedSeconds > 120) {
+            detail += " 如果长时间卡住，可能是网络连接较慢或 PowerShell 执行策略被组策略限制。你可以点击「取消安装」后前往 hermesagent.org.cn 下载手动安装包。";
+          }
+          emit("installing_dependencies", 55, minutes >= 2 ? `官方安装脚本仍在运行（已 ${minutes} 分钟）` : "官方安装脚本仍在运行，请保持网络连接。", detail);
+        },
       });
       if (install.exitCode !== 0) {
         return await finish({ ok: false, rootPath, message: `Hermes 官方安装脚本执行失败，详情见安装日志：${logPath}` }, "failed");
@@ -619,6 +660,114 @@ export class NativeInstallStrategy implements InstallStrategy {
     await this.configStore.write({ ...config, enginePaths: nextEnginePaths });
   }
 
+  private async syncHermesGitRepository(rootPath: string, log: string[]): Promise<GitSyncResult> {
+    const repo = await this.runLogged("git", ["rev-parse", "--is-inside-work-tree"], rootPath, log, 15_000);
+    if (repo.exitCode !== 0 || repo.stdout.trim() !== "true") {
+      return {
+        ok: false,
+        message: "Hermes 更新失败：当前安装目录不是有效 Git 仓库，无法通过 Git 同步代码。请重新安装 Hermes Agent。",
+      };
+    }
+
+    const headBefore = await this.gitText(rootPath, ["rev-parse", "--short", "HEAD"], log);
+    const branchResult = await this.runLogged("git", ["branch", "--show-current"], rootPath, log, 15_000);
+    const currentBranch = branchResult.exitCode === 0 ? branchResult.stdout.trim() : "";
+    if (!currentBranch) {
+      return {
+        ok: false,
+        currentCommit: headBefore,
+        message: "Hermes 更新失败：当前仓库处于 detached HEAD，无法安全执行 git pull。请重新安装 Hermes Agent，或手动 checkout 到目标分支后重试。",
+      };
+    }
+
+    const fetch = await this.runLogged("git", ["fetch", "origin", "--prune"], rootPath, log, 120_000);
+    if (fetch.exitCode !== 0) {
+      return {
+        ok: false,
+        branch: currentBranch,
+        currentCommit: headBefore,
+        message: "Hermes 更新失败：无法从 origin 获取最新代码，请检查网络连接或远程仓库配置。",
+      };
+    }
+
+    const remoteRef = `origin/${currentBranch}`;
+    const latestCommit = await this.gitText(rootPath, ["rev-parse", "--short", remoteRef], log);
+    if (!latestCommit) {
+      return {
+        ok: false,
+        branch: currentBranch,
+        remoteRef,
+        currentCommit: headBefore,
+        message: `Hermes 更新失败：远程分支 ${remoteRef} 不存在，请检查安装源分支配置。`,
+      };
+    }
+
+    const behindBefore = await this.gitCount(rootPath, ["rev-list", `HEAD..${remoteRef}`, "--count"], log);
+    if (behindBefore === undefined) {
+      return {
+        ok: false,
+        branch: currentBranch,
+        remoteRef,
+        currentCommit: headBefore,
+        latestCommit,
+        message: `Hermes 更新失败：无法比较本地 HEAD 与 ${remoteRef}。`,
+      };
+    }
+
+    if (behindBefore > 0) {
+      const pull = await this.runLogged("git", ["pull", "--ff-only", "origin", currentBranch], rootPath, log, 120_000);
+      if (pull.exitCode !== 0) {
+        return {
+          ok: false,
+          branch: currentBranch,
+          remoteRef,
+          currentCommit: headBefore,
+          latestCommit,
+          behindBefore,
+          message: `Hermes 更新失败：git pull origin ${currentBranch} 未成功，可能存在本地修改、分支分叉或网络问题。请处理冲突后重试。`,
+        };
+      }
+    } else {
+      log.push(`Git sync skipped pull because HEAD is already aligned with ${remoteRef}.`);
+    }
+
+    const behindAfter = await this.gitCount(rootPath, ["rev-list", `HEAD..${remoteRef}`, "--count"], log);
+    if (behindAfter === undefined || behindAfter > 0) {
+      return {
+        ok: false,
+        branch: currentBranch,
+        remoteRef,
+        currentCommit: await this.gitText(rootPath, ["rev-parse", "--short", "HEAD"], log) ?? headBefore,
+        latestCommit,
+        behindBefore,
+        behindAfter,
+        message: `Hermes 更新后仍有 ${behindAfter ?? "未知数量"} 个提交未同步，请检查本地仓库状态后重试。`,
+      };
+    }
+
+    return {
+      ok: true,
+      branch: currentBranch,
+      remoteRef,
+      currentCommit: await this.gitText(rootPath, ["rev-parse", "--short", "HEAD"], log) ?? headBefore,
+      latestCommit,
+      behindBefore,
+      behindAfter,
+    };
+  }
+
+  private async gitText(rootPath: string, args: string[], log: string[]) {
+    const result = await this.runLogged("git", args, rootPath, log, 15_000);
+    return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined;
+  }
+
+  private async gitCount(rootPath: string, args: string[], log: string[]) {
+    const text = await this.gitText(rootPath, args, log);
+    if (text === undefined) return undefined;
+    const count = Number.parseInt(text, 10);
+    return Number.isFinite(count) ? count : undefined;
+  }
+
   private async runLogged(command: string, args: string[], cwd: string, log: string[], timeoutMs: number, heartbeat?: { heartbeatMs: number; onHeartbeat: (elapsedSeconds: number) => void }) {
     log.push(`$ ${command} ${args.join(" ")}`);
     const startedAt = Date.now();
@@ -638,7 +787,7 @@ export class NativeInstallStrategy implements InstallStrategy {
   private async inspectTargetDirectory(rootPath: string, log: string[]) {
     try {
       const entries = await fs.readdir(rootPath);
-      const hasHermesCli = Boolean(await resolveWindowsHermesCliPath(rootPath));
+      const hasHermesCli = Boolean(await resolveHermesCliPath(rootPath));
       const hasOfficialCli = await this.exists(path.join(rootPath, "venv", "Scripts", "hermes.exe"))
         || await this.exists(path.join(rootPath, ".venv", "Scripts", "hermes.exe"));
       const marker = await this.exists(path.join(rootPath, ".zhenghebao-managed-install.json"));
@@ -685,16 +834,19 @@ export class NativeInstallStrategy implements InstallStrategy {
   }
 
   private async checkInstalledHermes(rootPath: string, log: string[], preferredPython?: PythonLauncher) {
-    const cliPath = await resolveWindowsHermesCliPath(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
+    const cliPath = await resolveHermesCliPath(rootPath) ?? defaultHermesCliPath(rootPath);
     if (!(await this.exists(cliPath))) return { available: false, message: `未找到 Hermes CLI：${cliPath}` };
     const hermesHome = await resolveActiveHermesHome(this.appPaths.hermesDir());
-    const candidates: Array<{ command: string; args: string[] }> = isWindowsHermesExecutable(cliPath)
+    const candidates: Array<{ command: string; args: string[] }> = isHermesCliExecutable(cliPath)
       ? [{ command: cliPath, args: ["--version"] }]
       : [
           ...(preferredPython ? [{ command: preferredPython.command, args: [...preferredPython.argsPrefix, cliPath, "--version"] }] : []),
           { command: path.join(rootPath, "venv", "Scripts", "python.exe"), args: [cliPath, "--version"] },
           { command: path.join(rootPath, ".venv", "Scripts", "python.exe"), args: [cliPath, "--version"] },
+          { command: path.join(rootPath, "venv", "bin", "python"), args: [cliPath, "--version"] },
+          { command: path.join(rootPath, ".venv", "bin", "python"), args: [cliPath, "--version"] },
           { command: "python", args: [cliPath, "--version"] },
+          { command: "python3", args: [cliPath, "--version"] },
           { command: "py", args: ["-3", cliPath, "--version"] },
         ];
     let lastMessage = "未找到可用 Python 解释器。";
@@ -781,7 +933,7 @@ export class NativeInstallStrategy implements InstallStrategy {
   }
 
   private async resolveHermesCliPath(rootPath: string) {
-    return await resolveWindowsHermesCliPath(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
+    return await resolveHermesCliPath(rootPath) ?? defaultHermesCliPath(rootPath);
   }
 
   private async verifyHermesHomeWritable(hermesHome: string, log: string[]) {

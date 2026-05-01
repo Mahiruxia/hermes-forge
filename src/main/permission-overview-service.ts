@@ -36,11 +36,13 @@ export async function buildPermissionOverview(input: {
   const capabilityBlock = undefined;
   const blockReason = policyBlock ?? capabilityBlock ?? null;
   const notes = [
-    "Native Windows mode does not use WSL launch metadata transport.",
+    runtime.mode === "darwin"
+      ? "macOS Native mode does not use WSL launch metadata transport."
+      : "Native Windows mode does not use WSL launch metadata transport.",
     bridgeCapabilities.length ? undefined : "Backend did not report bridge capabilities.",
   ].filter((item): item is string => Boolean(item));
   return {
-    runtime: "native",
+    runtime: runtime.mode === "darwin" ? "darwin" : "native",
     permissionPolicy: runtime.permissionPolicy,
     cliPermissionMode: runtime.cliPermissionMode,
     transport: null,
@@ -66,14 +68,14 @@ export async function buildPermissionOverview(input: {
 }
 
 function runtimeWithDefaults(runtime: RuntimeConfig["hermesRuntime"]): HermesRuntimeConfig & {
-  mode: "windows" | "wsl";
+  mode: "windows" | "wsl" | "darwin";
   pythonCommand: string;
   windowsAgentMode: NonNullable<HermesRuntimeConfig["windowsAgentMode"]>;
   cliPermissionMode: HermesCliPermissionMode;
   permissionPolicy: HermesPermissionPolicyMode;
 } {
   return {
-    mode: "windows",
+    mode: runtime?.mode ?? "windows",
     distro: undefined,
     managedRoot: runtime?.managedRoot,
     pythonCommand: runtime?.pythonCommand ?? "python3",

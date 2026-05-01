@@ -99,4 +99,50 @@ describe("StatusBar", () => {
     expect(getGatewayStatus).toHaveBeenCalledTimes(1);
     expect(getHermesProbe).not.toHaveBeenCalled();
   });
+
+  it("turns the Hermes chip into a visible update reminder", () => {
+    useAppStore.setState({
+      clientInfo: {
+        appVersion: "0.1.2",
+        userDataPath: "D:/temp",
+        portable: false,
+        rendererMode: "dev",
+      },
+      hermesStatus: {
+        engine: {
+          engineId: "hermes",
+          label: "Hermes",
+          available: true,
+          mode: "cli",
+          message: "Hermes 已连接",
+        },
+        update: {
+          engineId: "hermes",
+          currentVersion: "Hermes Agent v0.11.0",
+          latestVersion: "v0.12.0",
+          updateAvailable: true,
+          sourceConfigured: true,
+          message: "Hermes 有新版本可更新，当前版本 Hermes Agent v0.11.0，最新版本 v0.12.0。",
+        },
+        memory: {
+          engineId: "hermes",
+          workspaceId: "workspace",
+          usedCharacters: 100,
+          entries: 2,
+          message: "ok",
+        },
+      },
+    });
+
+    window.workbenchClient = {
+      ...window.workbenchClient,
+      getGatewayStatus: vi.fn(),
+      onClientUpdateEvent: vi.fn().mockReturnValue(() => undefined),
+    };
+
+    render(<StatusBar />);
+
+    expect(screen.getByRole("button", { name: /Hermes 有新版本可更新/ })).toHaveTextContent("Hermes 更新");
+    expect(screen.getByTestId("status-light-hermes")).toHaveClass("hermes-status-light--warn");
+  });
 });

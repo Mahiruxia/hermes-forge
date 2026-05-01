@@ -25,7 +25,7 @@ function overview(input: Partial<PermissionOverview>): PermissionOverview {
     blockReason: null,
     capabilityProbe: {
       minimumSatisfied: true,
-      cliVersion: "0.10.0",
+      cliVersion: "0.12.0",
       missing: [],
       allowedTransports: ["native-arg-env"],
       support: "native",

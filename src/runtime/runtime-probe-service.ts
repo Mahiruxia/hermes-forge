@@ -5,12 +5,13 @@ import type { HermesRuntimeConfig, WindowsBridgeStatus } from "../shared/types";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { RuntimeResolver, ParsedCommand } from "./runtime-resolver";
 import { parseCommandLine } from "./runtime-resolver";
-import { resolveWindowsHermesCliPath } from "./hermes-cli-paths";
+import { resolveHermesCliPath } from "./hermes-cli-paths";
 import type {
   RuntimeBridgeProbe,
   RuntimeCommandProbe,
   RuntimeIssue,
   RuntimeIssueCode,
+  RuntimeKind,
   RuntimeOverallStatus,
   RuntimeProbeResult,
   RuntimeWslProbe,
@@ -43,7 +44,7 @@ export class RuntimeProbeService {
     const runtime = input.runtime ?? this.runtimeResolver.runtimeFromConfig(config);
     const paths = await this.runtimeResolver.resolvePaths({ runtime, workspacePath: input.workspacePath });
     const rootPath = await this.configStore.getEnginePath("hermes");
-    const resolvedWindowsCliPath = await resolveWindowsHermesCliPath(rootPath);
+    const resolvedHermesCliPath = await resolveHermesCliPath(rootPath);
 
     const [powershell, python, git, winget, wsl] = await Promise.all([
       this.probeCommand("powershell.exe", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], "PowerShell", "windows"),
@@ -56,7 +57,7 @@ export class RuntimeProbeService {
     ]);
 
     const hermesRootExists = await exists(rootPath);
-    const hermesCliExists = Boolean(resolvedWindowsCliPath);
+    const hermesCliExists = Boolean(resolvedHermesCliPath);
     const bridge = await this.probeBridge();
     const issues = this.collectIssues({
       runtime,
@@ -160,7 +161,7 @@ export class RuntimeProbeService {
     return candidates;
   }
 
-  private async probeCommand(command: string, args: string[], label: string, runtimeKind: "windows" | "wsl"): Promise<RuntimeCommandProbe> {
+  private async probeCommand(command: string, args: string[], label: string, runtimeKind: RuntimeKind): Promise<RuntimeCommandProbe> {
     const result = await runCommand(command, args, {
       cwd: process.cwd(),
       timeoutMs: COMMAND_TIMEOUT_MS,
@@ -253,7 +254,8 @@ export class RuntimeProbeService {
       add("powershell_missing", "warning", "PowerShell 不可用。", input.powershell.message, "请确认 powershell.exe 在系统路径中可执行。");
     }
     if (!input.python.available) {
-      add("python_missing", input.runtime.mode === "windows" ? "error" : "warning", "Windows Python 不可用。", input.python.message, "请安装 Python 或在设置中填写 Hermes Python 命令。");
+      const label = input.runtime.mode === "darwin" ? "macOS Python" : "Windows Python";
+      add("python_missing", input.runtime.mode === "windows" ? "error" : "warning", `${label} 不可用。`, input.python.message, "请安装 Python 或在设置中填写 Hermes Python 命令。");
     }
     if (!input.git.available) {
       add("git_missing", "warning", "Git 不可用。", input.git.message, "官网 Windows 安装脚本会优先尝试自动补齐；若失败请手动安装 Git。");

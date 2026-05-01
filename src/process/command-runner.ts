@@ -20,7 +20,7 @@ export type CommandOptions = {
   signal?: AbortSignal;
   detached?: boolean;
   commandId?: string;
-  runtimeKind?: "windows" | "wsl";
+  runtimeKind?: "windows" | "wsl" | "darwin";
   maxOutputBytes?: number;
   maxQueueEvents?: number;
   maxLineChars?: number;
@@ -31,7 +31,7 @@ export type CommandDiagnostics = {
   binary: string;
   argv: string[];
   cwd: string;
-  runtimeKind?: "windows" | "wsl";
+  runtimeKind?: "windows" | "wsl" | "darwin";
   envRedacted?: Record<string, string>;
   timeoutMs?: number;
   startedAt: string;

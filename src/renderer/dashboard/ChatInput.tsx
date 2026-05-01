@@ -1,8 +1,8 @@
-import { Command, Gauge, Mic, MicOff, Paperclip, Plus, Send, Square, X } from "lucide-react";
+import { Command, DownloadCloud, Gauge, Mic, MicOff, Paperclip, Plus, Send, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ClipboardEvent, DragEvent, ReactNode } from "react";
-import type { EngineEvent, SessionAgentInsightUsage } from "../../shared/types";
+import type { EngineEvent, EngineUpdateStatus, SessionAgentInsightUsage } from "../../shared/types";
 import { useAppStore } from "../store";
 import { cn } from "./DashboardPrimitives";
 import { buildPreflightState, preflightChipsForUser, preflightDetailForUser, preflightSummaryForUser } from "./permissionModel";
@@ -81,6 +81,7 @@ export function ChatInput(props: {
   const statusText = props.sendBlockReason
     ? props.sendBlockReason
     : `${currentModelLabel} · ${store.workspacePath ? shortPath(store.workspacePath) : "无工作区"} · ${permissionsLabel}${props.locked ? " · 工作区占用中" : ""}`;
+  const hermesUpdate = store.hermesStatus?.update;
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -584,7 +585,10 @@ export function ChatInput(props: {
           </div>
         ) : null}
 
-        <PreflightStrip preflight={preflight} />
+        {hermesUpdate?.updateAvailable ? (
+          <HermesUpdateBanner update={hermesUpdate} onOpenSettings={() => props.onOpenFix?.("hermes")} />
+        ) : null}
+        <PreflightStrip preflight={preflight} onOpenFix={props.onOpenFix} sendBlockTarget={props.sendBlockTarget} />
 
         <div
           className={cn(
@@ -816,6 +820,29 @@ function MenuItem(props: { icon: typeof Plus; label: string; disabled?: boolean;
   );
 }
 
+function HermesUpdateBanner(props: { update: EngineUpdateStatus; onOpenSettings?: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={props.onOpenSettings}
+      className="group mb-2 flex w-full items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-left shadow-[0_12px_34px_rgba(245,158,11,0.18)] transition hover:border-amber-400 hover:bg-amber-100"
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-amber-500 text-white shadow-sm">
+          <DownloadCloud size={17} />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-bold text-amber-950">Hermes Agent 有新版本可更新</span>
+          <span className="mt-0.5 block truncate text-xs font-medium text-amber-800">{props.update.message}</span>
+        </span>
+      </span>
+      <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-bold text-amber-700 ring-1 ring-amber-200 transition group-hover:bg-amber-600 group-hover:text-white">
+        去更新
+      </span>
+    </button>
+  );
+}
+
 type ContextMeter = {
   displayTokens: number;
   draftTokens: number;
@@ -972,7 +999,11 @@ function ContextDetailRow(props: { label: string; value: string }) {
   );
 }
 
-function PreflightStrip(props: { preflight: ReturnType<typeof buildPreflightState> }) {
+function PreflightStrip(props: {
+  preflight: ReturnType<typeof buildPreflightState>;
+  onOpenFix?: (target: FixTarget) => void;
+  sendBlockTarget?: FixTarget;
+}) {
   const toneClass = props.preflight.tone === "green"
     ? "border-emerald-200 bg-emerald-50 text-emerald-800"
     : props.preflight.tone === "yellow"
@@ -986,6 +1017,17 @@ function PreflightStrip(props: { preflight: ReturnType<typeof buildPreflightStat
   const chips = preflightChipsForUser(props.preflight).slice(0, 3);
   const summary = preflightSummaryForUser(props.preflight);
   const detail = preflightDetailForUser(props.preflight);
+  const blockCode = props.preflight.block?.code;
+
+  function inferFixTarget(): FixTarget | undefined {
+    if (props.sendBlockTarget) return props.sendBlockTarget;
+    if (blockCode === "policy_not_enforceable" || blockCode === "unsupported_runtime_enforcement") return "health";
+    if (blockCode === "manual_configuration_required" || blockCode === "unsupported_cli_version" || blockCode === "unsupported_cli_capability") return "hermes";
+    return undefined;
+  }
+
+  const fixTarget = inferFixTarget();
+
   return (
     <div className={cn("mb-2 rounded-2xl border px-3 py-2 text-[11px]", toneClass)}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -1003,14 +1045,35 @@ function PreflightStrip(props: { preflight: ReturnType<typeof buildPreflightStat
         ))}
       </div>
       {props.preflight.block ? (
-        <details className="mt-1">
-          <summary className="cursor-pointer font-semibold">为什么会这样 / 怎么修</summary>
-          <p className="mt-1 leading-5">{detail}</p>
-          <p className="mt-1 font-medium">{props.preflight.block.fixHint}</p>
+        <details className="mt-1 group">
+          <summary className="flex cursor-pointer list-none items-center gap-1 font-semibold">
+            <span className="underline decoration-current/30 underline-offset-2 group-hover:decoration-current/60">为什么会这样 / 怎么修</span>
+            <span className="text-[10px] opacity-60 transition-opacity group-hover:opacity-100">（点击展开）</span>
+          </summary>
+          <div className="mt-1 space-y-1">
+            <p className="leading-5">{detail}</p>
+            <p className="font-medium">{props.preflight.block.fixHint}</p>
+            {fixTarget ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  props.onOpenFix?.(fixTarget);
+                }}
+                className="mt-1 inline-flex items-center gap-1 rounded-md bg-white/80 px-2 py-1 text-[11px] font-semibold text-rose-700 shadow-sm ring-1 ring-rose-200 transition hover:bg-white"
+              >
+                去修复 →
+              </button>
+            ) : null}
+          </div>
         </details>
       ) : props.preflight.tone === "yellow" ? (
-        <details className="mt-1">
-          <summary className="cursor-pointer font-semibold">当前等待或风险说明</summary>
+        <details className="mt-1 group">
+          <summary className="flex cursor-pointer list-none items-center gap-1 font-semibold">
+            <span className="underline decoration-current/30 underline-offset-2 group-hover:decoration-current/60">当前等待或风险说明</span>
+            <span className="text-[10px] opacity-60 transition-opacity group-hover:opacity-100">（点击展开）</span>
+          </summary>
           <p className="mt-1 leading-5">{detail}</p>
         </details>
       ) : null}

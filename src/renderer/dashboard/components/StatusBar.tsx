@@ -14,6 +14,7 @@ export function StatusBar() {
   const [gatewayStatus, setGatewayStatus] = useState<HermesGatewayStatus | undefined>();
   const [clientUpdate, setClientUpdate] = useState<ClientUpdateEvent | undefined>();
   const [lastChecked] = useState<string | null>(null);
+  const hermesUpdate = store.hermesStatus?.update;
 
   useEffect(() => {
     if (store.clientInfo) {
@@ -61,13 +62,15 @@ export function StatusBar() {
     }),
     makeStatusItem({
       key: "hermes",
-      shortLabel: "Hermes",
-      detail: hermesDetail(hermesStatus, store.hermesProbe, store.hermesStatus, store.runtimeConfig?.hermesRuntime?.mode),
-      tone: connectionTone(hermesStatus),
-      icon: hermesStatus === "connected" ? ShieldCheck : hermesIcon(hermesStatus),
+      shortLabel: hermesUpdate?.updateAvailable ? "Hermes 更新" : "Hermes",
+      detail: hermesUpdate?.updateAvailable
+        ? hermesUpdate.message
+        : hermesDetail(hermesStatus, store.hermesProbe, store.hermesStatus, store.runtimeConfig?.hermesRuntime?.mode),
+      tone: hermesUpdate?.updateAvailable ? "warn" : connectionTone(hermesStatus),
+      icon: hermesUpdate?.updateAvailable ? DownloadCloud : hermesStatus === "connected" ? ShieldCheck : hermesIcon(hermesStatus),
       spinning: hermesStatus === "checking",
       lastChecked,
-      glowing: hermesStatus === "connected" || hermesStatus === "warning",
+      glowing: hermesUpdate?.updateAvailable || hermesStatus === "connected" || hermesStatus === "warning",
     }),
     makeStatusItem({
       key: "gateway",
@@ -89,7 +92,7 @@ export function StatusBar() {
       lastChecked,
       glowing: updateTone(clientUpdate) === "ok" || updateTone(clientUpdate) === "warn",
     }),
-  ], [apiStatus, clientUpdate, gatewayStatus, hermesStatus, lastChecked, store.hermesProbe, store.hermesStatus]);
+  ], [apiStatus, clientUpdate, gatewayStatus, hermesStatus, hermesUpdate, lastChecked, store.hermesProbe, store.hermesStatus]);
 
   return (
     <div className="hidden items-center gap-1 lg:flex">
@@ -151,8 +154,8 @@ function connectionTone(status: ConnectionState): BadgeTone {
   return "warn";
 }
 
-function hermesDetail(status: ConnectionState, probe?: HermesProbeSummary, summary?: HermesStatusSummary, runtimeMode?: "windows" | "wsl") {
-  const runtimeLabel = runtimeMode === "wsl" ? "WSL" : runtimeMode === "windows" ? "Windows" : undefined;
+function hermesDetail(status: ConnectionState, probe?: HermesProbeSummary, summary?: HermesStatusSummary, runtimeMode?: "windows" | "wsl" | "darwin") {
+  const runtimeLabel = runtimeMode === "wsl" ? "WSL" : runtimeMode === "windows" ? "Windows" : runtimeMode === "darwin" ? "macOS" : undefined;
   const base = probe?.probe.message?.trim()
     || summary?.engine?.message?.trim()
     || (status === "connected" ? "Hermes 在线" : status === "warning" ? "Hermes 可用，但存在警告" : status === "disconnected" ? "Hermes 离线" : "正在检查 Hermes");

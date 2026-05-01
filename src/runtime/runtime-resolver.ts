@@ -150,7 +150,9 @@ export function parseWslHost(stdout: string) {
 }
 
 export function runtimeKindLabel(kind: RuntimeKind) {
-  return kind === "wsl" ? "WSL" : "Windows Native";
+  if (kind === "wsl") return "WSL";
+  if (kind === "darwin") return "macOS Native";
+  return "Windows Native";
 }
 
 // Windows-only env variables that must NOT cross into a WSL `env KEY=VALUE … bash -lc` invocation.

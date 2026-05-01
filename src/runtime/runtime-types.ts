@@ -13,10 +13,13 @@ export type RuntimeIssueSeverity = "info" | "warning" | "error";
 
 export type RuntimeIssueCode =
   | "windows_platform_unavailable"
+  | "macos_platform_unavailable"
   | "powershell_missing"
   | "python_missing"
   | "git_missing"
   | "winget_missing"
+  | "brew_missing"
+  | "xcode_tools_missing"
   | "wsl_missing"
   | "wsl_unreachable"
   | "wsl_distro_missing"

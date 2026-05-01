@@ -67,4 +67,45 @@ describe("buildHermesSetupViewModel", () => {
     expect(model.state).toBe("degraded");
     expect(model.detailRows.find((row) => row.id === "install")?.value).toBe("可用");
   });
+
+  it("shows version row when updateStatus provides currentVersion", () => {
+    const model = buildHermesSetupViewModel({
+      rootPath: "C:\\Users\\xia\\AppData\\Local\\hermes\\hermes-agent",
+      hermesAvailable: true,
+      setupBlocking: [],
+      setupLoading: false,
+      updateStatus: {
+        engineId: "hermes",
+        currentVersion: "v0.11.0",
+        latestVersion: "origin/main @ abc1234",
+        behindCount: 217,
+        remoteRef: "origin/main",
+        updateAvailable: true,
+        sourceConfigured: true,
+        message: "有 217 个提交可更新",
+      },
+    });
+
+    expect(model.state).toBe("update_required");
+    const versionRow = model.detailRows.find((row) => row.id === "version");
+    expect(versionRow).toBeDefined();
+    expect(versionRow?.value).toBe("v0.11.0");
+    expect(versionRow?.detail).toBe("有 217 个提交可更新");
+    expect(model.detailRows.find((row) => row.id === "latestVersion")?.value).toBe("origin/main @ abc1234");
+  });
+
+  it("shows version row from version prop when hermesStatus version is available", () => {
+    const model = buildHermesSetupViewModel({
+      rootPath: "C:\\Users\\xia\\AppData\\Local\\hermes\\hermes-agent",
+      hermesAvailable: true,
+      setupBlocking: [],
+      setupLoading: false,
+      version: "v0.12.0",
+    });
+
+    expect(model.state).toBe("ready");
+    const versionRow = model.detailRows.find((row) => row.id === "version");
+    expect(versionRow).toBeDefined();
+    expect(versionRow?.value).toBe("v0.12.0");
+  });
 });
