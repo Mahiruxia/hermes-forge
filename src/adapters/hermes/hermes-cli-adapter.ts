@@ -878,7 +878,7 @@ export class HermesCliAdapter implements EngineAdapter {
   private async writeWindowsAgentHistoryFile(request: EngineRunRequest) {
     const history = (request.conversationHistory ?? [])
       .filter((entry) => (entry.role === "user" || entry.role === "assistant") && typeof entry.content === "string" && entry.content.trim())
-      .slice(-48)
+      .slice(-16)
       .map((entry) => ({ role: entry.role, content: entry.content }));
     if (history.length === 0) return undefined;
 
@@ -886,7 +886,7 @@ export class HermesCliAdapter implements EngineAdapter {
     const dir = path.join(this.appPaths.sessionDir(this.safeForgeSessionId(forgeSessionId)), "hermes-windows-agent");
     await fs.mkdir(dir, { recursive: true });
     const filePath = path.join(dir, `history-${this.safeForgeSessionId(request.sessionId)}.json`);
-    await fs.writeFile(filePath, JSON.stringify(history, null, 2), "utf8");
+    await fs.writeFile(filePath, JSON.stringify(history), "utf8");
     return filePath;
   }
 

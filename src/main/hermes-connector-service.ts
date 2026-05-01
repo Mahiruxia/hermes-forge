@@ -3,10 +3,11 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppPaths } from "./app-paths";
+import { resolveActiveHermesHome } from "./hermes-home";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import { validateWslHermesCli } from "../runtime/hermes-cli-resolver";
-import { defaultWindowsHermesCliPath, resolveWindowsHermesCliPathSync } from "../runtime/hermes-cli-paths";
+import { defaultHermesCliPath, resolveHermesCliPathSync } from "../runtime/hermes-cli-paths";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { summarizePreflightFailure } from "../runtime/runtime-preflight";
 import type { SecretVault } from "../auth/secret-vault";
@@ -227,7 +228,7 @@ export class HermesConnectorService {
       this.status(),
     ]);
     const connectors = await Promise.all(PLATFORM_REGISTRY.map((platform) => this.toConnector(platform, stored, envValues, gateway)));
-    return { connectors, gateway, envPath: this.envPath() };
+    return { connectors, gateway, envPath: await this.envPath() };
   }
 
   async save(input: HermesConnectorSaveInput): Promise<HermesConnectorConfig> {
@@ -306,9 +307,9 @@ export class HermesConnectorService {
     }
     lines.push(MANAGED_END);
 
-    const envPath = this.envPath();
+    const envPath = await this.envPath();
     const existing = await fs.readFile(envPath, "utf8").catch(() => "");
-    await this.backupEnv(existing);
+    await this.backupEnv(envPath, existing);
     const withoutBlock = removeManagedBlock(existing).trimEnd();
     const hasAnyConnector = lines.some((line) => line.includes("="));
     const next = hasAnyConnector
@@ -335,7 +336,7 @@ export class HermesConnectorService {
       this.gatewayCliStatus().catch(() => undefined),
       this.gatewayStateStatus().catch(() => undefined),
     ]);
-    const cliRunning = looksLikeGatewayRunning(cliStatus?.stdout, cliStatus?.stderr);
+    const cliRunning = cliStatus?.exitCode === 0 && looksLikeGatewayRunning(cliStatus?.stdout, cliStatus?.stderr);
     const cliFailed = looksLikeGatewayFailure(cliStatus?.stdout, cliStatus?.stderr);
     const stateRunning = Boolean(stateStatus?.running);
     const running = managedRunning || cliRunning || stateRunning;
@@ -1374,7 +1375,7 @@ export class HermesConnectorService {
 
   private async preflightGatewayRuntime(runtime: Extract<ConnectorRuntimeContext, { ok: true }>): Promise<{ ok: true } | { ok: false; message: string }> {
     const runtimeRoot = runtime.adapter.toRuntimePath(runtime.root);
-    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : this.windowsHermesCliPath(runtime.root);
+    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : this.hermesCliPath(runtime.root);
     if (runtime.runtime.mode === "wsl") {
       const validation = await validateWslHermesCli(runtime.runtime, cliPath);
       console.info("[Hermes Forge] Gateway WSL preflight", {
@@ -1391,12 +1392,13 @@ export class HermesConnectorService {
       }
       return { ok: true };
     }
+    const runtimeHermesHome = runtime.adapter.toRuntimePath(await this.activeHermesHome());
     const launch = await runtime.adapter.buildHermesLaunch({
       runtime: runtime.runtime,
       rootPath: runtimeRoot,
       pythonArgs: [cliPath, "--version"],
       cwd: runtime.root,
-      env: { ...PYTHON_ENV, PYTHONPATH: runtimeRoot },
+      env: { ...PYTHON_ENV, PYTHONPATH: runtimeRoot, HERMES_HOME: runtimeHermesHome },
     });
     const result = await runCommand(launch.command, launch.args, {
       cwd: launch.cwd,
@@ -1420,13 +1422,14 @@ export class HermesConnectorService {
 
   private async gatewayLaunchFromRuntime(runtime: Extract<ConnectorRuntimeContext, { ok: true }>, hermesEnv: Record<string, string>) {
     const runtimeRoot = runtime.adapter.toRuntimePath(runtime.root);
-    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : this.windowsHermesCliPath(runtime.root);
+    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : this.hermesCliPath(runtime.root);
+    const runtimeHermesHome = runtime.adapter.toRuntimePath(await this.activeHermesHome());
     const launch = await runtime.adapter.buildHermesLaunch({
       runtime: runtime.runtime,
       rootPath: runtimeRoot,
       pythonArgs: [cliPath, "gateway", "run", "--replace"],
       cwd: runtime.root,
-      env: buildGatewayEnv(process.env, hermesEnv, runtimeRoot),
+      env: buildGatewayEnv(process.env, hermesEnv, runtimeRoot, runtimeHermesHome),
     });
     return {
       command: launch.command,
@@ -1442,9 +1445,9 @@ export class HermesConnectorService {
     const python = await this.resolvePythonCommand(root);
     return {
       command: python.command,
-      args: [...python.args, this.windowsHermesCliPath(root), "gateway", "run", "--replace"],
+      args: [...python.args, this.hermesCliPath(root), "gateway", "run", "--replace"],
       cwd: root,
-      env: buildGatewayEnv(process.env, hermesEnv, root),
+      env: buildGatewayEnv(process.env, hermesEnv, root, await this.activeHermesHome()),
       label: `${python.label} (legacy fallback: ${reason})`,
     };
   }
@@ -1466,9 +1469,9 @@ export class HermesConnectorService {
     const python = await this.resolvePythonCommand(root);
     return {
       command: python.command,
-      args: [...python.args, this.windowsHermesCliPath(root), "gateway", "status"],
+      args: [...python.args, this.hermesCliPath(root), "gateway", "status"],
       cwd: root,
-      env: PYTHON_ENV,
+      env: { ...PYTHON_ENV, HERMES_HOME: await this.activeHermesHome() },
     };
   }
 
@@ -1556,7 +1559,7 @@ export class HermesConnectorService {
         failures.push(`${candidate.label}: 文件不存在`);
         continue;
       }
-      const result = await runCommand(candidate.command, [...candidate.args, this.windowsHermesCliPath(root), "--version"], {
+      const result = await runCommand(candidate.command, [...candidate.args, this.hermesCliPath(root), "--version"], {
         cwd: root,
         timeoutMs: 5000,
         env: { ...PYTHON_ENV, PYTHONPATH: root },
@@ -1581,9 +1584,13 @@ export class HermesConnectorService {
       ? await runtime.adapter.buildHermesLaunch({
         runtime: runtime.runtime,
         rootPath: runtime.adapter.toRuntimePath(root),
-        pythonArgs: [runtime.runtime.mode === "wsl" ? `${runtime.adapter.toRuntimePath(root).replace(/\/+$/, "")}/hermes` : this.windowsHermesCliPath(root), "gateway", "status"],
+        pythonArgs: [runtime.runtime.mode === "wsl" ? `${runtime.adapter.toRuntimePath(root).replace(/\/+$/, "")}/hermes` : this.hermesCliPath(root), "gateway", "status"],
         cwd: root,
-        env: { ...PYTHON_ENV, PYTHONPATH: runtime.adapter.toRuntimePath(root) },
+        env: {
+          ...PYTHON_ENV,
+          PYTHONPATH: runtime.adapter.toRuntimePath(root),
+          HERMES_HOME: runtime.adapter.toRuntimePath(await this.activeHermesHome()),
+        },
       })
       : await this.gatewayStatusFallback(root, runtime.message);
     const result = await runCommand(launch.command, launch.args, {
@@ -1594,6 +1601,7 @@ export class HermesConnectorService {
       runtimeKind: runtime.ok ? runtime.runtime.mode : "windows",
     });
     return {
+      exitCode: result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr,
       message: result.stdout.trim() || result.stderr.trim() || `gateway status exit ${result.exitCode}`,
@@ -1601,7 +1609,7 @@ export class HermesConnectorService {
   }
 
   private async gatewayStateStatus(): Promise<GatewayStateSnapshot | undefined> {
-    const raw = await fs.readFile(path.join(this.hermesHomePath(), "gateway_state.json"), "utf8").catch(() => "");
+    const raw = await fs.readFile(path.join(await this.activeHermesHome(), "gateway_state.json"), "utf8").catch(() => "");
     if (!raw.trim()) return undefined;
     return parseGatewayStateSnapshot(raw, isPidAlive);
   }
@@ -1610,12 +1618,16 @@ export class HermesConnectorService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private envPath() {
-    return path.join(this.appPaths.hermesDir(), ".env");
+  private async activeHermesHome() {
+    return await resolveActiveHermesHome(this.appPaths.hermesDir());
   }
 
-  private windowsHermesCliPath(root: string) {
-    return resolveWindowsHermesCliPathSync(root) ?? defaultWindowsHermesCliPath(root);
+  private async envPath() {
+    return path.join(await this.activeHermesHome(), ".env");
+  }
+
+  private hermesCliPath(root: string) {
+    return resolveHermesCliPathSync(root) ?? defaultHermesCliPath(root);
   }
 
   private weixinQrLoginScriptPath() {
@@ -1626,12 +1638,8 @@ export class HermesConnectorService {
     return candidates.find((candidate) => fsSync.existsSync(candidate)) ?? candidates[0];
   }
 
-  private hermesHomePath() {
-    return path.dirname(this.envPath());
-  }
-
   private async clearGatewayRuntimeMarkers() {
-    const home = this.hermesHomePath();
+    const home = await this.activeHermesHome();
     await Promise.all([
       fs.rm(path.join(home, "gateway.pid"), { force: true }).catch(() => undefined),
       fs.rm(path.join(home, "gateway_state.json"), { force: true }).catch(() => undefined),
@@ -1659,7 +1667,7 @@ export class HermesConnectorService {
   }
 
   private async readEnvValues() {
-    const raw = await fs.readFile(this.envPath(), "utf8").catch(() => "");
+    const raw = await fs.readFile(await this.envPath(), "utf8").catch(() => "");
     const values: Record<string, string> = {};
     for (const line of raw.split(/\r?\n/)) {
       const trimmed = line.trim();
@@ -1671,9 +1679,9 @@ export class HermesConnectorService {
     return values;
   }
 
-  private async backupEnv(existing: string) {
+  private async backupEnv(envPath: string, existing: string) {
     if (!existing) return;
-    const backupDir = path.join(path.dirname(this.envPath()), ".hermes-workbench-backups");
+    const backupDir = path.join(path.dirname(envPath), ".hermes-workbench-backups");
     await fs.mkdir(backupDir, { recursive: true });
     await fs.writeFile(path.join(backupDir, `.env.${Date.now()}.bak`), sanitizeEnvBackup(existing), "utf8");
   }
@@ -1759,12 +1767,17 @@ function unquoteEnv(value: string) {
   return value;
 }
 
-function buildGatewayEnv(baseEnv: NodeJS.ProcessEnv, hermesEnv: Record<string, string>, runtimeRoot?: string): NodeJS.ProcessEnv {
+function buildGatewayEnv(baseEnv: NodeJS.ProcessEnv, hermesEnv: Record<string, string>, runtimeRoot?: string, hermesHome?: string): NodeJS.ProcessEnv {
+  const pythonPath = [runtimeRoot, baseEnv.PYTHONPATH].filter((value): value is string => Boolean(value?.trim())).join(path.delimiter);
   return {
     ...baseEnv,
     ...hermesEnv,
     ...PYTHON_ENV,
-    ...(runtimeRoot ? { PYTHONPATH: runtimeRoot } : {}),
+    PYTHONUNBUFFERED: "1",
+    NO_COLOR: "1",
+    FORCE_COLOR: "0",
+    ...(pythonPath ? { PYTHONPATH: pythonPath } : {}),
+    ...(hermesHome ? { HERMES_HOME: hermesHome } : {}),
   };
 }
 
@@ -1985,7 +1998,7 @@ function isWeixinQrPhase(value: string): value is WeixinQrLoginStatus["phase"] {
   ].includes(value);
 }
 
-function parseGatewayStateSnapshot(raw: string, pidAlive: (pid: number) => boolean): GatewayStateSnapshot | undefined {
+function parseGatewayStateSnapshot(raw: string, pidAlive: (pid: number) => boolean, nowMs = Date.now()): GatewayStateSnapshot | undefined {
   let payload: unknown;
   try {
     payload = JSON.parse(raw);
@@ -1997,6 +2010,10 @@ function parseGatewayStateSnapshot(raw: string, pidAlive: (pid: number) => boole
   if (record.gateway_state !== "running") return undefined;
   const pid = typeof record.pid === "number" && Number.isInteger(record.pid) && record.pid > 0 ? record.pid : undefined;
   if (pid && !pidAlive(pid)) return undefined;
+  const updatedAt = typeof record.updated_at === "string" ? record.updated_at : undefined;
+  const updatedAtMs = updatedAt ? parseGatewayUpdatedAtMs(updatedAt) : undefined;
+  const freshWithoutPid = typeof updatedAtMs === "number" && nowMs - updatedAtMs >= 0 && nowMs - updatedAtMs <= 120_000;
+  if (!pid && !freshWithoutPid) return undefined;
   const platforms = record.platforms && typeof record.platforms === "object"
     ? Object.entries(record.platforms as Record<string, Record<string, unknown>>)
       .filter(([, value]) => value?.state === "connected")
@@ -2008,9 +2025,15 @@ function parseGatewayStateSnapshot(raw: string, pidAlive: (pid: number) => boole
   return {
     running: true,
     pid,
-    updatedAt: typeof record.updated_at === "string" ? record.updated_at : undefined,
+    updatedAt,
     message,
   };
+}
+
+function parseGatewayUpdatedAtMs(value: string) {
+  const normalized = value.replace(/(\.\d{3})\d+(?=Z|[+-]\d{2}:?\d{2}$)/, "$1");
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isPidAlive(pid: number) {

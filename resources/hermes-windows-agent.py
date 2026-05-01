@@ -426,6 +426,26 @@ def _safe_preview(value, max_len: int = 500) -> str:
         return str(value)[:max_len]
 
 
+def _extract_final_response(result) -> str:
+    if isinstance(result, dict):
+        return str(result.get("final_response") or "")
+    return str(result or "")
+
+
+def _looks_incomplete_response(text: str) -> bool:
+    stripped = re.sub(r"\s+", " ", (text or "").strip())
+    if not stripped:
+        return False
+    last_line = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), stripped)
+    if last_line.endswith(("：", ":", "，", ",", "；", ";", "、")):
+        return True
+    if re.search(r"(让我|我来|下面|接下来|首先|然后|包括|例如|如下)[:：]?$", last_line):
+        return True
+    if re.search(r"(我需要|我会|我将|让我们|先来|再来).{0,24}$", last_line) and not re.search(r"[。！？.!?]$", last_line):
+        return True
+    return False
+
+
 def _int_value(value, default: int = 0) -> int:
     try:
         return int(float(value or default))
@@ -558,11 +578,28 @@ def main() -> int:
             task_id=args.session_id,
         )
 
-        final_response = ""
-        if isinstance(result, dict):
-            final_response = str(result.get("final_response") or "")
-        else:
-            final_response = str(result or "")
+        final_response = _extract_final_response(result)
+        auto_continue_count = 0
+        while auto_continue_count < 2 and _looks_incomplete_response(final_response):
+            emit("status", {
+                "level": "info",
+                "message": "检测到回复可能未完成，正在自动继续。",
+                "session_id": args.session_id,
+            })
+            continuation_history = [*conversation_history, {"role": "user", "content": args.query}]
+            if final_response.strip():
+                continuation_history.append({"role": "assistant", "content": final_response.strip()})
+            continuation_result = agent.run_conversation(
+                "请继续完成上一条回复，不要重复已经说过的内容，直接给出后续分析和结论。",
+                conversation_history=continuation_history,
+                task_id=args.session_id,
+            )
+            continuation_text = _extract_final_response(continuation_result).strip()
+            if not continuation_text or continuation_text == final_response.strip():
+                break
+            final_response = f"{final_response.rstrip()}\n\n{continuation_text}"
+            result = continuation_result
+            auto_continue_count += 1
 
         final_messages = result.get("messages", []) if isinstance(result, dict) else []
         usage_sources = _usage_sources(result, agent)
@@ -605,6 +642,7 @@ def main() -> int:
             "success": True,
             "content": final_response,
             "session_id": args.session_id,
+            "auto_continue_count": auto_continue_count,
         })
         return 0
 

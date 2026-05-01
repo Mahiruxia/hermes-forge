@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { HermesConnectorService, testOnly } from "./hermes-connector-service";
 
 describe("HermesConnectorService helpers", () => {
@@ -113,6 +116,21 @@ describe("HermesConnectorService helpers", () => {
     }), () => false)).toBeUndefined();
   });
 
+  it("ignores stale pidless gateway state snapshots", () => {
+    expect(testOnly.parseGatewayStateSnapshot(JSON.stringify({
+      gateway_state: "running",
+      updated_at: "2026-04-21T04:01:04.129897+00:00",
+    }), () => false, Date.parse("2026-04-21T04:04:05.000Z"))).toBeUndefined();
+
+    expect(testOnly.parseGatewayStateSnapshot(JSON.stringify({
+      gateway_state: "running",
+      updated_at: "2026-04-21T04:01:04.129897+00:00",
+    }), () => false, Date.parse("2026-04-21T04:01:30.000Z"))).toMatchObject({
+      running: true,
+      updatedAt: "2026-04-21T04:01:04.129897+00:00",
+    });
+  });
+
   it("keeps confirmed Weixin token inside the main-process event boundary", () => {
     const publicFixtureValue = "public-fixture-value";
     const event = testOnly.parseWeixinQrEvent(JSON.stringify({
@@ -153,18 +171,70 @@ describe("HermesConnectorService helpers", () => {
       {
         OPENAI_API_KEY: "lm-studio",
         OPENAI_BASE_URL: "http://127.0.0.1:8081/v1",
+        PYTHONPATH: "parent-pythonpath",
       },
       {
         OPENAI_API_KEY: "pwd",
         OPENAI_BASE_URL: "http://127.0.0.1:8080/v1",
         OPENAI_MODEL: "gpt-5.4",
       },
+      "D:\\Hermes Agent",
+      "D:\\Forge\\.hermes\\profiles\\wechat",
     );
 
     expect(env.OPENAI_API_KEY).toBe("pwd");
     expect(env.OPENAI_BASE_URL).toBe("http://127.0.0.1:8080/v1");
     expect(env.OPENAI_MODEL).toBe("gpt-5.4");
     expect(env.PYTHONUTF8).toBe("1");
+    expect(env.PYTHONUNBUFFERED).toBe("1");
+    expect(env.HERMES_HOME).toBe("D:\\Forge\\.hermes\\profiles\\wechat");
+    expect(env.PYTHONPATH).toBe(["D:\\Hermes Agent", "parent-pythonpath"].join(path.delimiter));
+  });
+
+  it("syncs connector env into the active Hermes profile used by Gateway", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-connector-"));
+    const forgeHome = path.join(tempDir, "hermes-home");
+    const activeHome = path.join(forgeHome, "profiles", "wechat");
+    await fs.mkdir(activeHome, { recursive: true });
+    await fs.writeFile(path.join(forgeHome, "active_profile"), "wechat", "utf8");
+    await fs.writeFile(path.join(tempDir, "connectors-config.json"), JSON.stringify({
+      platforms: {
+        weixin: {
+          enabled: true,
+          values: {
+            accountId: "wx-account",
+            baseUrl: "https://ilinkai.weixin.qq.com",
+            dmPolicy: "pairing",
+            allowAllUsers: true,
+            groupPolicy: "disabled",
+          },
+          secretRefs: { token: "connector.weixin.token" },
+        },
+      },
+    }), "utf8");
+
+    const service = new HermesConnectorService(
+      {
+        baseDir: () => tempDir,
+        hermesDir: () => forgeHome,
+      } as never,
+      {
+        hasSecret: vi.fn(async (ref: string) => ref === "connector.weixin.token"),
+        readSecret: vi.fn(async (ref: string) => ref === "connector.weixin.token" ? "wx-secret" : undefined),
+      } as never,
+      async () => {
+        throw new Error("Hermes root is not needed for this sync-only test.");
+      },
+    );
+
+    const result = await service.syncEnv();
+    const profileEnv = await fs.readFile(path.join(activeHome, ".env"), "utf8");
+    const baseEnvExists = await fs.stat(path.join(forgeHome, ".env")).then(() => true).catch(() => false);
+
+    expect(result.envPath).toBe(path.join(activeHome, ".env"));
+    expect(profileEnv).toContain("WEIXIN_ACCOUNT_ID=wx-account");
+    expect(profileEnv).toContain("WEIXIN_TOKEN=wx-secret");
+    expect(baseEnvExists).toBe(false);
   });
 
   it("ignores stale Weixin QR close events after a refresh starts a new run", () => {

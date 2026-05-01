@@ -65,7 +65,7 @@ describe("AgentRunPanel", () => {
     expect(screen.getByLabelText("Agent 面板")).toHaveClass("w-[360px]");
     expect(screen.getByLabelText("Agent 面板")).toHaveClass("bg-[#f5f6fa]");
     expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
-    expect(screen.getByText("128K")).toBeInTheDocument();
+    expect(screen.getByText("128,000 token")).toBeInTheDocument();
     expect(screen.getByText("0.6")).toBeInTheDocument();
     expect(screen.getByText("暂无 Token 估算，运行任务后自动汇总。")).toBeInTheDocument();
     expect(screen.getByText("详细用量已隐藏")).toBeInTheDocument();
@@ -121,7 +121,7 @@ describe("AgentRunPanel", () => {
 
     expect(screen.getByText("约 2.5K")).toBeInTheDocument();
     expect(screen.getByText("$0.01")).toBeInTheDocument();
-    expect(screen.getByText("最近一次估算：1.2K in / 800 out")).toBeInTheDocument();
+    expect(screen.getByText("最近一次估算：1,200 in / 800 out")).toBeInTheDocument();
     expect(screen.getByText("38%")).toBeInTheDocument();
     expect(screen.getByText("48K / 128K")).toBeInTheDocument();
     expect(screen.getByText("当前会话主要讨论图像内容识别与模型信息查询。")).toBeInTheDocument();

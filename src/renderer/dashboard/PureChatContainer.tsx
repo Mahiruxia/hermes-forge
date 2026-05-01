@@ -1,7 +1,7 @@
-import { AlertCircle, ChevronDown, Copy, Ellipsis, Loader2, RefreshCcw, Sparkles, Timer, Wrench } from "lucide-react";
+import { AlertCircle, Brain, ChevronDown, Copy, Ellipsis, Loader2, RefreshCcw, Sparkles, Timer, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { EngineEvent, TaskRunProjection, ToolEvent } from "../../shared/types";
+import type { EngineEvent, TaskEventEnvelope, TaskRunProjection, ToolEvent } from "../../shared/types";
 import { StreamingMarkdown } from "../markdown/StreamingMarkdown";
 import { useAppStore } from "../store";
 import { ChatInput } from "./ChatInput";
@@ -222,13 +222,14 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
   const { run } = props;
   const store = useAppStore();
   const content = run.assistantMessage.content.trim();
+  const eventsForRun = store.taskEventsByRunId[run.taskRunId] || [];
   const usage = useMemo(() => {
-    const eventsForRun = store.taskEventsByRunId[run.taskRunId] || [];
     for (let i = eventsForRun.length - 1; i >= 0; i--) {
       if (eventsForRun[i].event.type === "usage") return eventsForRun[i].event as Extract<EngineEvent, { type: "usage" }>;
     }
     return undefined;
-  }, [store.taskEventsByRunId, run.taskRunId]);
+  }, [eventsForRun]);
+  const thoughtStatus = useMemo(() => buildThoughtStatus(run, eventsForRun), [run, eventsForRun]);
   const waiting = !content && (run.status === "pending" || run.status === "routing" || run.status === "running" || run.status === "streaming");
   const softStreaming = Boolean(content) && run.status === "streaming";
   const completed = run.status === "complete";
@@ -269,6 +270,14 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
                   {usage.source === "actual" ? "实测" : "约"} {usage.inputTokens}+{usage.outputTokens} token
                 </MessageMetaPill>
               ) : null}
+              {usage?.reasoningTokens ? (
+                <MessageMetaPill tone="purple">
+                  思考 {usage.reasoningTokens} token
+                </MessageMetaPill>
+              ) : null}
+              {thoughtStatus.visible ? (
+                <MessageMetaPill tone={thoughtStatus.tone}>{thoughtStatus.label}</MessageMetaPill>
+              ) : null}
             </div>
           </div>
 
@@ -284,9 +293,10 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
           {run.status === "failed" || run.status === "cancelled" || run.status === "interrupted" ? <FailureInline status={run.status} content={run.assistantMessage.content} onOpenFix={props.onOpenFix} /> : null}
 
           {waiting ? (
-            <TypingState phase={run.status === "routing" ? "handoff" : "replying"} />
+            <TypingState phase={run.status === "routing" ? "handoff" : "replying"} thoughtStatus={thoughtStatus} startedAt={run.startedAt} />
           ) : (
             <div className="hermes-assistant-bubble relative rounded-[22px] border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] p-4 before:absolute before:left-0 before:top-5 before:h-10 before:w-1 before:rounded-r-full before:bg-[var(--hermes-primary)]">
+              {thoughtStatus.visible && thoughtStatus.phase !== "replying" ? <ThoughtStatusStrip status={thoughtStatus} /> : null}
               <StreamingMarkdown content={run.assistantMessage.content} isStreaming={run.status === "streaming"} className="prose prose-slate max-w-none break-words text-[14px] leading-relaxed text-slate-800 [overflow-wrap:anywhere] prose-p:my-3 prose-ul:my-3 prose-ol:my-3 prose-li:my-1.5 prose-li:leading-relaxed" />
               {softStreaming ? <SoftStreamingHint /> : null}
             </div>
@@ -297,6 +307,113 @@ function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (targ
       )}
     />
   );
+}
+
+type ThoughtStatus = {
+  visible: boolean;
+  label: string;
+  detail: string;
+  tone: "slate" | "emerald" | "amber" | "rose" | "purple";
+  phase: "preparing" | "thinking" | "tool" | "replying";
+};
+
+function buildThoughtStatus(run: TaskRunProjection, events: TaskEventEnvelope[]): ThoughtStatus {
+  const active = run.status === "pending" || run.status === "routing" || run.status === "running" || run.status === "streaming";
+  const hasContent = Boolean(run.assistantMessage.content.trim());
+  const defaultStatus: ThoughtStatus = {
+    visible: active,
+    label: run.status === "routing" ? "准备上下文" : hasContent ? "正在写回复" : "思考中",
+    detail: run.status === "routing"
+      ? "正在读取会话、工作区和执行配置。"
+      : hasContent
+        ? "正文正在继续生成，可以先看已出现的内容。"
+        : "正在判断下一步，暂时还没有正文。",
+    tone: run.status === "routing" ? "slate" : hasContent ? "emerald" : "purple",
+    phase: run.status === "routing" ? "preparing" : hasContent ? "replying" : "thinking",
+  };
+  if (!active) return { ...defaultStatus, visible: false };
+
+  const latestEvent = events.at(-1)?.event;
+  const runningTool = run.toolEvents.find((tool) => tool.status === "running");
+  if (runningTool) {
+    return {
+      visible: true,
+      label: "正在使用工具",
+      detail: `正在处理：${runningTool.label}`,
+      tone: "amber",
+      phase: "tool",
+    };
+  }
+  if (latestEvent?.type === "tool_call") {
+    return {
+      visible: true,
+      label: latestEvent.status === "failed" ? "工具异常" : "正在使用工具",
+      detail: `正在处理：${latestEvent.toolName}`,
+      tone: latestEvent.status === "failed" ? "rose" : "amber",
+      phase: "tool",
+    };
+  }
+  if (latestEvent?.type === "tool_result" && !hasContent) {
+    return {
+      visible: true,
+      label: latestEvent.success === false ? "工具异常" : "整理工具结果",
+      detail: latestEvent.success === false
+        ? `${latestEvent.toolName} 没有顺利完成，正在判断怎么继续。`
+        : `${latestEvent.toolName} 已返回，正在把结果整理成回复。`,
+      tone: latestEvent.success === false ? "rose" : "amber",
+      phase: "tool",
+    };
+  }
+  if (latestEvent?.type === "reasoning") {
+    return {
+      visible: true,
+      label: "思考中",
+      detail: "正在分析任务和上下文，正文还没开始输出。",
+      tone: "purple",
+      phase: "thinking",
+    };
+  }
+  if (hasContent && run.status === "streaming") {
+    return {
+      visible: true,
+      label: "正在写回复",
+      detail: "正文正在继续生成，可以先看已出现的内容。",
+      tone: "emerald",
+      phase: "replying",
+    };
+  }
+  if (latestEvent?.type === "progress") {
+    return {
+      visible: true,
+      label: latestEvent.done ? "步骤完成" : "处理中",
+      detail: latestEvent.message,
+      tone: latestEvent.done ? "emerald" : "amber",
+      phase: latestEvent.step.includes("snapshot") ? "preparing" : "thinking",
+    };
+  }
+  if (latestEvent?.type === "status") {
+    const autoContinuing = /自动继续|未完成|继续/.test(latestEvent.message);
+    return {
+      visible: true,
+      label: latestEvent.level === "error" ? "状态异常" : autoContinuing ? "自动续写中" : "处理中",
+      detail: autoContinuing ? "上一段可能没说完，正在补全后续内容。" : latestEvent.message,
+      tone: latestEvent.level === "error" ? "rose" : latestEvent.level === "warning" ? "amber" : "slate",
+      phase: "preparing",
+    };
+  }
+  if (latestEvent?.type === "lifecycle") {
+    if (latestEvent.stage !== "running" && latestEvent.stage !== "streaming" && run.status === "running" && !hasContent) {
+      return defaultStatus;
+    }
+    return {
+      visible: true,
+      label: latestEvent.stage === "streaming" ? "正在写回复" : latestEvent.stage === "running" ? "思考中" : "准备上下文",
+      detail: latestEvent.stage === "streaming" ? "正文正在继续生成。" : latestEvent.stage === "running" ? "正在分析任务和上下文。" : "正在进入本轮任务。",
+      tone: latestEvent.stage === "streaming" ? "emerald" : latestEvent.stage === "running" ? "purple" : "slate",
+      phase: latestEvent.stage === "streaming" ? "replying" : latestEvent.stage === "running" ? "thinking" : "preparing",
+    };
+  }
+  return defaultStatus;
 }
 
 function MessageActionButton(props: { icon: typeof Copy; label: string; onClick: () => void }) {
@@ -552,25 +669,74 @@ function formatElapsedMs(value: number) {
   return `${minutes}m ${seconds}s`;
 }
 
-function TypingState(props: { phase: "handoff" | "replying" }) {
-  const title = props.phase === "handoff" ? "Hermes 已接手" : "Hermes 正在回复中";
-  const subtitle = props.phase === "handoff"
-    ? "Hermes 正在准备 MEMORY.md、工作区上下文和执行链路。通常很快就会开始输出。"
-    : "Hermes 正在整理最终回复；如果等待时间偏长，可以展开工具过程或停止本轮任务。";
+function ThoughtStatusStrip(props: { status: ThoughtStatus }) {
   return (
-    <div data-testid="typing-state" className="hermes-typing-card rounded-[22px] bg-[#f7f8fa] px-4 py-4">
+    <div className={cn(
+      "mb-3 inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] shadow-sm",
+      props.status.phase === "thinking" && "border-[var(--hermes-primary-border)] bg-white/70 text-[var(--hermes-primary)]",
+      props.status.phase === "tool" && "border-amber-200 bg-amber-50/80 text-amber-700",
+      props.status.phase === "replying" && "border-emerald-200 bg-emerald-50/80 text-emerald-700",
+      props.status.phase === "preparing" && "border-slate-200 bg-white/70 text-slate-600",
+    )}>
+      <span className="relative grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/80">
+        {props.status.phase === "thinking" ? <Brain size={13} /> : <Loader2 size={13} className="animate-spin" />}
+      </span>
+      <span className="min-w-0 truncate font-semibold">{props.status.label}</span>
+      <span className="min-w-0 truncate opacity-75">{props.status.detail}</span>
+    </div>
+  );
+}
+
+function TypingState(props: { phase: "handoff" | "replying"; thoughtStatus?: ThoughtStatus; startedAt?: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 4000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const startedMs = props.startedAt ? Date.parse(props.startedAt) : Number.NaN;
+  const elapsedSeconds = Number.isFinite(startedMs) ? Math.max(0, Math.floor((nowMs - startedMs) / 1000)) : 0;
+  const friendly = playfulStatusCopy(props.thoughtStatus, props.phase, elapsedSeconds);
+  const title = friendly?.label ?? (props.thoughtStatus?.visible
+    ? props.thoughtStatus.label
+    : props.phase === "handoff" ? "Hermes 已接手" : "Hermes 正在回复中");
+  const subtitle = friendly?.detail ?? (props.thoughtStatus?.visible
+    ? props.thoughtStatus.detail
+    : props.phase === "handoff"
+    ? "正在读取会话、工作区和执行配置。"
+    : "正在整理回复；如果等待偏久，可以展开工具过程看进度。");
+  return (
+    <div data-testid="typing-state" className="hermes-typing-card rounded-[22px] border border-slate-200/70 bg-white/75 px-4 py-3.5 shadow-sm">
       <div className="flex items-center gap-2.5 text-[13px] font-medium text-slate-600">
         <span className="relative inline-flex h-5 w-5 items-center justify-center">
           <span className="absolute inset-0 animate-ping rounded-full bg-slate-200/70 [animation-duration:1.8s]" />
           <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full bg-white shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
-            <Loader2 size={12} className="animate-spin text-slate-400" />
+            {props.thoughtStatus?.phase === "thinking" ? <Brain size={12} className="text-[var(--hermes-primary)]" /> : <Loader2 size={12} className="animate-spin text-slate-400" />}
           </span>
         </span>
         <span>{title}</span>
       </div>
-      <p className="mt-2 text-[13px] leading-6 text-slate-500">{subtitle}</p>
+      <p className="mt-1.5 text-[12px] leading-5 text-slate-500">{subtitle}</p>
     </div>
   );
+}
+
+function playfulStatusCopy(status: ThoughtStatus | undefined, phase: "handoff" | "replying", elapsedSeconds: number): { label: string; detail: string } | undefined {
+  const activePhase = status?.phase ?? (phase === "handoff" ? "preparing" : "thinking");
+  if (activePhase === "tool") return status ? { label: status.label, detail: status.detail } : undefined;
+  if (activePhase === "replying") {
+    return elapsedSeconds < 10
+      ? { label: "正在写回复", detail: "句子已经上路，正在排队出场。" }
+      : { label: "还在补充", detail: "不是沉默，是在给答案收个漂亮的尾。" };
+  }
+  if (activePhase === "thinking") {
+    if (elapsedSeconds < 8) return { label: "思考中", detail: "正在把问题拆开，先找最靠谱的那条线。" };
+    if (elapsedSeconds < 18) return { label: "认真想想", detail: "脑内白板已经打开，正在把结论写清楚。" };
+    return { label: "还在打磨", detail: "不是卡住，是在把话说顺一点。" };
+  }
+  if (elapsedSeconds < 5) return { label: "整理材料中", detail: "把上下文摊开，给 Hermes 留一条清爽的跑道。" };
+  if (elapsedSeconds < 14) return { label: "正在热身", detail: "模型在系鞋带，马上开始认真跑。" };
+  return { label: "快准备好了", detail: "上下文基本摆好，正在把第一句话找出来。" };
 }
 
 function SoftStreamingHint() {

@@ -2,7 +2,7 @@ import { Command, DownloadCloud, Gauge, Mic, MicOff, Paperclip, Plus, Send, Squa
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ClipboardEvent, DragEvent, ReactNode } from "react";
-import type { EngineEvent, EngineUpdateStatus, SessionAgentInsightUsage } from "../../shared/types";
+import type { EngineEvent, EngineUpdateStatus, ModelProfile, SessionAgentInsightUsage } from "../../shared/types";
 import { useAppStore } from "../store";
 import { cn } from "./DashboardPrimitives";
 import { buildPreflightState, preflightChipsForUser, preflightDetailForUser, preflightSummaryForUser } from "./permissionModel";
@@ -53,6 +53,7 @@ export function ChatInput(props: {
   const currentModelProfile = store.runtimeConfig?.modelProfiles.find((profile) => profile.id === store.runtimeConfig?.defaultModelProfileId)
     ?? store.runtimeConfig?.modelProfiles[0];
   const currentModelLabel = currentModelProfile?.model || currentModelProfile?.name || currentModelProfile?.id || "未配置模型";
+  const currentContextWindow = resolveComposerContextWindow(store, currentModelProfile, currentModelLabel);
   const contextMeter = useMemo(
     () => buildContextMeter({
       activeSessionId: store.activeSessionId,
@@ -62,11 +63,11 @@ export function ChatInput(props: {
       taskEventsByRunId: store.taskEventsByRunId,
       sessionInsightUsage: store.sessionAgentInsight?.usage,
       conversationMessages: store.conversationMessages,
-      contextWindow: currentModelProfile?.maxTokens,
+      contextWindow: currentContextWindow,
       attachmentCount: store.attachments.length,
     }),
     [
-      currentModelProfile?.maxTokens,
+      currentContextWindow,
       store.activeSessionId,
       store.attachments.length,
       store.conversationMessages,
@@ -862,9 +863,21 @@ function ContextMeterPill(props: { meter: ContextMeter }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [panelPosition, setPanelPosition] = useState({ right: 16, bottom: 120, width: 264 });
   const sourceLabel = meter.source === "actual" ? "实测" : meter.source === "estimated" ? "估算" : "草稿约";
+  const compactSourceLabel = meter.source === "actual" ? "实测上下文" : meter.source === "estimated" ? "估算上下文" : "草稿上下文";
+  const percentLabel = typeof meter.percent === "number"
+    ? meter.percent === 0 && meter.displayTokens > 0
+      ? "<1%"
+      : `${meter.percent}%`
+    : undefined;
+  const showCompactPercent = typeof meter.percent === "number" && meter.percent >= 1;
+  const visualPercent = typeof meter.percent === "number"
+    ? Math.max(meter.percent, meter.displayTokens > 0 ? 2 : 0)
+    : undefined;
+  const displayTokenLabel = formatExactTokenCount(meter.displayTokens);
+  const contextWindowLabel = meter.contextWindow ? `${formatExactTokenCount(meter.contextWindow)} tokens` : "未知";
   const title = meter.contextWindow
-    ? `${sourceLabel}上下文：${meter.displayTokens.toLocaleString()} / ${meter.contextWindow.toLocaleString()} input tokens${meter.outputTokens ? `；最近输出 ${meter.outputTokens.toLocaleString()} tokens` : ""}${meter.draftTokens ? `；当前草稿约增加 ${meter.draftTokens.toLocaleString()} tokens` : ""}${meter.attachmentCount ? "；附件正文会在发送时另行计入" : ""}${meter.measuredAt ? `；实测时间 ${meter.measuredAt}` : ""}`
-    : `${sourceLabel}上下文：${meter.displayTokens.toLocaleString()} input tokens${meter.outputTokens ? `；最近输出 ${meter.outputTokens.toLocaleString()} tokens` : ""}${meter.draftTokens ? `；当前草稿约增加 ${meter.draftTokens.toLocaleString()} tokens` : ""}${meter.attachmentCount ? "；附件正文会在发送时另行计入" : ""}${meter.measuredAt ? `；实测时间 ${meter.measuredAt}` : ""}`;
+    ? `${sourceLabel}已用上下文：${displayTokenLabel} input tokens；模型窗口上限：${contextWindowLabel}${percentLabel ? `；占用 ${percentLabel}` : ""}${meter.outputTokens ? `；最近输出 ${meter.outputTokens.toLocaleString()} tokens` : ""}${meter.draftTokens ? `；当前草稿约增加 ${meter.draftTokens.toLocaleString()} tokens` : ""}${meter.attachmentCount ? "；附件正文会在发送时另行计入" : ""}${meter.measuredAt ? `；实测时间 ${meter.measuredAt}` : ""}`
+    : `${sourceLabel}已用上下文：${displayTokenLabel} input tokens${meter.outputTokens ? `；最近输出 ${meter.outputTokens.toLocaleString()} tokens` : ""}${meter.draftTokens ? `；当前草稿约增加 ${meter.draftTokens.toLocaleString()} tokens` : ""}${meter.attachmentCount ? "；附件正文会在发送时另行计入" : ""}${meter.measuredAt ? `；实测时间 ${meter.measuredAt}` : ""}`;
   const meterClass = meter.tone === "rose"
     ? "border-rose-200/80 bg-rose-50/80 text-rose-700 shadow-rose-100/80"
     : meter.tone === "amber"
@@ -936,19 +949,20 @@ function ContextMeterPill(props: { meter: ContextMeter }) {
             </span>
           </div>
           <div className="mt-3 space-y-1.5">
-            <ContextDetailRow label="输入上下文" value={`${meter.displayTokens.toLocaleString()} tokens`} />
+            <ContextDetailRow label={meter.source === "actual" ? "实测输入上下文" : "当前输入上下文"} value={`${displayTokenLabel} tokens`} />
             {typeof meter.outputTokens === "number" ? <ContextDetailRow label="最近输出" value={`${meter.outputTokens.toLocaleString()} tokens`} /> : null}
             <ContextDetailRow label="当前草稿" value={`约 +${meter.draftTokens.toLocaleString()} tokens`} />
-            <ContextDetailRow label="窗口上限" value={meter.contextWindow ? `${meter.contextWindow.toLocaleString()} tokens` : "未知"} />
+            <ContextDetailRow label="模型窗口上限" value={contextWindowLabel} />
           </div>
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">窗口上限来自模型配置或服务返回，只用来判断余量；主数值显示当前对话真实/估算已用上下文。</p>
           {typeof meter.percent === "number" ? (
             <div className="mt-3">
               <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
                 <span>占用比例</span>
-                <span>{meter.percent}%</span>
+                <span>{percentLabel}</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-slate-100 shadow-inner">
-                <div className={cn("h-full rounded-full transition-all duration-500", barClass)} style={{ width: `${meter.percent}%` }} />
+                <div className={cn("h-full rounded-full transition-all duration-500", barClass)} style={{ width: `${visualPercent}%` }} />
               </div>
             </div>
           ) : null}
@@ -976,12 +990,12 @@ function ContextMeterPill(props: { meter: ContextMeter }) {
           <Gauge size={11} />
         </span>
         <span className="min-w-0 truncate">
-          {sourceLabel} {formatCompactTokenCount(meter.displayTokens)}
-          {typeof meter.percent === "number" ? ` / ${meter.percent}%` : ""}
+          {compactSourceLabel} {displayTokenLabel}
+          {showCompactPercent && percentLabel ? ` · ${percentLabel}` : ""}
         </span>
         {typeof meter.percent === "number" ? (
           <span className="h-1 w-7 shrink-0 overflow-hidden rounded-full bg-white/75 ring-1 ring-black/5 max-sm:hidden">
-            <span className={cn("block h-full rounded-full transition-all duration-500", barClass)} style={{ width: `${meter.percent}%` }} />
+            <span className={cn("block h-full rounded-full transition-all duration-500", barClass)} style={{ width: `${visualPercent}%` }} />
           </span>
         ) : null}
       </button>
@@ -1125,6 +1139,19 @@ function buildContextMeter(input: {
   };
 }
 
+function resolveComposerContextWindow(
+  store: ReturnType<typeof useAppStore.getState>,
+  modelProfile: ModelProfile | undefined,
+  modelLabel: string,
+) {
+  if (store.sessionAgentInsight?.latestRuntime?.contextWindow) return store.sessionAgentInsight.latestRuntime.contextWindow;
+  const providerProfiles = store.runtimeConfig?.providerProfiles ?? store.providerProfiles;
+  const matchedModel = providerProfiles
+    .flatMap((profile) => profile.models)
+    .find((model) => model.id === modelLabel || model.label === modelLabel || model.id === modelProfile?.model || model.label === modelProfile?.model);
+  return matchedModel?.contextWindow ?? modelProfile?.maxTokens;
+}
+
 function latestUsageForSession(
   activeSessionId: string | undefined,
   eventsByRunId: ReturnType<typeof useAppStore.getState>["taskEventsByRunId"],
@@ -1195,10 +1222,8 @@ function estimateTokens(text: string) {
   return Math.ceil(ascii / 4 + nonAscii * 0.9);
 }
 
-function formatCompactTokenCount(value: number) {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
-  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
-  return String(value);
+function formatExactTokenCount(value: number) {
+  return Math.round(value).toLocaleString();
 }
 
 function joinVoiceText(...parts: Array<string | undefined>) {

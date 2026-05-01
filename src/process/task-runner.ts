@@ -295,6 +295,21 @@ export class TaskRunner {
   private async consumeRun(request: EngineRunRequest, controller: AbortController, workSessionId?: string) {
     const adapterStartedAt = Date.now();
     const actualEngine = "hermes" as const;
+    let bufferedMessageChunk = "";
+    let bufferedMessageAt = "";
+    let lastMessageFlushAt = 0;
+    const flushMessageChunk = async () => {
+      if (!bufferedMessageChunk) return;
+      const event: EngineEvent = {
+        type: "message_chunk",
+        content: bufferedMessageChunk,
+        at: bufferedMessageAt || now(),
+      };
+      bufferedMessageChunk = "";
+      bufferedMessageAt = "";
+      lastMessageFlushAt = Date.now();
+      await this.publish(request.workspaceId, workSessionId, request.sessionId, actualEngine, event);
+    };
     try {
       await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "running", "Hermes 已接手任务。");
       await this.publishStep(request.workspaceId, workSessionId, request.sessionId, actualEngine, "stage-running-entered", false, "已进入 Hermes 执行阶段。");
@@ -309,6 +324,19 @@ export class TaskRunner {
 
       for await (const event of this.hermesAdapter.run(request, controller.signal)) {
         this.captureFirstOutputMetric(request.sessionId, event);
+        if (event.type === "message_chunk") {
+          if (!this.streamingLifecyclePublished.has(request.sessionId)) {
+            this.streamingLifecyclePublished.add(request.sessionId);
+            await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "streaming", "正在接收 Hermes 流式输出。");
+          }
+          bufferedMessageChunk += event.content;
+          bufferedMessageAt ||= event.at;
+          if (Date.now() - lastMessageFlushAt >= 80 || bufferedMessageChunk.length >= 600) {
+            await flushMessageChunk();
+          }
+          continue;
+        }
+        await flushMessageChunk();
         if (event.type === "session_update" && workSessionId) {
           await this.workSessionService?.syncHermesSession(workSessionId, {
             hermesSessionId: event.hermesSessionId,
@@ -320,12 +348,13 @@ export class TaskRunner {
             console.warn("[Hermes Forge] Failed to sync official Hermes session:", error);
           });
         }
-        if ((event.type === "stdout" || event.type === "stderr" || event.type === "message_chunk") && !this.streamingLifecyclePublished.has(request.sessionId)) {
+        if ((event.type === "stdout" || event.type === "stderr") && !this.streamingLifecyclePublished.has(request.sessionId)) {
           this.streamingLifecyclePublished.add(request.sessionId);
           await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "streaming", "正在接收 Hermes 流式输出。");
         }
         await this.publish(request.workspaceId, workSessionId, request.sessionId, actualEngine, event);
       }
+      await flushMessageChunk();
       await this.publishStep(request.workspaceId, workSessionId, request.sessionId, actualEngine, "adapter-complete", true, `Hermes 适配器完成，耗时 ${Date.now() - adapterStartedAt}ms。`);
       await this.publishTaskMetrics(request.workspaceId, workSessionId, request.sessionId, actualEngine, {
         adapterMs: Date.now() - adapterStartedAt,
@@ -344,6 +373,7 @@ export class TaskRunner {
       await this.publishUsage(request.workspaceId, workSessionId, request.sessionId, actualEngine, true);
       await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "completed", "Hermes 任务生命周期已完成。");
     } catch (error) {
+      await flushMessageChunk();
       const failure = this.classifyFailure(error, controller.signal.aborted);
       await this.publishTaskMetrics(request.workspaceId, workSessionId, request.sessionId, actualEngine, {
         adapterMs: Date.now() - adapterStartedAt,
@@ -544,7 +574,7 @@ export class TaskRunner {
   }
 
   private captureFirstOutputMetric(sessionId: string, event: EngineEvent) {
-    if (event.type !== "stdout" && event.type !== "stderr" && event.type !== "result") return;
+    if (event.type !== "stdout" && event.type !== "stderr" && event.type !== "message_chunk" && event.type !== "result") return;
     const metrics = this.metrics.get(sessionId);
     if (!metrics || metrics.firstOutputMs !== undefined) return;
     metrics.firstOutputMs = Date.now() - metrics.startedAt;

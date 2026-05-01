@@ -148,7 +148,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
             </div>
           </div>
           <div className="mt-4 grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100 pt-3">
-            <ModelMetric label="上下文窗口" value={contextWindow ? formatCompactNumber(contextWindow) : "未知"} />
+            <ModelMetric label="模型窗口" value={contextWindow ? `${formatExactNumber(contextWindow)} token` : "未知"} />
             <ModelMetric label="温度" value={temperature.toFixed(1)} />
           </div>
           <button
@@ -165,8 +165,8 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
           {usage.hasUsage ? (
             <>
               <div className="grid grid-cols-3 gap-2 text-[12px]">
-                <TokenMetric label="估算输入" value={formatCompactNumber(usage.totalInput)} />
-                <TokenMetric label="估算输出" value={formatCompactNumber(usage.totalOutput)} />
+                <TokenMetric label={usage.source === "actual" ? "实测输入" : "估算输入"} value={formatExactNumber(usage.totalInput)} />
+                <TokenMetric label={usage.source === "actual" ? "实测输出" : "估算输出"} value={formatExactNumber(usage.totalOutput)} />
                 <TokenMetric label="估算费用" value={formatCost(usage.totalCost)} />
               </div>
               <div className="mt-3 flex items-center justify-between text-[12px]">
@@ -175,7 +175,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
               </div>
               <ProgressBar value={usage.contextPercent} data-testid="agent-token-progress" />
               <p className="mt-2 text-[11px] leading-5 text-slate-400">
-                最近一次估算：{formatCompactNumber(usage.latestInput)} in / {formatCompactNumber(usage.latestOutput)} out
+                最近一次{usage.source === "actual" ? "实测" : "估算"}：{formatExactNumber(usage.latestInput)} in / {formatExactNumber(usage.latestOutput)} out
               </p>
             </>
           ) : (
@@ -716,6 +716,10 @@ function formatCompactNumber(value: number) {
   if (value >= 10000) return `${Math.round(value / 1000)}K`;
   if (value >= 1000) return `${(value / 1000).toFixed(1).replace(/\.0$/, "")}K`;
   return String(value);
+}
+
+function formatExactNumber(value: number) {
+  return Math.round(value).toLocaleString();
 }
 
 function formatCost(value: number) {

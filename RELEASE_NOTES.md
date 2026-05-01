@@ -1,5 +1,36 @@
 # Release Notes
 
+## Hermes Forge v0.2.10
+
+发布日期：2026-05-01
+
+这是一次面向聊天稳定性、Gateway 可信状态、上下文显示和回复体感的修复版本。
+
+### 核心修复
+
+- 修复 Hermes 回复偶尔停在“让我再仔细查一下：”这类半截句后就标记完成的问题：Windows Native runner 现在会识别明显未完成的最终回复，并自动续写补全。
+- 修复 Gateway 顶部显示运行中、但实际微信连接不可用时的冲突状态：旧的无 PID 状态文件超过 120 秒后不再被当作可信运行状态，CLI 状态也必须成功退出才会点亮运行。
+- 修复连接器 `.env` 与 Gateway 实际使用 Hermes profile 不一致的问题：微信连接器配置会同步到当前 active Hermes home，并在 Gateway 启动/状态检查时显式传入 `HERMES_HOME`。
+- 兼容 macOS Native Hermes CLI 路径解析，不再沿用 Windows-only 的 CLI 路径逻辑。
+
+### 聊天体验
+
+- 新增 Hermes 思考/工具/回复阶段状态，但不会显示原始推理内容。
+- 状态文案改为更轻松的短句，并会随等待时长变化，减少一直卡在“准备上下文”的观感。
+- 上下文胶囊改为优先显示真实/估算“已用上下文”，模型窗口上限放到详情里说明，避免把 `256k` 误解成当前会话长度。
+- 长回复的流式输出改为小批量合并，减少高频磁盘写入、IPC 和 UI 更新带来的抖动。
+
+### 性能优化
+
+- Windows Native runner 兜底历史从最近 48 条收窄到最近 16 条，并改为紧凑 JSON；Hermes 自己的 state.db 历史不受影响。
+- 首输出耗时统计现在会把 `message_chunk` 计入，诊断中的首字速度更准确。
+
+### 验证
+
+- `npm run check` 通过。
+- `npx vitest run src/adapters/hermes/hermes-cli-adapter.test.ts src/renderer/dashboard/DashboardView.test.tsx src/renderer/dashboard/components/AgentRunPanel.test.tsx src/main/hermes-connector-service.test.ts` 通过，70 个测试全部成功。
+- `python -m py_compile resources/hermes-windows-agent.py` 通过。
+
 ## Hermes Forge v0.2.9
 
 发布日期：2026-05-01

@@ -296,6 +296,60 @@ describe("DashboardView", () => {
     expect(screen.queryByText("已完成路由，正在执行任务。")).toBeNull();
   });
 
+  it("surfaces Hermes thinking state while waiting for the final reply", () => {
+    useAppStore.setState({
+      taskRunProjectionsById: {
+        "task-thinking": {
+          taskRunId: "task-thinking",
+          workSessionId: "session-1",
+          status: "running",
+          engineId: "hermes",
+          actualEngine: "hermes",
+          toolEvents: [],
+          startedAt: "2026-04-18T10:00:00.000Z",
+          updatedAt: "2026-04-18T10:00:02.000Z",
+          userMessage: {
+            id: "u-thinking",
+            sessionId: "session-1",
+            taskId: "task-thinking",
+            role: "user",
+            content: "分析一下问题",
+            createdAt: "2026-04-18T10:00:00.000Z",
+            visibleInChat: true,
+          },
+          assistantMessage: {
+            id: "a-thinking",
+            sessionId: "session-1",
+            taskId: "task-thinking",
+            role: "agent",
+            content: "",
+            status: "streaming",
+            actualEngine: "hermes",
+            authorName: "Hermes",
+            createdAt: "2026-04-18T10:00:01.000Z",
+            visibleInChat: true,
+          },
+        },
+      },
+      taskRunOrderBySession: { "session-1": ["task-thinking"] },
+      taskEventsByRunId: {
+        "task-thinking": [{
+          taskRunId: "task-thinking",
+          workSessionId: "session-1",
+          sessionId: "task-thinking",
+          engineId: "hermes",
+          event: { type: "reasoning", content: "internal reasoning is not rendered", at: "2026-04-18T10:00:02.000Z" },
+        }],
+      },
+    });
+
+    renderView();
+
+    expect(screen.getAllByText("思考中").length).toBeGreaterThan(0);
+    expect(screen.getByText("不是卡住，是在把话说顺一点。")).toBeInTheDocument();
+    expect(screen.queryByText("internal reasoning is not rendered")).toBeNull();
+  });
+
   it("enables send for normal Hermes input", () => {
     useAppStore.setState({ userInput: "帮我检查项目" });
 
@@ -496,8 +550,8 @@ describe("DashboardView", () => {
       />,
     );
 
-    const contextButton = screen.getByLabelText(/实测上下文/);
-    expect(contextButton).toHaveTextContent(/实测 420/);
+    const contextButton = screen.getByLabelText(/实测已用上下文/);
+    expect(contextButton).toHaveTextContent(/实测上下文 420/);
     expect(contextButton).toHaveTextContent(/42%/);
 
     fireEvent.click(contextButton);
