@@ -1,5 +1,25 @@
 # Release Notes
 
+## Hermes Forge v0.2.11
+
+发布日期：2026-05-02
+
+这是一次 Windows Native 聊天热修版本，针对新版本用户反馈的 `No module named 'dotenv'` 启动失败做收口。
+
+### 核心修复
+
+- 修复 Windows Agent 对话启动时只尝试系统 `python` / `py -3`，导致已安装 Hermes venv 仍可能报缺少 `python-dotenv` 的问题。
+- Windows Agent 启动前现在会优先使用 Hermes `.venv` / `venv` 中的 Python，并真实导入 `run_agent.AIAgent` 做探测，避免 `hermes --version` 通过但任务运行期失败。
+- 修复用户点击依赖修复后，同一进程仍可能沿用旧 Python 选择的情况：Windows Agent 每次启动都会重新按当前 Hermes 环境探测。
+- Hermes 设置页的 `PyYAML` / `python-dotenv` 依赖检查也改为 venv 优先，减少系统 Python 与真实任务环境不一致造成的误报或漏报。
+
+### 验证
+
+- `npm run check` 通过。
+- `npm test` 通过，291 个测试全部成功。
+- `npm run build` 通过。
+- `npm run package:win` 通过，生成 Windows x64 安装包与自动更新元数据。
+
 ## Hermes Forge v0.2.10
 
 发布日期：2026-05-01

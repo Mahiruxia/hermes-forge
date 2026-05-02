@@ -153,7 +153,6 @@ export class HermesCliAdapter implements EngineAdapter {
   id = "hermes" as const;
   label = "Hermes";
   capabilities = ["file_memory", "private_skills", "context_bridge", "cli"] as const;
-  private windowsPython?: Promise<{ command: string; argsPrefix: string[]; lastError?: string }>;
   private readonly liveCliSessionMappings = new Set<string>();
   private cliCapabilityProbe?: { key: string; probe: Promise<HermesCliCapabilityProbe> };
 
@@ -1720,27 +1719,38 @@ export class HermesCliAdapter implements EngineAdapter {
   }
 
   private async windowsPythonSpec(rootPath: string, cliPath: string, env: NodeJS.ProcessEnv) {
-    this.windowsPython ??= this.detectWindowsPython(rootPath, cliPath, env);
-    return await this.windowsPython;
+    return await this.detectWindowsPython(rootPath, cliPath, env);
   }
 
-  private async detectWindowsPython(rootPath: string, cliPath: string, env: NodeJS.ProcessEnv) {
-    const candidates: Array<{ command: string; argsPrefix: string[] }> = [
-      { command: "python", argsPrefix: [] },
-      { command: "py", argsPrefix: ["-3"] },
+  private async detectWindowsPython(rootPath: string, _cliPath: string, env: NodeJS.ProcessEnv) {
+    const candidates: Array<{ command: string; argsPrefix: string[]; label: string }> = [
+      { command: path.join(rootPath, ".venv", "Scripts", "python.exe"), argsPrefix: [], label: ".venv Python" },
+      { command: path.join(rootPath, "venv", "Scripts", "python.exe"), argsPrefix: [], label: "venv Python" },
+      { command: "python", argsPrefix: [], label: "python" },
+      { command: "py", argsPrefix: ["-3"], label: "py -3" },
     ];
     let lastError = "";
+    const probeScript = [
+      "import sys",
+      "sys.path.insert(0, sys.argv[1])",
+      "from run_agent import AIAgent",
+      "print('Hermes Agent Python ok')",
+    ].join("; ");
     for (const candidate of candidates) {
-      const result = await runCommand(candidate.command, [...candidate.argsPrefix, cliPath, "--version"], {
+      if (path.isAbsolute(candidate.command) && !(await this.exists(candidate.command))) {
+        lastError = `${candidate.label} not found`;
+        continue;
+      }
+      const result = await runCommand(candidate.command, [...candidate.argsPrefix, "-c", probeScript, rootPath], {
         cwd: rootPath,
         timeoutMs: 20_000,
         env,
       });
       const output = `${result.stdout}\n${result.stderr}`;
-      if (result.exitCode === 0 && /Hermes Agent/i.test(output)) {
+      if (result.exitCode === 0 && /Hermes Agent Python ok/i.test(output)) {
         return candidate;
       }
-      lastError = `${candidate.command} ${candidate.argsPrefix.join(" ")} ${cliPath} --version failed: ${output.trim() || `exit ${result.exitCode ?? "unknown"}`}`;
+      lastError = `${candidate.label} failed to import run_agent.AIAgent from ${rootPath}: ${output.trim() || `exit ${result.exitCode ?? "unknown"}`}`;
     }
     return { command: "python", argsPrefix: [], lastError };
   }

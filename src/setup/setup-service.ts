@@ -1136,6 +1136,60 @@ export class SetupService {
         blocking: false,
       };
     }
+    const rootPath = await this.configStore.getEnginePath("hermes").catch(() => undefined);
+    if (rootPath?.trim()) {
+      const venvCandidates = process.platform === "win32"
+        ? [
+            path.join(rootPath, ".venv", "Scripts", "python.exe"),
+            path.join(rootPath, "venv", "Scripts", "python.exe"),
+          ]
+        : [
+            path.join(rootPath, ".venv", "bin", "python"),
+            path.join(rootPath, "venv", "bin", "python"),
+          ];
+      let venvFailure = "";
+      for (const command of venvCandidates) {
+        if (!(await this.exists(command))) continue;
+        const script = `import ${moduleName}; print("${packageName} ok")`;
+        const result = await runCommand(command, ["-c", script], {
+          cwd: rootPath,
+          timeoutMs: 10_000,
+          env: {
+            PYTHONUTF8: "1",
+            PYTHONIOENCODING: "utf-8",
+            PYTHONPATH: `${rootPath}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
+            NO_COLOR: "1",
+          },
+          commandId: `setup.package.${id}.venv`,
+          runtimeKind: probe?.runtimeMode ?? "windows",
+        });
+        if (result.exitCode === 0) {
+          return {
+            id,
+            label,
+            status: "ok",
+            message: (result.stdout || result.stderr).trim() || `${label} 可用。`,
+            description: options.description ?? "该依赖检测优先使用 Hermes 自带 venv，和真实任务运行环境保持一致。",
+            blocking: false,
+          };
+        }
+        venvFailure = result.stderr || result.stdout || `${command} 无法导入 ${moduleName}`;
+      }
+      if (venvFailure) {
+        return {
+          id,
+          label,
+          status: "warning",
+          message: `${label} 缺失或不可用：${venvFailure}`,
+          description: options.description ?? "Hermes 自带 venv 缺少运行依赖，真实任务可能无法启动。",
+          recommendedAction: options.recommendedAction ?? `点击修复 Hermes 依赖，或在 Hermes venv 中执行 python -m pip install ${packageName}。`,
+          fixAction: options.fixAction,
+          canAutoFix: true,
+          autoFixId: options.autoFixId,
+          blocking: options.blocking ?? false,
+        };
+      }
+    }
     return this.checkPythonPackageWithRuntime(probe, id, label, moduleName, packageName, options);
   }
 
