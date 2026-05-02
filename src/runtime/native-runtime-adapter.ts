@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { runCommand } from "../process/command-runner";
 import type { HermesRuntimeConfig } from "../shared/types";
 import { getPlatformKind, getPythonCandidates, isHermesExecutable } from "../platform";
@@ -109,10 +110,15 @@ export class NativeRuntimeAdapter implements RuntimeAdapter {
 
   private async detectPython(rootPath: string, cliPath: string, env: NodeJS.ProcessEnv) {
     const candidates = getPythonCandidates(this.platform, rootPath);
+    const cwd = await exists(rootPath) ? rootPath : process.cwd();
     let lastError = "";
     for (const candidate of candidates) {
+      if (path.isAbsolute(candidate.command) && !(await exists(candidate.command))) {
+        lastError = `${candidate.label}: file does not exist`;
+        continue;
+      }
       const result = await runCommand(candidate.command, [...candidate.args, cliPath, "--version"], {
-        cwd: rootPath,
+        cwd,
         timeoutMs: 20_000,
         env,
         commandId: "runtime.native.detect-python",
@@ -125,5 +131,14 @@ export class NativeRuntimeAdapter implements RuntimeAdapter {
       lastError = `${candidate.label} ${cliPath} --version failed: ${output.trim() || `exit ${result.exitCode ?? "unknown"}`}`;
     }
     return { command: this.platform === "win32" ? "python" : "python3", args: [], label: this.platform === "win32" ? "python" : "python3", lastError };
+  }
+}
+
+async function exists(targetPath: string) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
   }
 }

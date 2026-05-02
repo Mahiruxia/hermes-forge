@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AppPaths } from "../main/app-paths";
 import { resolveActiveHermesHome } from "../main/hermes-home";
+import { getDefaultPythonCommand, getPlatformKind } from "../platform";
 import type { HermesRuntimeConfig, RuntimeConfig } from "../shared/types";
 import type { RuntimeKind, RuntimePathDescriptor, RuntimePathResolution } from "./runtime-types";
 
@@ -66,10 +67,12 @@ export class RuntimeResolver {
   }
 
   runtimeFromConfig(config: RuntimeConfig | undefined): HermesRuntimeConfig {
+    const mode = config?.hermesRuntime?.mode ?? "windows";
+    const defaultPython = mode === "windows" ? getDefaultPythonCommand(getPlatformKind()) : "python3";
     return {
-      mode: config?.hermesRuntime?.mode ?? "windows",
+      mode,
       distro: config?.hermesRuntime?.distro?.trim() || undefined,
-      pythonCommand: config?.hermesRuntime?.pythonCommand?.trim() || "python3",
+      pythonCommand: config?.hermesRuntime?.pythonCommand?.trim() || defaultPython,
       managedRoot: config?.hermesRuntime?.managedRoot?.trim() || undefined,
       windowsAgentMode: config?.hermesRuntime?.windowsAgentMode ?? "hermes_native",
       cliPermissionMode: config?.hermesRuntime?.cliPermissionMode ?? "yolo",

@@ -605,7 +605,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       hermes: {
         rootPath: hermesPath,
         warmupMode: runtimeConfig.startupWarmupMode ?? "cheap",
-        runtime: runtimeConfig.hermesRuntime ?? { mode: "windows", pythonCommand: "python3" },
+        runtime: runtimeConfig.hermesRuntime ?? { mode: "windows", pythonCommand: "python" },
         bridge: { running: false, capabilities: [] },
         permissions: {
           enabled: runtimeConfig.enginePermissions?.hermes?.enabled ?? true,
@@ -631,6 +631,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
   ipcMain.handle(IpcChannels.updateHermesConfig, async (_event, input) => {
     const parsed = updateHermesConfigSchema.parse(input);
     const config = await services.configStore.read();
+    const runtimeMode = parsed.runtime?.mode ?? config.hermesRuntime?.mode ?? "windows";
     return services.configStore.write({
       ...config,
       startupWarmupMode: parsed.warmupMode ?? config.startupWarmupMode,
@@ -646,9 +647,9 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
         },
       },
       hermesRuntime: {
-        ...(config.hermesRuntime ?? { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" }),
+        ...(config.hermesRuntime ?? { mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native" }),
         ...(parsed.runtime ?? {}),
-        pythonCommand: parsed.runtime?.pythonCommand?.trim() || config.hermesRuntime?.pythonCommand || "python3",
+        pythonCommand: parsed.runtime?.pythonCommand?.trim() || config.hermesRuntime?.pythonCommand || (runtimeMode === "windows" ? "python" : "python3"),
         distro: parsed.runtime?.distro?.trim() || undefined,
         windowsAgentMode: parsed.runtime?.windowsAgentMode ?? config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
         cliPermissionMode: parsed.runtime?.cliPermissionMode ?? config.hermesRuntime?.cliPermissionMode ?? "yolo",

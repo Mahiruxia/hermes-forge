@@ -147,5 +147,9 @@ describe("RC smoke matrix", () => {
     const yolo = buildPreflightState({ events: [], overview: overview({ cliPermissionMode: "yolo" }) });
     expect(preflightSummaryForUser(yolo)).toBe("可以发送，但命令会自动放行");
     expect(preflightChipsForUser(yolo)).toContain("命令自动放行");
+
+    const windowsYolo = buildPreflightState({ events: [], overview: overview({ runtime: "windows", cliPermissionMode: "yolo", transport: "windows-headless" }) });
+    expect(windowsYolo.tone).toBe("green");
+    expect(preflightSummaryForUser(windowsYolo)).toBe("环境就绪，可以发送");
   });
 });

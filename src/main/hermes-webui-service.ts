@@ -665,7 +665,7 @@ export class HermesWebUiService {
     return {
       mode: config.hermesRuntime?.mode ?? "windows",
       distro: config.hermesRuntime?.distro?.trim() || undefined,
-      pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
+      pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python",
       windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
     } satisfies NonNullable<RuntimeConfig["hermesRuntime"]>;
   }

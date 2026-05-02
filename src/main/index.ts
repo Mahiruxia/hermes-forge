@@ -174,6 +174,7 @@ app.whenReady().then(async () => {
     runtimeProbeService,
     runtimeAdapterFactory,
     () => configStore.read(),
+    async () => hermesModelSyncService.syncRuntimeConfig(await configStore.read()),
   );
   const legacyWslMigrationService = new LegacyWslMigrationService(appPaths, configStore, secretVault, hermesConnectorService);
   const preflightService = new TaskPreflightService(

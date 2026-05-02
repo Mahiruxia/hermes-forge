@@ -14,6 +14,7 @@ import {
   isHermesCliExecutable,
   resolveHermesCliPath,
 } from "../runtime/hermes-cli-paths";
+import { getWindowsPythonInstallCandidates } from "../platform";
 import type { HermesRuntimeConfig, RuntimeConfig, SetupDependencyRepairId } from "../shared/types";
 import type { InstallStrategy } from "./install-strategy";
 import type {
@@ -67,7 +68,7 @@ export class NativeInstallStrategy implements InstallStrategy {
   ) {}
 
   async plan(options: InstallOptions = {}): Promise<InstallPlan> {
-    const runtime = { mode: "windows" as const, pythonCommand: "python3", windowsAgentMode: "hermes_native" as const };
+    const runtime = { mode: "windows" as const, pythonCommand: "python", windowsAgentMode: "hermes_native" as const };
     const probe = await this.runtimeProbeService?.probe({ runtime }).catch(() => undefined);
     const rootPath = await this.resolveInstallRoot(options.rootPath);
     const issues = probe?.issues ?? [];
@@ -223,7 +224,7 @@ export class NativeInstallStrategy implements InstallStrategy {
       const runtime = {
         mode: "windows" as const,
         distro: config.hermesRuntime?.distro?.trim() || undefined,
-        pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
+        pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python",
         windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
       } satisfies NonNullable<RuntimeConfig["hermesRuntime"]>;
       const adapter = this.runtimeAdapterFactory(runtime);
@@ -479,7 +480,7 @@ export class NativeInstallStrategy implements InstallStrategy {
     const rootPath = await this.resolveInstallRoot(await this.configStore.getEnginePath("hermes").catch(() => this.defaultInstallRoot()));
     const runtime: HermesRuntimeConfig = {
       mode: "windows" as const,
-      pythonCommand: config?.hermesRuntime?.pythonCommand?.trim() || "python3",
+      pythonCommand: config?.hermesRuntime?.pythonCommand?.trim() || "python",
       windowsAgentMode: config?.hermesRuntime?.windowsAgentMode ?? "hermes_native",
     };
     const probe = await this.runtimeProbeService?.probe({ runtime }).catch(() => undefined);
@@ -526,7 +527,7 @@ export class NativeInstallStrategy implements InstallStrategy {
   }
 
   private async ensureGitAvailable(log: string[], emit: (stage: Parameters<InstallPublisher>[0]["stage"], progress: number, message: string, detail?: string) => void) {
-    const probe = await this.runtimeProbeService?.probe({ runtime: { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" } }).catch(() => undefined);
+    const probe = await this.runtimeProbeService?.probe({ runtime: { mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native" } }).catch(() => undefined);
     if (probe?.gitAvailable) {
       log.push(`RuntimeProbe Git: ${probe.commands.git.message}`);
       return { ok: true, message: "Git 可用。" };
@@ -547,7 +548,7 @@ export class NativeInstallStrategy implements InstallStrategy {
   }
 
   private async ensurePythonAvailable(log: string[], emit: (stage: Parameters<InstallPublisher>[0]["stage"], progress: number, message: string, detail?: string) => void): Promise<{ ok: true; python: PythonLauncher; message: string } | { ok: false; message: string; python?: undefined }> {
-    const probe = await this.runtimeProbeService?.probe({ runtime: { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" } }).catch(() => undefined);
+    const probe = await this.runtimeProbeService?.probe({ runtime: { mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native" } }).catch(() => undefined);
     if (probe?.runtimeMode === "windows" && probe.commands.python.available && probe.commands.python.command) {
       const python = { command: probe.commands.python.command, argsPrefix: probe.commands.python.args ?? [], label: probe.commands.python.label ?? probe.commands.python.command };
       log.push(`RuntimeProbe Python: ${probe.commands.python.message}`);
@@ -569,8 +570,13 @@ export class NativeInstallStrategy implements InstallStrategy {
   }
 
   private async detectPythonLauncher(log: string[]): Promise<PythonLauncher | undefined> {
-    const candidates: PythonLauncher[] = [{ command: "python", argsPrefix: [], label: "python" }, { command: "py", argsPrefix: ["-3"], label: "py -3" }];
+    const candidates: PythonLauncher[] = [
+      { command: "python", argsPrefix: [], label: "python" },
+      { command: "py", argsPrefix: ["-3"], label: "py -3" },
+      ...getWindowsPythonInstallCandidates("win32").map((command) => ({ command, argsPrefix: [], label: command })),
+    ];
     for (const candidate of candidates) {
+      if (path.isAbsolute(candidate.command) && !(await this.exists(candidate.command))) continue;
       const result = await this.runLogged(candidate.command, [...candidate.argsPrefix, "--version"], process.cwd(), log, 15_000);
       if (result.exitCode === 0) return candidate;
     }
@@ -871,7 +877,7 @@ export class NativeInstallStrategy implements InstallStrategy {
         if (this.runtimeAdapterFactory) {
           const adapter = this.runtimeAdapterFactory({
             mode: "windows",
-            pythonCommand: preferredPython?.command ?? "python3",
+            pythonCommand: preferredPython?.command ?? "python",
             windowsAgentMode: "hermes_native",
           });
           const validation = await validateNativeHermesCli(adapter, cliPath);

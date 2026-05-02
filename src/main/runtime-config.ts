@@ -4,7 +4,7 @@ import { runtimeConfigSchema } from "../shared/schemas";
 import { migrateRuntimeConfigModels } from "../shared/model-config";
 import { defaultEnginePermissions } from "../shared/types";
 import type { EngineId, RuntimeConfig } from "../shared/types";
-import { getDefaultHermesHome, getDefaultInstallRoot, getPlatformKind } from "../platform";
+import { getDefaultHermesHome, getDefaultInstallRoot, getDefaultPythonCommand, getPlatformKind } from "../platform";
 
 export type RuntimeConfigRecovery = {
   configPath: string;
@@ -74,7 +74,7 @@ const defaultConfig: RuntimeConfig = {
   enginePermissions: defaultEnginePermissions,
   hermesRuntime: {
     mode: platform === "win32" ? "windows" : "darwin",
-    pythonCommand: "python3",
+    pythonCommand: getDefaultPythonCommand(platform),
     managedRoot: undefined,
     windowsAgentMode: "hermes_native",
     cliPermissionMode: "yolo",

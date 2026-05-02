@@ -49,7 +49,8 @@ describe("runtimeConfigSchema", () => {
 
     expect(parsed.hermesRuntime).toEqual({
       mode: "windows",
-      pythonCommand: "python3",
+      distro: undefined,
+      pythonCommand: "python",
       windowsAgentMode: "hermes_native",
       cliPermissionMode: "yolo",
       permissionPolicy: "bridge_guarded",

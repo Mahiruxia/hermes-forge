@@ -165,11 +165,12 @@ export const POLICY_OPTIONS: Array<{
 ];
 
 export function runtimeWithDefaults(runtime?: HermesRuntimeConfig): Required<Pick<HermesRuntimeConfig, "mode" | "pythonCommand" | "windowsAgentMode" | "cliPermissionMode" | "permissionPolicy">> & HermesRuntimeConfig {
+  const mode = runtime?.mode ?? "windows";
   return {
-    mode: runtime?.mode ?? "windows",
+    mode,
     distro: runtime?.distro,
     managedRoot: runtime?.managedRoot,
-    pythonCommand: runtime?.pythonCommand ?? "python3",
+    pythonCommand: runtime?.pythonCommand ?? (mode === "windows" ? "python" : "python3"),
     windowsAgentMode: runtime?.windowsAgentMode ?? "hermes_native",
     cliPermissionMode: runtime?.cliPermissionMode ?? "yolo",
     permissionPolicy: runtime?.permissionPolicy ?? "bridge_guarded",
@@ -315,7 +316,7 @@ export function buildPreflightState(input: {
 }): PreflightState {
   if (input.overview) {
     const risk = input.overview.permissionPolicy === "passthrough"
-      || input.overview.cliPermissionMode === "yolo"
+      || (input.overview.runtime === "wsl" && input.overview.cliPermissionMode === "yolo")
       || input.overview.sessionMode === "degraded"
       || input.overview.capabilityProbe?.support === "degraded";
     const tone: PreflightTone = input.overview.blocked ? "red" : input.locked || risk ? "yellow" : "green";

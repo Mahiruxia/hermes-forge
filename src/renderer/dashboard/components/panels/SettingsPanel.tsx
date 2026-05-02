@@ -39,7 +39,7 @@ type Tone = "ok" | "warn" | "danger" | "neutral";
 
 const RECOMMENDED_RUNTIME: HermesRuntimeConfig = {
   mode: "windows",
-  pythonCommand: "python3",
+  pythonCommand: "python",
   windowsAgentMode: "hermes_native",
   cliPermissionMode: "guarded",
   permissionPolicy: "bridge_guarded",
@@ -300,11 +300,12 @@ export function SettingsPanel(props: {
   }
 
   function effectiveRuntime(): HermesRuntimeConfig {
+    const mode = runtime.mode === "darwin" ? "darwin" : "windows";
     return {
       ...runtime,
-      mode: runtime.mode === "darwin" ? "darwin" : "windows",
+      mode,
       distro: undefined,
-      pythonCommand: runtime.pythonCommand?.trim() || "python3",
+      pythonCommand: runtime.pythonCommand?.trim() || (mode === "windows" ? "python" : "python3"),
       windowsAgentMode: runtime.windowsAgentMode ?? "hermes_native",
       cliPermissionMode: runtime.cliPermissionMode ?? "guarded",
       permissionPolicy: runtime.permissionPolicy ?? "bridge_guarded",
@@ -608,10 +609,11 @@ export function SettingsPanel(props: {
 }
 
 function withRuntimeDefaults(runtime: HermesRuntimeConfig): HermesRuntimeConfig {
+  const mode = runtime.mode ?? RECOMMENDED_RUNTIME.mode;
   return {
     ...RECOMMENDED_RUNTIME,
     ...runtime,
-    pythonCommand: runtime.pythonCommand?.trim() || "python3",
+    pythonCommand: runtime.pythonCommand?.trim() || (mode === "windows" ? "python" : "python3"),
     windowsAgentMode: runtime.windowsAgentMode ?? "hermes_native",
     cliPermissionMode: runtime.cliPermissionMode ?? "guarded",
     permissionPolicy: runtime.permissionPolicy ?? "bridge_guarded",

@@ -191,6 +191,38 @@ describe("HermesConnectorService helpers", () => {
     expect(env.PYTHONPATH).toBe(["D:\\Hermes Agent", "parent-pythonpath"].join(path.delimiter));
   });
 
+  it("keeps Gateway WARNING stderr out of the red error channel", () => {
+    expect(testOnly.splitGatewayStderr([
+      "WARNING gateway.run: Process checkpoint recovery: [WinError 87] 参数错误。",
+      "WARNING agent.auxiliary_client: OPENAI_BASE_URL is set but model.provider differs.",
+    ].join("\n"))).toMatchObject({
+      warnings: expect.stringContaining("OPENAI_BASE_URL"),
+      errors: "",
+    });
+
+    expect(testOnly.splitGatewayStderr("Traceback (most recent call last):\nRuntimeError: boom")).toMatchObject({
+      warnings: "",
+      errors: expect.stringContaining("RuntimeError"),
+    });
+  });
+
+  it("fails Gateway startup preflight clearly when no real model can be synced", async () => {
+    const service = new HermesConnectorService(
+      {} as never,
+      {} as never,
+      async () => "D:\\Hermes Agent",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => ({ synced: false, skippedReason: "local-placeholder-model" }),
+    );
+    const result = await (service as any).ensureGatewayModelRuntime();
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("本地占位模型");
+  });
+
   it("syncs connector env into the active Hermes profile used by Gateway", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-connector-"));
     const forgeHome = path.join(tempDir, "hermes-home");

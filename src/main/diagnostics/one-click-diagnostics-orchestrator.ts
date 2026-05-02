@@ -728,7 +728,7 @@ export class OneClickDiagnosticsOrchestrator {
     options: OneClickDiagnosticsRunOptions,
   ) {
     this.setStage("python.deps", "正在检查 Python 关键依赖...");
-    const configuredPython = context.runtime.pythonCommand?.trim() || "python3";
+    const configuredPython = context.runtime.pythonCommand?.trim() || "python";
 
     if (!resolvedCli) {
       items.push(skippedItem("python.deps", "Python 依赖", "未解析到 Windows Hermes，跳过 Python 依赖检查。", "hermes-cli-resolver"));
@@ -1080,7 +1080,7 @@ function normalizeRuntime(config: RuntimeConfig): NonNullable<RuntimeConfig["her
   return {
     mode: "windows",
     distro: undefined,
-    pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
+    pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python",
     managedRoot: config.hermesRuntime?.managedRoot?.trim() || undefined,
     windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
     cliPermissionMode: config.hermesRuntime?.cliPermissionMode ?? "yolo",

@@ -24,6 +24,7 @@ import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type { RuntimeProbeResult } from "../runtime/runtime-types";
 import type { InstallOrchestrator } from "../install/install-orchestrator";
 import type { HermesCompatibilityService } from "./hermes-compatibility-service";
+import { getWindowsPythonInstallCandidates } from "../platform";
 
 const DEFAULT_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
 const DEFAULT_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -363,7 +364,7 @@ export class SetupService {
       const runtime = {
         mode: config.hermesRuntime?.mode ?? "windows",
         distro: config.hermesRuntime?.distro?.trim() || undefined,
-        pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
+        pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python",
         windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
       } satisfies NonNullable<RuntimeConfig["hermesRuntime"]>;
       const adapter = this.runtimeAdapterFactory(runtime);
@@ -914,8 +915,10 @@ export class SetupService {
     const candidates: PythonLauncher[] = [
       { command: "python", argsPrefix: [], label: "python" },
       { command: "py", argsPrefix: ["-3"], label: "py -3" },
+      ...getWindowsPythonInstallCandidates("win32").map((command) => ({ command, argsPrefix: [], label: command })),
     ];
     for (const candidate of candidates) {
+      if (path.isAbsolute(candidate.command) && !(await this.exists(candidate.command))) continue;
       const result = await this.runLogged(candidate.command, [...candidate.argsPrefix, "--version"], process.cwd(), log, 15_000);
       if (result.exitCode === 0) {
         return candidate;

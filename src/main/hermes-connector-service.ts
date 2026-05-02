@@ -8,6 +8,7 @@ import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import { validateWslHermesCli } from "../runtime/hermes-cli-resolver";
 import { defaultHermesCliPath, resolveHermesCliPathSync } from "../runtime/hermes-cli-paths";
+import { getWindowsPythonInstallCandidates } from "../platform";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { summarizePreflightFailure } from "../runtime/runtime-preflight";
 import type { SecretVault } from "../auth/secret-vault";
@@ -57,6 +58,14 @@ type GatewayStateSnapshot = {
   pid?: number;
   updatedAt?: string;
   message?: string;
+};
+
+type GatewayModelSyncResult = {
+  synced: boolean;
+  skippedReason?: string;
+  model?: string;
+  provider?: string;
+  envPath?: string;
 };
 
 type ConnectorRuntimeContext =
@@ -219,6 +228,7 @@ export class HermesConnectorService {
     private readonly runtimeProbeService?: RuntimeProbeService,
     private readonly runtimeAdapterFactory?: RuntimeAdapterFactory,
     private readonly readRuntimeConfig?: () => Promise<RuntimeConfig>,
+    private readonly syncModelRuntime?: () => Promise<GatewayModelSyncResult>,
   ) {}
 
   async list(): Promise<HermesConnectorListResult> {
@@ -340,7 +350,11 @@ export class HermesConnectorService {
     const cliFailed = looksLikeGatewayFailure(cliStatus?.stdout, cliStatus?.stderr);
     const stateRunning = Boolean(stateStatus?.running);
     const running = managedRunning || cliRunning || stateRunning;
-    const healthStatus = running ? "running" : (this.gatewayError.trim() || cliFailed) ? "error" : "stopped";
+    const gatewayError = gatewayErrorOutput(this.gatewayError);
+    const gatewayWarnings = gatewayWarningOutput(this.gatewayError);
+    const cliError = gatewayErrorOutput(cliStatus?.stderr ?? "");
+    const cliWarnings = gatewayWarningOutput(cliStatus?.stderr ?? "");
+    const healthStatus = running ? "running" : (gatewayError || cliFailed) ? "error" : "stopped";
     return {
       running,
       managedRunning,
@@ -361,8 +375,8 @@ export class HermesConnectorService {
           : stateRunning
             ? stateStatus?.message || "Gateway 状态文件显示正在运行。"
             : cliStatus?.message || this.gatewayExitMessage || "Gateway 未由桌面端托管运行。",
-      lastOutput: trimLog([this.gatewayOutput, cliStatus?.stdout].filter(Boolean).join("\n")),
-      lastError: trimLog([this.gatewayError, cliStatus?.stderr].filter(Boolean).join("\n")),
+      lastOutput: trimLog([this.gatewayOutput, gatewayWarnings, cliStatus?.stdout, cliWarnings].filter(Boolean).join("\n")),
+      lastError: trimLog([gatewayError, cliError].filter(Boolean).join("\n")),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -472,8 +486,6 @@ export class HermesConnectorService {
         message: runtime.message,
       };
     }
-    await this.clearGatewayRuntimeMarkers();
-    const hermesEnv = await this.readEnvValues();
     const preflight = await this.preflightGatewayRuntime(runtime);
     if (!preflight.ok) {
       this.gatewayAutoStartState = "failed";
@@ -484,6 +496,18 @@ export class HermesConnectorService {
         message: preflight.message,
       };
     }
+    const modelSync = await this.ensureGatewayModelRuntime();
+    if (!modelSync.ok) {
+      this.gatewayAutoStartState = "failed";
+      this.gatewayAutoStartMessage = modelSync.message;
+      return {
+        ok: false,
+        status: { ...current, running: false, healthStatus: "error", message: modelSync.message, lastError: modelSync.message, checkedAt: new Date().toISOString() },
+        message: modelSync.message,
+      };
+    }
+    await this.clearGatewayRuntimeMarkers();
+    const hermesEnv = await this.readEnvValues();
     const launch = await this.gatewayLaunchFromRuntime(runtime, hermesEnv);
     console.info("[Hermes Forge] Gateway launch", {
       command: launch.command,
@@ -1345,10 +1369,11 @@ export class HermesConnectorService {
       };
     }
     const config = await this.readRuntimeConfig();
+    const mode = config.hermesRuntime?.mode ?? "windows";
     const runtime = {
-      mode: config.hermesRuntime?.mode ?? "windows",
+      mode,
       distro: config.hermesRuntime?.distro?.trim() || undefined,
-      pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python3",
+      pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || (mode === "windows" ? "python" : "python3"),
       windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
     } satisfies NonNullable<RuntimeConfig["hermesRuntime"]>;
     const adapter = this.runtimeAdapterFactory(runtime);
@@ -1546,6 +1571,9 @@ export class HermesConnectorService {
       addCandidate("py");
       addCandidate("python");
       addCandidate("python3");
+      for (const candidate of getWindowsPythonInstallCandidates("win32")) {
+        addCandidate(candidate);
+      }
     } else {
       addCandidate(path.join(root, ".venv", "bin", "python"));
       addCandidate(path.join(root, "venv", "bin", "python"));
@@ -1606,6 +1634,26 @@ export class HermesConnectorService {
       stderr: result.stderr,
       message: result.stdout.trim() || result.stderr.trim() || `gateway status exit ${result.exitCode}`,
     };
+  }
+
+  private async ensureGatewayModelRuntime(): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (!this.syncModelRuntime) return { ok: true };
+    try {
+      const sync = await this.syncModelRuntime();
+      if (sync.synced) return { ok: true };
+      if (sync.skippedReason === "missing-model-profile") {
+        return { ok: false, message: "Gateway 启动前模型同步失败：尚未配置可用的主模型。请先在模型设置里选择一个可用模型。" };
+      }
+      if (sync.skippedReason === "local-placeholder-model") {
+        return { ok: false, message: "Gateway 启动前模型同步失败：当前默认模型仍是本地占位模型。请先配置真实模型后再启动微信 Gateway。" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Gateway 启动前模型同步失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   private async gatewayStateStatus(): Promise<GatewayStateSnapshot | undefined> {
@@ -1778,6 +1826,29 @@ function buildGatewayEnv(baseEnv: NodeJS.ProcessEnv, hermesEnv: Record<string, s
     FORCE_COLOR: "0",
     ...(pythonPath ? { PYTHONPATH: pythonPath } : {}),
     ...(hermesHome ? { HERMES_HOME: hermesHome } : {}),
+  };
+}
+
+function gatewayWarningOutput(text: string) {
+  return splitGatewayStderr(text).warnings;
+}
+
+function gatewayErrorOutput(text: string) {
+  return splitGatewayStderr(text).errors;
+}
+
+function splitGatewayStderr(text: string) {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^(?:WARNING|WARN)\b/i.test(trimmed)) warnings.push(line);
+    else errors.push(line);
+  }
+  return {
+    warnings: trimLog(warnings.join("\n")),
+    errors: trimLog(errors.join("\n")),
   };
 }
 
@@ -2068,6 +2139,7 @@ export const testOnly = {
   parseCommandLine,
   parseWeixinQrEvent,
   buildGatewayEnv,
+  splitGatewayStderr,
   removeManagedBlock,
   sanitizeEnvBackup,
 };

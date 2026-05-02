@@ -80,7 +80,7 @@ export async function validateNativeHermesCli(
 ): Promise<HermesCliValidationResult> {
   const rootPath = inferWindowsHermesRootFromCliPath(cliPath);
   const launch = await adapter.buildHermesLaunch({
-    runtime: { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" },
+    runtime: { mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native" },
     rootPath,
     pythonArgs: [cliPath, "capabilities", "--json"],
     cwd: rootPath,
@@ -208,7 +208,7 @@ async function probeNativeHermesVersionAsFallback(
   rootPath: string,
 ): Promise<ReturnType<typeof classifyVersionFallback>> {
   const launch = await adapter.buildHermesLaunch({
-    runtime: { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" },
+    runtime: { mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native" },
     rootPath,
     pythonArgs: [cliPath, "--version"],
     cwd: rootPath,

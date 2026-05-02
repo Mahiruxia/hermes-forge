@@ -80,7 +80,7 @@ type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
 function defaultHermesRuntime(): HermesRuntimeConfig {
   return {
     mode: "windows",
-    pythonCommand: "python3",
+    pythonCommand: "python",
     windowsAgentMode: "hermes_native",
     cliPermissionMode: "yolo",
     permissionPolicy: "bridge_guarded",

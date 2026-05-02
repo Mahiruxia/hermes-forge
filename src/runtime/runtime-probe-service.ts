@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runCommand } from "../process/command-runner";
+import { getWindowsPythonInstallCandidates } from "../platform";
 import type { HermesRuntimeConfig, WindowsBridgeStatus } from "../shared/types";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { RuntimeResolver, ParsedCommand } from "./runtime-resolver";
@@ -107,13 +108,14 @@ export class RuntimeProbeService {
   private async probeNativePython(runtime: HermesRuntimeConfig, rootPath: string): Promise<RuntimeCommandProbe> {
     const candidates = this.pythonCandidates(runtime, rootPath);
     const failures: string[] = [];
+    const cwd = await exists(rootPath) ? rootPath : process.cwd();
     for (const candidate of candidates) {
       if (looksLikeFilePath(candidate.command) && !(await exists(candidate.command))) {
         failures.push(`${candidate.label}: 文件不存在`);
         continue;
       }
       const result = await runCommand(candidate.command, [...candidate.args, "--version"], {
-        cwd: rootPath,
+        cwd,
         timeoutMs: COMMAND_TIMEOUT_MS,
         commandId: "runtime.probe.python",
         runtimeKind: "windows",
@@ -139,7 +141,10 @@ export class RuntimeProbeService {
   private pythonCandidates(runtime: HermesRuntimeConfig, rootPath: string): ParsedCommand[] {
     const candidates: ParsedCommand[] = [];
     const add = (raw: string | undefined) => {
-      const parsed = raw?.trim() ? parseCommandLine(raw) : undefined;
+      if (!raw?.trim()) return;
+      const parsed = path.isAbsolute(raw.trim())
+        ? { command: raw.trim(), args: [], label: raw.trim() }
+        : parseCommandLine(raw);
       if (!parsed) return;
       if (!candidates.some((item) => item.command === parsed.command && item.args.join("\0") === parsed.args.join("\0"))) {
         candidates.push(parsed);
@@ -152,6 +157,9 @@ export class RuntimeProbeService {
       add("py -3");
       add("python");
       add("python3");
+      for (const candidate of getWindowsPythonInstallCandidates("win32")) {
+        add(candidate);
+      }
     } else {
       add(path.join(rootPath, ".venv", "bin", "python"));
       add(path.join(rootPath, "venv", "bin", "python"));

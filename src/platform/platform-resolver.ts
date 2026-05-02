@@ -33,6 +33,10 @@ export function getPlatformPaths(platform: PlatformKind): PlatformPaths {
   };
 }
 
+export function getDefaultPythonCommand(platform: PlatformKind): string {
+  return platform === "win32" ? "python" : "python3";
+}
+
 export function getPlatformCommands(platform: PlatformKind): PlatformCommands {
   if (platform === "win32") {
     return {
@@ -90,21 +94,74 @@ export function getHermesCliCandidates(platform: PlatformKind, rootPath: string)
 export function getPythonCandidates(platform: PlatformKind, rootPath: string): Array<{ command: string; args: string[]; label: string }> {
   const paths = getPlatformPaths(platform);
   const candidates: Array<{ command: string; args: string[]; label: string }> = [];
-  const add = (cmd: string, label: string) => {
-    const parts = cmd.split(/\s+/);
-    candidates.push({ command: parts[0]!, args: parts.slice(1), label });
+  const addExecutable = (command: string, label: string) => {
+    addCandidate(candidates, { command, args: [], label });
+  };
+  const addCommandLine = (cmd: string) => {
+    const parsed = parseCommandLine(cmd);
+    if (parsed) addCandidate(candidates, parsed);
   };
 
   // venv Python first
-  add(path.join(rootPath, ".venv", paths.venvBinDir, `python${ext(platform)}`), "venv Python");
-  add(path.join(rootPath, "venv", paths.venvBinDir, `python${ext(platform)}`), "venv Python");
+  addExecutable(path.join(rootPath, ".venv", paths.venvBinDir, `python${ext(platform)}`), "venv Python");
+  addExecutable(path.join(rootPath, "venv", paths.venvBinDir, `python${ext(platform)}`), "venv Python");
 
   // System Python
   for (const candidate of paths.pythonCandidates) {
-    add(candidate, candidate);
+    addCommandLine(candidate);
+  }
+
+  for (const candidate of getWindowsPythonInstallCandidates(platform)) {
+    addExecutable(candidate, candidate);
   }
 
   return candidates;
+}
+
+export function getWindowsPythonInstallCandidates(platform: PlatformKind = getPlatformKind()): string[] {
+  if (platform !== "win32") return [];
+  const versions = ["315", "314", "313", "312", "311", "310", "39", "38"];
+  const candidates: string[] = [];
+  const add = (candidate: string | undefined) => {
+    if (!candidate?.trim()) return;
+    const normalized = path.normalize(candidate);
+    if (!candidates.some((item) => item.toLowerCase() === normalized.toLowerCase())) {
+      candidates.push(normalized);
+    }
+  };
+
+  const localPrograms = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Python") : undefined;
+  const roots = [
+    localPrograms,
+    process.env.ProgramFiles,
+    process.env.ProgramW6432,
+    process.env["ProgramFiles(x86)"],
+  ].filter((item): item is string => Boolean(item?.trim()));
+
+  for (const version of versions) {
+    for (const root of roots) {
+      add(path.join(root, `Python${version}`, "python.exe"));
+      add(path.join(root, "Python", `Python${version}`, "python.exe"));
+    }
+  }
+
+  return candidates;
+}
+
+function parseCommandLine(raw: string): { command: string; args: string[]; label: string } | undefined {
+  const parts = raw.match(/"[^"]+"|'[^']+'|\S+/g)?.map((part) => part.replace(/^["']|["']$/g, "")) ?? [];
+  const command = parts.shift()?.trim();
+  if (!command) return undefined;
+  return { command, args: parts, label: [command, ...parts].join(" ") };
+}
+
+function addCandidate(
+  candidates: Array<{ command: string; args: string[]; label: string }>,
+  candidate: { command: string; args: string[]; label: string },
+) {
+  if (!candidates.some((item) => item.command.toLowerCase() === candidate.command.toLowerCase() && item.args.join("\0") === candidate.args.join("\0"))) {
+    candidates.push(candidate);
+  }
 }
 
 function ext(platform: PlatformKind): string {
