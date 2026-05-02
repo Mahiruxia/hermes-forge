@@ -212,8 +212,8 @@ describe("RuntimeEnvResolver", () => {
       AI_BASE_URL: "https://api.minimaxi.com/anthropic",
       ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic",
       OPENAI_API_KEY: "sk-minimax-test",
-      OPENAI_BASE_URL: "https://api.minimaxi.com/v1",
     });
+    expect(runtime.env.OPENAI_BASE_URL).toBeUndefined();
   });
 
   it("exports MiMo Token Plan env and lets the runtime proxy adapt auth", async () => {

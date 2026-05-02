@@ -190,11 +190,20 @@ function buildModelEnv(runtimeEnv: EngineRuntimeEnv, hermesProvider: string, rol
   };
   if (runtimeEnv.baseUrl) {
     env.AI_BASE_URL = env.AI_BASE_URL ?? runtimeEnv.baseUrl;
-    env.OPENAI_BASE_URL = env.OPENAI_BASE_URL ?? runtimeEnv.baseUrl;
+    if (!usesAnthropicOnlyProvider(hermesProvider)) {
+      env.OPENAI_BASE_URL = env.OPENAI_BASE_URL ?? runtimeEnv.baseUrl;
+    }
+  }
+  if (usesAnthropicOnlyProvider(hermesProvider)) {
+    delete env.OPENAI_BASE_URL;
   }
   return Object.fromEntries(
     Object.entries(env).filter((entry): entry is [string, string] => Boolean(entry[1]?.trim())),
   );
+}
+
+function usesAnthropicOnlyProvider(hermesProvider: string) {
+  return hermesProvider === "minimax-cn";
 }
 
 function resolveRuntimeApiKey(runtimeEnv: EngineRuntimeEnv) {

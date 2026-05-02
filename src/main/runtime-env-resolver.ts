@@ -142,12 +142,11 @@ export class RuntimeEnvResolver {
 
     if (profile.sourceType === "minimax_token_plan_api_key") {
       const anthropicBaseUrl = toMiniMaxAnthropicBaseUrl(profile.baseUrl);
-      const openAiBaseUrl = toMiniMaxOpenAiBaseUrl(profile.baseUrl);
       env.AI_PROVIDER = "custom";
       env.MINIMAX_BASE_URL = anthropicBaseUrl;
       env.AI_BASE_URL = anthropicBaseUrl;
       env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
-      env.OPENAI_BASE_URL = openAiBaseUrl;
+      delete env.OPENAI_BASE_URL;
       if (secret) {
         env.MINIMAX_API_KEY = secret;
         env.ANTHROPIC_API_KEY = secret;
@@ -378,29 +377,18 @@ function usesProviderSpecificRuntimeEnv(sourceType: ModelProfile["sourceType"] |
 }
 
 function toMiniMaxAnthropicBaseUrl(baseUrl?: string) {
-  return normalizeMiniMaxProtocolBaseUrl(baseUrl, "anthropic");
-}
-
-function toMiniMaxOpenAiBaseUrl(baseUrl?: string) {
-  return normalizeMiniMaxProtocolBaseUrl(baseUrl, "openai");
-}
-
-function normalizeMiniMaxProtocolBaseUrl(baseUrl: string | undefined, protocol: "anthropic" | "openai") {
-  const fallback = protocol === "anthropic"
-    ? "https://api.minimaxi.com/anthropic"
-    : "https://api.minimaxi.com/v1";
-  const raw = baseUrl?.trim() || fallback;
+  const raw = baseUrl?.trim() || "https://api.minimaxi.com/anthropic";
   try {
     const parsed = new URL(raw);
     const host = parsed.hostname.toLowerCase();
     if (host === "api.minimaxi.com" || host === "api.minimax.io") {
-      parsed.pathname = protocol === "anthropic" ? "/anthropic" : "/v1";
+      parsed.pathname = "/anthropic";
       parsed.search = "";
       parsed.hash = "";
       return parsed.toString().replace(/\/$/, "");
     }
   } catch {
-    return protocol === "anthropic" ? stripTrailingV1(raw) : raw;
+    return stripTrailingV1(raw);
   }
-  return protocol === "anthropic" ? stripTrailingV1(raw) : raw.replace(/\/$/, "");
+  return stripTrailingV1(raw);
 }

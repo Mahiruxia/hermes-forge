@@ -247,7 +247,6 @@ const PRESET_SETTINGS_CONFIG: Partial<Record<ModelSourceType, ProviderPreset["se
       AI_PROVIDER: "custom",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/anthropic",
       ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic",
-      OPENAI_BASE_URL: "https://api.minimaxi.com/v1",
       AI_BASE_URL: "https://api.minimaxi.com/anthropic",
     },
   },

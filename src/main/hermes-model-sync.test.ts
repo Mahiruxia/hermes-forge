@@ -213,7 +213,6 @@ describe("HermesModelSyncService", () => {
           AI_BASE_URL: "https://api.minimaxi.com/anthropic",
           MINIMAX_BASE_URL: "https://api.minimaxi.com/anthropic",
           ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic",
-          OPENAI_BASE_URL: "https://api.minimaxi.com/v1",
           MINIMAX_API_KEY: "sk-minimax",
           ANTHROPIC_API_KEY: "sk-minimax",
           ANTHROPIC_AUTH_TOKEN: "sk-minimax",
@@ -234,7 +233,7 @@ describe("HermesModelSyncService", () => {
     expect(env).toContain("HERMES_INFERENCE_PROVIDER=minimax-cn");
     expect(env).toContain("AI_BASE_URL=https://api.minimaxi.com/anthropic");
     expect(env).toContain("ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic");
-    expect(env).toContain("OPENAI_BASE_URL=https://api.minimaxi.com/v1");
+    expect(env).not.toContain("OPENAI_BASE_URL=");
   });
 
   it("infers old MiMo OpenAI-compatible profiles and writes Xiaomi for Hermes", async () => {
