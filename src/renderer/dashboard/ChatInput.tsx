@@ -589,11 +589,9 @@ export function ChatInput(props: {
         {hermesUpdate?.updateAvailable ? (
           <HermesUpdateBanner update={hermesUpdate} onOpenSettings={() => props.onOpenFix?.("hermes")} />
         ) : null}
-        <PreflightStrip preflight={preflight} onOpenFix={props.onOpenFix} sendBlockTarget={props.sendBlockTarget} />
-
         <div
           className={cn(
-            "hermes-composer-card relative overflow-visible rounded-3xl border border-[var(--hermes-card-border)] bg-white shadow-[0_16px_48px_rgba(15,23,42,0.07)] focus-within:hermes-purple-focus",
+            "hermes-composer-card relative overflow-visible rounded-[28px] border border-white/80 bg-white/85 shadow-[0_10px_34px_rgba(15,23,42,0.045)] ring-1 ring-slate-900/[0.03] backdrop-blur-xl focus-within:hermes-purple-focus",
             isDraggingAttachment && "ring-2 ring-[var(--hermes-primary-border)]",
           )}
           onDragEnter={handleAttachmentDragEnter}
@@ -602,7 +600,7 @@ export function ChatInput(props: {
           onDrop={handleAttachmentDrop}
         >
           {isDraggingAttachment ? (
-            <div className="pointer-events-none absolute inset-0 z-30 grid place-items-center rounded-3xl bg-slate-50/90">
+            <div className="pointer-events-none absolute inset-0 z-30 grid place-items-center rounded-[28px] bg-slate-50/90">
               <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-3 text-center shadow-sm">
                 <p className="text-sm font-semibold text-slate-800">{store.runningTaskRunId ? "当前任务运行中" : "松开即可添加附件"}</p>
                 <p className="mt-1 text-xs text-slate-500">{store.runningTaskRunId ? "请等 Hermes 完成后再上传文件" : "支持图片和常见文档，最多一次 12 个"}</p>
@@ -642,15 +640,15 @@ export function ChatInput(props: {
                 handleSubmit();
               }
             }}
-            className="max-h-[24vh] min-h-[46px] w-full resize-none bg-transparent px-5 pt-4 text-[15px] leading-6 text-slate-800 outline-none placeholder:text-slate-400"
-            placeholder="给 Hermes 发送消息… 需要附件、语音、@ 提及或命令时，点左下角的 +"
+            className="max-h-[24vh] min-h-[46px] w-full resize-none bg-transparent px-4 pb-1 pt-3 text-[15px] leading-6 text-slate-800 outline-none placeholder:text-slate-400"
+            placeholder="写给 Hermes…"
           />
 
-          <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-1">
+          <div className="flex items-center justify-between gap-2.5 px-3.5 pb-2.5 pt-0">
             <div className="flex min-w-0 items-center gap-2">
               <div className="relative" ref={plusMenuRef}>
                 <button
-                  className="grid h-10 w-10 place-items-center rounded-full border border-[var(--hermes-primary-border)] text-[var(--hermes-primary)] transition hover:bg-[var(--hermes-primary-soft)]"
+                  className="grid h-9 w-9 place-items-center rounded-full border border-[var(--hermes-primary-border)] text-[var(--hermes-primary)] transition hover:bg-[var(--hermes-primary-soft)]"
                   onClick={() => {
                     if (isListening) {
                       stopVoiceInput();
@@ -676,7 +674,7 @@ export function ChatInput(props: {
               </div>
 
               <button
-                className="grid h-10 w-10 place-items-center rounded-full border border-[var(--hermes-primary-border)] text-[var(--hermes-primary)] transition hover:bg-[var(--hermes-primary-soft)]"
+                className="grid h-9 w-9 place-items-center rounded-full border border-[var(--hermes-primary-border)] text-[var(--hermes-primary)] transition hover:bg-[var(--hermes-primary-soft)]"
                 onClick={() => void pickAttachments()}
                 aria-label="添加附件"
                 title="添加附件"
@@ -688,8 +686,9 @@ export function ChatInput(props: {
 
               <div className="relative" ref={modelMenuRef}>
                 <button
-                  className="inline-flex h-10 max-w-[220px] items-center rounded-full border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] px-3 text-[12px] font-medium text-[var(--hermes-primary)] transition hover:bg-white"
+                  className="inline-flex h-9 max-w-[176px] items-center rounded-full border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] px-3 text-[12px] font-medium text-[var(--hermes-primary)] transition hover:bg-white"
                   onClick={() => setModelMenuOpen((value) => !value)}
+                  title={currentModelLabel}
                   type="button"
                 >
                   <span className="truncate">{currentModelLabel}</span>
@@ -732,11 +731,11 @@ export function ChatInput(props: {
               </div>
             </div>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1.5">
               <ContextMeterPill meter={contextMeter} />
               {store.runningTaskRunId ? (
                 <button
-                  className="grid h-10 w-10 place-items-center rounded-full border border-rose-200 bg-rose-50 text-rose-600 transition hover:bg-rose-100"
+                  className="grid h-9 w-9 place-items-center rounded-full border border-rose-200 bg-rose-50 text-rose-600 transition hover:bg-rose-100"
                   onClick={props.onCancelTask}
                   aria-label="停止 Hermes"
                   type="button"
@@ -745,7 +744,7 @@ export function ChatInput(props: {
                 </button>
               ) : (
                 <button
-                  className="grid h-10 w-10 place-items-center rounded-full bg-[var(--hermes-primary)] text-white shadow-[0_12px_28px_rgba(91,77,255,0.26)] transition hover:bg-[var(--hermes-primary-strong)] disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                  className="grid h-9 w-9 place-items-center rounded-full bg-[var(--hermes-primary)] text-white shadow-[0_10px_24px_rgba(91,77,255,0.24)] transition hover:bg-[var(--hermes-primary-strong)] disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
                   aria-label="发送"
                   title={props.sendBlockReason ?? "发送"}
                   onClick={handleSubmit}
@@ -759,10 +758,10 @@ export function ChatInput(props: {
           </div>
         </div>
 
-        <div className="mt-2 flex items-center justify-between gap-3 px-1 text-[11px]">
+        <div className="mt-1.5 flex items-start justify-between gap-3 px-1 text-[10px] leading-4">
           <button
             className={cn(
-              "min-w-0 truncate text-left transition",
+              "min-w-0 shrink truncate text-left transition",
               statusTone === "ready" && "text-slate-400",
               statusTone === "blocked" && "text-slate-400",
               statusTone === "action" && "text-slate-500 underline decoration-slate-300 underline-offset-4",
@@ -774,9 +773,12 @@ export function ChatInput(props: {
             {statusText}
             {props.sendBlockTarget ? " · 点击修复" : ""}
           </button>
-          <span className="shrink-0 text-slate-400">
-            {store.attachments.length ? `${store.attachments.length} 个附件 · 文件内容另计` : "仅显示关键信息"}
-          </span>
+          <PreflightStrip
+            preflight={preflight}
+            onOpenFix={props.onOpenFix}
+            sendBlockTarget={props.sendBlockTarget}
+            attachmentText={store.attachments.length ? `${store.attachments.length} 个附件 · 文件内容另计` : "仅显示关键信息"}
+          />
         </div>
 
         {store.attachments.length > 0 ? (
@@ -977,7 +979,7 @@ function ContextMeterPill(props: { meter: ContextMeter }) {
       <button
         ref={buttonRef}
         className={cn(
-          "group inline-flex h-9 max-w-[156px] items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl transition duration-200 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_16px_34px_rgba(15,23,42,0.09)] active:translate-y-0 max-sm:max-w-[118px]",
+          "group inline-flex h-8 max-w-[144px] items-center gap-1.5 rounded-full border px-2.5 text-[10.5px] font-medium shadow-[0_8px_20px_rgba(15,23,42,0.045)] backdrop-blur-xl transition duration-200 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_28px_rgba(15,23,42,0.075)] active:translate-y-0 max-sm:max-w-[108px]",
           meterClass,
         )}
         title={title}
@@ -986,15 +988,15 @@ function ContextMeterPill(props: { meter: ContextMeter }) {
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
-        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/75 shadow-inner ring-1 ring-white/80">
-          <Gauge size={11} />
+        <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-white/75 shadow-inner ring-1 ring-white/80">
+          <Gauge size={10} />
         </span>
         <span className="min-w-0 truncate">
           {compactSourceLabel} {displayTokenLabel}
           {showCompactPercent && percentLabel ? ` · ${percentLabel}` : ""}
         </span>
         {typeof meter.percent === "number" ? (
-          <span className="h-1 w-7 shrink-0 overflow-hidden rounded-full bg-white/75 ring-1 ring-black/5 max-sm:hidden">
+          <span className="h-1 w-6 shrink-0 overflow-hidden rounded-full bg-white/75 ring-1 ring-black/5 max-sm:hidden">
             <span className={cn("block h-full rounded-full transition-all duration-500", barClass)} style={{ width: `${visualPercent}%` }} />
           </span>
         ) : null}
@@ -1017,19 +1019,28 @@ function PreflightStrip(props: {
   preflight: ReturnType<typeof buildPreflightState>;
   onOpenFix?: (target: FixTarget) => void;
   sendBlockTarget?: FixTarget;
+  attachmentText: string;
 }) {
   const toneClass = props.preflight.tone === "green"
-    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+    ? "text-slate-400"
     : props.preflight.tone === "yellow"
-      ? "border-amber-200 bg-amber-50 text-amber-800"
-      : "border-rose-200 bg-rose-50 text-rose-800";
+      ? "text-slate-400"
+      : "text-rose-600";
   const dotClass = props.preflight.tone === "green"
-    ? "bg-emerald-500"
+    ? "bg-emerald-400"
     : props.preflight.tone === "yellow"
-      ? "bg-amber-500"
-      : "bg-rose-500";
-  const chips = preflightChipsForUser(props.preflight).slice(0, 3);
+      ? "bg-amber-300"
+      : "bg-rose-400";
+  const chipClass = props.preflight.tone === "red"
+    ? "text-rose-500"
+    : props.preflight.tone === "yellow"
+      ? "text-slate-400"
+      : "text-slate-400";
+  const chips = preflightChipsForUser(props.preflight).slice(0, 2);
   const summary = preflightSummaryForUser(props.preflight);
+  const displaySummary = props.preflight.tone === "yellow"
+    ? summary.replace("可以发送，但", "可发送 · ").replace("命令会自动放行", "命令自动放行")
+    : summary;
   const detail = preflightDetailForUser(props.preflight);
   const blockCode = props.preflight.block?.code;
 
@@ -1043,28 +1054,30 @@ function PreflightStrip(props: {
   const fixTarget = inferFixTarget();
 
   return (
-    <div className={cn("mb-2 rounded-2xl border px-3 py-2 text-[11px]", toneClass)}>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="inline-flex items-center gap-1.5 font-semibold">
-          <span className={cn("h-2 w-2 rounded-full", dotClass)} />
-          {summary}
+    <div className={cn("min-w-0 max-w-[60%] text-right text-[10px] leading-4", toneClass)}>
+      <div className="flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1">
+        <span className="shrink-0 text-slate-300">{props.attachmentText}</span>
+        <span className="text-slate-300">·</span>
+        <span className="inline-flex min-w-0 items-center gap-1.5 font-semibold">
+          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full shadow-[0_0_0_2px_rgba(148,163,184,0.10)]", dotClass)} />
+          <span className="truncate">{displaySummary}</span>
         </span>
         {chips.map((chip) => (
           <span
             key={chip}
-            className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-medium text-current ring-1 ring-black/5"
+            className={cn("hidden rounded-full font-medium sm:inline", chipClass)}
           >
             {chip}
           </span>
         ))}
       </div>
       {props.preflight.block ? (
-        <details className="mt-1 group">
-          <summary className="flex cursor-pointer list-none items-center gap-1 font-semibold">
-            <span className="underline decoration-current/30 underline-offset-2 group-hover:decoration-current/60">为什么会这样 / 怎么修</span>
-            <span className="text-[10px] opacity-60 transition-opacity group-hover:opacity-100">（点击展开）</span>
+        <details className="group mt-0.5">
+          <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded-md px-1 py-0.5 font-medium text-rose-500 outline-none transition hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-200">
+            <span>为什么会这样 / 怎么修</span>
+            <span className="opacity-55 transition-opacity group-hover:opacity-100">展开</span>
           </summary>
-          <div className="mt-1 space-y-1">
+          <div className="ml-auto mt-1 max-w-xl space-y-1 rounded-xl bg-white/80 px-3 py-2 text-left text-[11px] leading-5 text-rose-700 ring-1 ring-rose-100">
             <p className="leading-5">{detail}</p>
             <p className="font-medium">{props.preflight.block.fixHint}</p>
             {fixTarget ? (
@@ -1083,12 +1096,12 @@ function PreflightStrip(props: {
           </div>
         </details>
       ) : props.preflight.tone === "yellow" ? (
-        <details className="mt-1 group">
-          <summary className="flex cursor-pointer list-none items-center gap-1 font-semibold">
-            <span className="underline decoration-current/30 underline-offset-2 group-hover:decoration-current/60">当前等待或风险说明</span>
-            <span className="text-[10px] opacity-60 transition-opacity group-hover:opacity-100">（点击展开）</span>
+        <details className="group mt-0.5">
+          <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded-md px-1 py-0.5 text-[10px] font-medium text-slate-300 outline-none transition hover:bg-slate-50 hover:text-slate-500 focus-visible:ring-2 focus-visible:ring-slate-200">
+            <span>运行说明</span>
+            <span className="opacity-60 transition-opacity group-open:rotate-180 group-hover:opacity-100">⌄</span>
           </summary>
-          <p className="mt-1 leading-5">{detail}</p>
+          <p className="ml-auto mt-1 max-w-xl rounded-xl bg-white/80 px-3 py-2 text-left text-[11px] leading-5 text-slate-500 ring-1 ring-slate-100">{detail}</p>
         </details>
       ) : null}
     </div>

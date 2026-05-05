@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView } from "./DashboardView";
 import { ChatInput } from "./ChatInput";
 import { useAppStore } from "../store";
+import type { PermissionOverview, WorkSession } from "../../shared/types";
 
 describe("DashboardView", () => {
   beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
     useAppStore.getState().resetStore();
     useAppStore.setState({
       sessions: [
@@ -41,14 +43,18 @@ describe("DashboardView", () => {
     });
   });
 
-  function renderView(overrides?: { onOpenFix?: (target: "model" | "hermes" | "health" | "diagnostics" | "workspace") => void }) {
-    return render(
+  function renderView(overrides?: {
+    onOpenFix?: (target: "model" | "hermes" | "health" | "diagnostics" | "workspace") => void;
+    onDeleteSession?: (session: WorkSession) => void;
+  }) {
+    const onDeleteSession = overrides?.onDeleteSession ?? vi.fn();
+    const view = render(
       <DashboardView
         onPickWorkspace={vi.fn()}
         onSelectWorkspace={vi.fn()}
         onCreateSession={vi.fn()}
         onSelectSession={vi.fn()}
-        onDeleteSession={vi.fn()}
+        onDeleteSession={onDeleteSession}
         onRenameSession={vi.fn()}
         onOpenSessionFolder={vi.fn()}
         onOpenSupport={vi.fn()}
@@ -60,6 +66,41 @@ describe("DashboardView", () => {
         onOpenFix={overrides?.onOpenFix}
       />,
     );
+    return { ...view, onDeleteSession };
+  }
+
+  function permissionOverview(input: Partial<PermissionOverview>): PermissionOverview {
+    return {
+      runtime: "wsl",
+      permissionPolicy: "bridge_guarded",
+      cliPermissionMode: "guarded",
+      transport: "native-arg-env",
+      sessionMode: "fresh",
+      bridge: {
+        enabled: true,
+        running: true,
+        capabilities: ["windows.files.writeText", "windows.powershell.run"],
+        capabilityCount: 2,
+        reportedByBackend: true,
+      },
+      enforcement: {
+        hardEnforceable: ["windowsBridgeTools: gated"],
+        softGuarded: ["cliDangerousCommandApproval: guarded"],
+        notEnforceableYet: ["shell: not hard-blocked"],
+      },
+      blocked: false,
+      blockReason: null,
+      capabilityProbe: {
+        minimumSatisfied: true,
+        cliVersion: "0.12.0",
+        missing: [],
+        allowedTransports: ["native-arg-env"],
+        support: "native",
+      },
+      runtimeReady: true,
+      notes: [],
+      ...input,
+    };
   }
 
   it("shows the session sidebar by default and toggles it manually", () => {
@@ -67,8 +108,7 @@ describe("DashboardView", () => {
 
     const shell = screen.getByTestId("session-sidebar-shell");
     const inputShell = screen.getByTestId("chat-input-shell");
-    expect(shell).toHaveClass("w-[228px]");
-    expect(shell).toHaveClass("xl:w-[240px]");
+    expect(shell).toHaveStyle({ width: "228px" });
     expect(shell).toHaveClass("opacity-100");
     expect(inputShell).toHaveClass("max-w-[1120px]");
     expect(inputShell).toHaveClass("2xl:max-w-[1240px]");
@@ -88,7 +128,7 @@ describe("DashboardView", () => {
 
     fireEvent.click(restoreButton);
 
-    expect(shell).toHaveClass("w-[228px]");
+    expect(shell).toHaveStyle({ width: "228px" });
     expect(shell).toHaveClass("translate-x-0");
     expect(shell).toHaveClass("opacity-100");
     expect(screen.queryByRole("button", { name: "显示历史会话栏" })).toBeNull();
@@ -106,7 +146,7 @@ describe("DashboardView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Agent 面板" }));
 
-    expect(shell).toHaveClass("w-[360px]");
+    expect(shell).toHaveStyle({ width: "360px" });
     expect(shell).toHaveClass("translate-x-0");
     expect(shell).toHaveClass("opacity-100");
     expect(screen.queryByRole("button", { name: "显示右侧控制面板" })).toBeNull();
@@ -172,7 +212,7 @@ describe("DashboardView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Agent 面板" }));
 
-    expect(agentShell).toHaveClass("w-[360px]");
+    expect(agentShell).toHaveStyle({ width: "360px" });
 
     fireEvent.click(screen.getByRole("button", { name: "搜索" }));
 
@@ -184,7 +224,7 @@ describe("DashboardView", () => {
 
     expect(useAppStore.getState().agentPanelOpen).toBe(true);
     expect(useAppStore.getState().inspectorOpen).toBe(false);
-    expect(agentShell).toHaveClass("w-[360px]");
+    expect(agentShell).toHaveStyle({ width: "360px" });
   });
 
   it("keeps secondary header actions folded until the menu is opened", () => {
@@ -194,10 +234,11 @@ describe("DashboardView", () => {
 
     expect(header.getByText("测试会话")).toBeTruthy();
     expect(banner).toHaveClass("z-40");
-    expect(header.getByText("Hermes Forge")).toBeTruthy();
+    expect(header.getByTitle("Hermes Forge")).toBeTruthy();
     expect(header.getByRole("button", { name: "搜索" })).toBeTruthy();
     expect(header.getByRole("button", { name: "Agent 面板" })).toBeTruthy();
     expect(header.queryByRole("button", { name: "清空会话" })).toBeNull();
+    expect(header.queryByRole("button", { name: "删除当前会话" })).toBeNull();
 
     fireEvent.click(header.getByRole("button", { name: "更多选项" }));
 
@@ -206,7 +247,77 @@ describe("DashboardView", () => {
     expect(header.getByRole("button", { name: "打开会话文件夹" })).toBeTruthy();
     expect(header.queryByRole("button", { name: "打开文件树" })).toBeNull();
     expect(header.getByRole("button", { name: "打开搜索与检查器" })).toBeTruthy();
+    expect(header.getByRole("button", { name: "删除当前会话" })).toBeTruthy();
     expect(header.getByRole("button", { name: "清空会话" })).toBeTruthy();
+  });
+
+  it("confirms before deleting the active session from the header menu", () => {
+    const onDeleteSession = vi.fn();
+    renderView({ onDeleteSession });
+    const header = within(screen.getByRole("banner"));
+
+    fireEvent.click(header.getByRole("button", { name: "更多选项" }));
+    fireEvent.click(header.getByRole("button", { name: "删除当前会话" }));
+
+    expect(header.getByText("删除当前会话？")).toBeInTheDocument();
+    expect(header.getByText(/会删除该会话记录和会话文件夹/)).toBeInTheDocument();
+
+    fireEvent.click(header.getByRole("button", { name: "取消" }));
+    expect(onDeleteSession).not.toHaveBeenCalled();
+    expect(header.queryByText("删除当前会话？")).toBeNull();
+
+    fireEvent.click(header.getByRole("button", { name: "删除当前会话" }));
+    fireEvent.click(header.getByRole("button", { name: "删除" }));
+
+    expect(onDeleteSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-1" }));
+  });
+
+  it("resizes both side panels and preserves the chosen widths while collapsed", () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1400 });
+    renderView();
+    const sessionShell = screen.getByTestId("session-sidebar-shell");
+    const sessionResizer = screen.getByRole("separator", { name: "调整历史会话栏宽度" });
+
+    act(() => {
+      dispatchPointerEvent("pointerdown", 228, sessionResizer);
+      dispatchPointerEvent("pointermove", 268);
+      dispatchPointerEvent("pointerup", 268);
+    });
+
+    expect(useAppStore.getState().sessionSidebarWidth).toBe(268);
+    expect(sessionShell).toHaveStyle({ width: "268px" });
+
+    fireEvent.click(screen.getByRole("button", { name: "隐藏历史会话栏" }));
+    expect(sessionShell).toHaveClass("w-0");
+    fireEvent.click(screen.getByRole("button", { name: "显示历史会话栏" }));
+    expect(sessionShell).toHaveStyle({ width: "268px" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent 面板" }));
+    const agentShell = screen.getByTestId("agent-panel-shell");
+    const agentResizer = screen.getByRole("separator", { name: "调整 Agent 面板宽度" });
+
+    act(() => {
+      dispatchPointerEvent("pointerdown", 800, agentResizer);
+      dispatchPointerEvent("pointermove", 740);
+      dispatchPointerEvent("pointerup", 740);
+    });
+
+    expect(useAppStore.getState().agentPanelWidth).toBe(420);
+    expect(agentShell).toHaveStyle({ width: "420px" });
+  });
+
+  it("clamps panel width and supports keyboard reset controls", () => {
+    renderView();
+    const sessionResizer = screen.getByRole("separator", { name: "调整历史会话栏宽度" });
+
+    fireEvent.keyDown(sessionResizer, { key: "Home" });
+    expect(useAppStore.getState().sessionSidebarWidth).toBe(200);
+
+    fireEvent.keyDown(sessionResizer, { key: "ArrowRight", shiftKey: true });
+    expect(useAppStore.getState().sessionSidebarWidth).toBe(224);
+
+    fireEvent.doubleClick(sessionResizer);
+    expect(useAppStore.getState().sessionSidebarWidth).toBe(228);
   });
 
   it("prefers the latest task result in chat", () => {
@@ -355,9 +466,46 @@ describe("DashboardView", () => {
 
     renderView();
 
-    expect(screen.getByRole("button", { name: "发送" })).not.toBeDisabled();
-    expect(screen.getByRole("button", { name: "发送" })).toHaveClass("bg-[var(--hermes-primary)]");
-    expect(screen.getByRole("button", { name: "qwen" })).toHaveClass("bg-[var(--hermes-primary-soft)]");
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+    const sendButton = screen.getByRole("button", { name: "发送" });
+    const modelButton = screen.getByRole("button", { name: "qwen" });
+    const attachmentButton = screen.getByRole("button", { name: "添加附件" });
+
+    expect(input).toHaveAttribute("placeholder", "写给 Hermes…");
+    expect(sendButton).not.toBeDisabled();
+    expect(sendButton).toHaveClass("h-9");
+    expect(sendButton).toHaveClass("bg-[var(--hermes-primary)]");
+    expect(attachmentButton).toHaveClass("h-9");
+    expect(modelButton).toHaveClass("h-9");
+    expect(modelButton).toHaveClass("max-w-[176px]");
+    expect(modelButton).toHaveClass("bg-[var(--hermes-primary-soft)]");
+    expect(modelButton).toHaveAttribute("title", "qwen");
+  });
+
+  it("keeps yellow runtime protection as compact helper text with expandable details", () => {
+    useAppStore.setState({
+      userInput: "帮我检查项目",
+      permissionOverview: permissionOverview({ cliPermissionMode: "yolo" }),
+    });
+
+    renderView();
+
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+    const sendButton = screen.getByRole("button", { name: "发送" });
+    const summary = screen.getByText(/可发送 · 命令自动放行/);
+    const helper = summary.parentElement?.parentElement?.parentElement;
+
+    expect(sendButton).not.toBeDisabled();
+    expect(helper).toHaveClass("text-[10px]");
+    expect(helper).not.toHaveClass("border");
+    expect(screen.getByText("运行说明")).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "帮我检查项目结构" } });
+    fireEvent.click(screen.getByText("运行说明"));
+
+    expect(screen.getByText(/命令执行不会逐项询问/)).toBeInTheDocument();
+    expect(input).toHaveValue("帮我检查项目结构");
+    expect(sendButton).not.toBeDisabled();
   });
 
   it("does not block the next send when a stale setup blocker conflicts with healthy Hermes status", () => {
@@ -640,6 +788,12 @@ describe("DashboardView", () => {
     }
   });
 });
+
+function dispatchPointerEvent(type: string, clientX: number, target: EventTarget = window) {
+  const event = new Event(type, { bubbles: true }) as PointerEvent;
+  Object.defineProperty(event, "clientX", { value: clientX });
+  target.dispatchEvent(event);
+}
 
 function speechEvent(resultIndex: number, results: Array<{ transcript: string; isFinal: boolean }>) {
   return {

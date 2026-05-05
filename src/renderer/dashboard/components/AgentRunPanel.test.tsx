@@ -62,7 +62,7 @@ describe("AgentRunPanel", () => {
     expect(screen.getByText("会话记忆")).toBeInTheDocument();
     expect(screen.getByText("任务进度")).toBeInTheDocument();
     expect(screen.getByText("快捷设置")).toBeInTheDocument();
-    expect(screen.getByLabelText("Agent 面板")).toHaveClass("w-[360px]");
+    expect(screen.getByLabelText("Agent 面板")).toHaveClass("w-full");
     expect(screen.getByLabelText("Agent 面板")).toHaveClass("bg-[#f5f6fa]");
     expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
     expect(screen.getByText("128,000 token")).toBeInTheDocument();

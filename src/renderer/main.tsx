@@ -1027,7 +1027,7 @@ function App() {
       store.setRecentWorkspaces(readRecentWorkspaces());
       
       // 快速选择会话，提前进入主界面
-      const activeSession = sessions.find((session: WorkSession) => session.status !== "archived") ?? sessions[0];
+      const activeSession = sessions[0];
       
       if (activeSession) {
         store.upsertSession(activeSession);

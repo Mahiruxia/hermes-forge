@@ -1,4 +1,4 @@
-import { Archive, Copy, Download, FolderPlus, PanelLeftClose, Pin, Plus, Search, Trash2, Upload } from "lucide-react";
+import { Copy, Download, FolderPlus, PanelLeftClose, Pin, Plus, Search, Trash2, Upload } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { SessionMetaPatch, WorkSession } from "../../../shared/types";
 import { useAppStore } from "../../store";
@@ -25,24 +25,20 @@ export function SessionSidebar(props: {
   const visibleSessions = useMemo(() => {
     const q = query.trim().toLowerCase();
     return store.sessions
-      .filter((session) => session.status !== "archived")
       .filter((session) => !q || session.title.toLowerCase().includes(q) || session.id.toLowerCase().includes(q))
-      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }, [query, store.sessions]);
   const sections = tab === "favorite"
     ? [{ title: "收藏", sessions: visibleSessions.filter((session) => session.pinned) }]
-    : groupSessions(visibleSessions.filter((session) => !session.pinned));
+    : groupSessions(visibleSessions);
+  const shownSessionCount = sections.reduce((count, section) => count + section.sessions.length, 0);
 
   function togglePin(session: WorkSession) {
     props.onUpdateSessionMeta(session.id, { pinned: !session.pinned });
   }
 
-  function toggleArchive(session: WorkSession) {
-    props.onUpdateSessionMeta(session.id, { status: session.status === "archived" ? "idle" : "archived" });
-  }
-
   return (
-    <aside className="hermes-session-sidebar flex h-full min-h-0 w-[228px] shrink-0 flex-col border-r border-slate-200/80 bg-[#fbfbfd] p-2 xl:w-[240px]">
+    <aside className="hermes-session-sidebar flex h-full min-h-0 w-full shrink-0 flex-col border-r border-slate-200/80 bg-[#fbfbfd] p-2">
       <div className="space-y-2 border-b border-slate-200/70 pb-2">
         <div className="flex min-w-0 items-center gap-2">
           <button className="flex h-[34px] min-w-0 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--hermes-primary)] px-2.5 text-[12px] font-medium text-white shadow-[0_10px_24px_rgba(91,77,255,0.24)] transition hover:bg-[var(--hermes-primary-strong)]" onClick={props.onCreateSession} type="button">
@@ -72,7 +68,6 @@ export function SessionSidebar(props: {
             activeId={activeId}
             onSelect={props.onSelectSession}
             onPin={togglePin}
-            onArchive={toggleArchive}
             onDuplicate={props.onDuplicateSession}
             onExport={(session) => props.onExportSession(session, "json")}
             onDelete={props.onDeleteSession}
@@ -80,7 +75,7 @@ export function SessionSidebar(props: {
           />
         ))}
 
-        {visibleSessions.length === 0 ? (
+        {shownSessionCount === 0 ? (
           <div className="flex flex-col items-center justify-center py-10">
             <FolderPlus size={24} className="text-slate-300" />
             <p className="mt-2 text-[12px] text-slate-400">暂无会话</p>
@@ -111,7 +106,6 @@ function SessionListSection(props: {
   activeId?: string;
   onSelect: (session: WorkSession | string) => void;
   onPin: (session: WorkSession) => void;
-  onArchive: (session: WorkSession) => void;
   onDuplicate: (session: WorkSession) => void;
   onExport: (session: WorkSession) => void;
   onDelete: (session: WorkSession) => void;
@@ -129,7 +123,6 @@ function SessionListSection(props: {
             active={session.id === props.activeId}
             onSelect={() => props.onSelect(session)}
             onPin={() => props.onPin(session)}
-            onArchive={() => props.onArchive(session)}
             onDuplicate={() => props.onDuplicate(session)}
             onExport={() => props.onExport(session)}
             onDelete={() => props.onDelete(session)}
@@ -148,7 +141,6 @@ function SessionItem(props: {
   active: boolean;
   onSelect: () => void;
   onPin: () => void;
-  onArchive: () => void;
   onDuplicate: () => void;
   onExport: () => void;
   onDelete: () => void;
@@ -170,7 +162,6 @@ function SessionItem(props: {
         <button className={miniButtonClass} onClick={props.onPin} title={props.session.pinned ? "取消收藏" : "收藏"} type="button"><Pin size={10} /></button>
         <button className={miniButtonClass} onClick={props.onDuplicate} title="复制会话" type="button"><Copy size={11} /></button>
         <button className={miniButtonClass} onClick={props.onExport} title="导出" type="button"><Download size={11} /></button>
-        <button className={miniButtonClass} onClick={props.onArchive} title="归档" type="button"><Archive size={11} /></button>
         <button className="grid h-6 w-6 place-items-center rounded text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600" onClick={props.onDelete} title="删除" type="button"><Trash2 size={11} /></button>
       </div>
     </div>
@@ -193,10 +184,9 @@ function groupSessions(sessions: WorkSession[]) {
   yesterday.setDate(now.getDate() - 1);
   const yesterdayKey = dateKey(yesterday);
   return [
-    { title: "收藏", sessions: sessions.filter((session) => session.pinned) },
-    { title: "最近", sessions: sessions.filter((session) => !session.pinned && dateKey(new Date(session.updatedAt)) === todayKey) },
-    { title: "昨天", sessions: sessions.filter((session) => !session.pinned && dateKey(new Date(session.updatedAt)) === yesterdayKey) },
-    { title: "更早", sessions: sessions.filter((session) => !session.pinned && ![todayKey, yesterdayKey].includes(dateKey(new Date(session.updatedAt)))) },
+    { title: "最近", sessions: sessions.filter((session) => dateKey(new Date(session.updatedAt)) === todayKey) },
+    { title: "昨天", sessions: sessions.filter((session) => dateKey(new Date(session.updatedAt)) === yesterdayKey) },
+    { title: "更早", sessions: sessions.filter((session) => ![todayKey, yesterdayKey].includes(dateKey(new Date(session.updatedAt)))) },
   ];
 }
 

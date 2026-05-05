@@ -150,9 +150,16 @@ function sanitizePersistedState(value: unknown) {
   return {
     ...value,
     taskType: value.taskType === "chat" ? "custom" : value.taskType,
+    sessionSidebarWidth: sanitizePanelWidth(value.sessionSidebarWidth, 228, 200, 360),
+    agentPanelWidth: sanitizePanelWidth(value.agentPanelWidth, 360, 320, 520),
     taskRunProjectionsById: normalizedProjections,
     taskRunOrderBySession: normalizedOrder,
   };
+}
+
+function sanitizePanelWidth(value: unknown, fallback: number, min: number, max: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.round(Math.min(Math.max(value, min), max));
 }
 
 export type AppStore =

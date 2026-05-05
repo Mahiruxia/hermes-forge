@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, FolderOpen, HeartHandshake, MoreHorizontal, PanelRightOpen, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
+import { ExternalLink, FolderOpen, HeartHandshake, MoreHorizontal, PanelRightOpen, PencilLine, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
 import type { ClientUpdateEvent, SessionMetaPatch } from "../../../shared/types";
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
@@ -8,6 +8,7 @@ import { StatusBar } from "./StatusBar";
 export function HermesHeader(props: {
   onRenameSession: (title: string) => void;
   onClearSession: () => void;
+  onDeleteActiveSession: () => void;
   onToggleInspector: () => void;
   onToggleWorkspace: () => void;
   onToggleAgentPanel: () => void;
@@ -21,6 +22,7 @@ export function HermesHeader(props: {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState("");
   const [showMenu, setShowMenu] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [clientUpdate, setClientUpdate] = useState<ClientUpdateEvent | undefined>();
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -30,6 +32,7 @@ export function HermesHeader(props: {
     function handleClickOutside(event: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setShowMenu(false);
+        setConfirmingDelete(false);
       }
     }
 
@@ -110,6 +113,7 @@ export function HermesHeader(props: {
       action: () => {
         props.onToggleAgentPanel();
         setShowMenu(false);
+        setConfirmingDelete(false);
       },
     },
     {
@@ -119,6 +123,7 @@ export function HermesHeader(props: {
       action: () => {
         props.onToggleInspector();
         setShowMenu(false);
+        setConfirmingDelete(false);
       },
     },
     { divider: true },
@@ -128,6 +133,7 @@ export function HermesHeader(props: {
       action: () => {
         props.onOpenSessionFolder();
         setShowMenu(false);
+        setConfirmingDelete(false);
       },
     },
     {
@@ -138,6 +144,7 @@ export function HermesHeader(props: {
           window.workbenchClient.openHelp();
         }
         setShowMenu(false);
+        setConfirmingDelete(false);
       },
     },
     { divider: true },
@@ -147,9 +154,18 @@ export function HermesHeader(props: {
       action: () => {
         props.onOpenSupport();
         setShowMenu(false);
+        setConfirmingDelete(false);
       },
     },
     { divider: true },
+    {
+      icon: Trash2,
+      label: "删除当前会话",
+      danger: true,
+      action: () => {
+        setConfirmingDelete(true);
+      },
+    },
     {
       icon: Trash2,
       label: "清空会话",
@@ -157,26 +173,25 @@ export function HermesHeader(props: {
       action: () => {
         props.onClearSession();
         setShowMenu(false);
+        setConfirmingDelete(false);
       },
     },
   ];
 
   return (
-    <header className="hermes-header relative z-40 flex h-12 items-center justify-between border-b border-slate-200/70 bg-white/95 px-4 backdrop-blur-md" role="banner">
-      <div className="flex min-w-0 items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <div className="grid h-8 w-8 place-items-center rounded-xl border border-slate-200/80 bg-slate-950 text-white shadow-[0_6px_16px_rgba(15,23,42,0.10)]">
-            <Sparkles size={14} />
-          </div>
-          <div className="min-w-0">
-            <span className="block text-[14px] font-semibold tracking-tight text-slate-900">Hermes Forge</span>
-            <span className="block text-[10px] leading-3 text-slate-400">Quiet workspace for Hermes</span>
-          </div>
+    <header className="hermes-header relative z-40 flex h-12 items-center justify-between border-b border-slate-200/70 bg-white/95 px-3 backdrop-blur-md" role="banner">
+      <div className="flex min-w-0 items-center gap-2">
+        <div
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-slate-200/80 bg-slate-950 text-white shadow-[0_6px_16px_rgba(15,23,42,0.10)]"
+          title="Hermes Forge"
+          aria-label="Hermes Forge"
+        >
+          <Sparkles size={14} />
         </div>
 
         {activeSession ? (
           editingTitle ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 rounded-full border border-slate-200/75 bg-white/80 px-1.5 py-1 shadow-[0_8px_22px_rgba(15,23,42,0.05)]">
               <input
                 className={inputClass}
                 value={titleValue}
@@ -195,13 +210,17 @@ export function HermesHeader(props: {
               </button>
             </div>
           ) : (
-            <button className="group flex min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition hover:bg-slate-50" onClick={startEditing} type="button">
-              <span className="min-w-0">
-                <span className="block truncate text-[13px] font-medium text-slate-900">{activeSession.title}</span>
-                <span className="block truncate text-[10px] leading-3 text-slate-400">会话 {activeSession.id}</span>
-              </span>
-              <span className="rounded-full border border-slate-200 px-1.5 py-0.5 text-[9px] font-medium leading-3 text-slate-400 transition group-hover:border-slate-300 group-hover:text-slate-600">
-                编辑
+            <button
+              className="group flex h-8 min-w-0 max-w-[280px] items-center gap-2 rounded-full border border-slate-200/75 bg-white/70 px-2.5 text-left shadow-[0_8px_22px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-white hover:shadow-[0_10px_26px_rgba(15,23,42,0.07)]"
+              onClick={startEditing}
+              title={`会话 ID：${activeSession.id}`}
+              type="button"
+            >
+              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", sessionStatusDotClass(activeSession.status))} />
+              <span className="min-w-0 truncate text-[13px] font-semibold text-slate-900">{activeSession.title}</span>
+              <span className="hidden shrink-0 text-[10px] font-medium text-slate-400 sm:inline">{sessionMetaLabel(activeSession.status)}</span>
+              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-slate-300 opacity-0 transition group-hover:bg-slate-50 group-hover:text-slate-500 group-hover:opacity-100">
+                <PencilLine size={11} />
               </span>
             </button>
           )
@@ -250,7 +269,10 @@ export function HermesHeader(props: {
         <div className="relative" ref={menuRef}>
           <button
             className={headerActionClass(showMenu)}
-            onClick={() => setShowMenu((value) => !value)}
+            onClick={() => {
+              setShowMenu((value) => !value);
+              setConfirmingDelete(false);
+            }}
             aria-label="更多选项"
             title="更多选项"
             type="button"
@@ -260,7 +282,32 @@ export function HermesHeader(props: {
 
           {showMenu ? (
             <div className="hermes-popover absolute right-0 top-[calc(100%+10px)] z-[45] w-52 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.12)] backdrop-blur-xl">
-              {menuItems.map((item, index) => (
+              {confirmingDelete ? (
+                <div className="p-2">
+                  <p className="text-[13px] font-semibold text-rose-700">删除当前会话？</p>
+                  <p className="mt-1 text-[12px] leading-5 text-slate-500">会删除该会话记录和会话文件夹。项目目录不会被修改。</p>
+                  <div className="mt-3 flex justify-end gap-2">
+                    <button
+                      className="rounded-lg px-3 py-1.5 text-[12px] font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+                      onClick={() => setConfirmingDelete(false)}
+                      type="button"
+                    >
+                      取消
+                    </button>
+                    <button
+                      className="rounded-lg bg-rose-600 px-3 py-1.5 text-[12px] font-medium text-white shadow-sm transition hover:bg-rose-700"
+                      onClick={() => {
+                        props.onDeleteActiveSession();
+                        setShowMenu(false);
+                        setConfirmingDelete(false);
+                      }}
+                      type="button"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              ) : menuItems.map((item, index) => (
                 "divider" in item ? (
                   <div key={`divider-${index}`} className="my-1 h-px bg-slate-100" />
                 ) : (
@@ -288,13 +335,27 @@ export function HermesHeader(props: {
   );
 }
 
-const inputClass = "w-52 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white";
+const inputClass = "h-7 w-48 rounded-full border border-slate-200 bg-slate-50 px-3 text-[13px] text-slate-800 outline-none transition focus:border-slate-300 focus:bg-white";
 
 function headerActionClass(active?: boolean) {
   return cn(
     "hermes-header-action grid h-8 w-8 place-items-center rounded-xl border border-transparent text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900",
     active && "border-slate-200 bg-slate-100 text-slate-900",
   );
+}
+
+function sessionMetaLabel(status?: string) {
+  if (status === "running") return "运行中";
+  if (status === "failed") return "未完成";
+  if (status === "completed") return "已完成";
+  return "当前";
+}
+
+function sessionStatusDotClass(status?: string) {
+  if (status === "running") return "bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.12)]";
+  if (status === "failed") return "bg-rose-400 shadow-[0_0_0_3px_rgba(251,113,133,0.12)]";
+  if (status === "completed") return "bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.12)]";
+  return "bg-slate-300 shadow-[0_0_0_3px_rgba(148,163,184,0.10)]";
 }
 
 function CheckIcon() {

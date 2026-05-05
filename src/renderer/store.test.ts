@@ -13,12 +13,19 @@ describe("renderer store task projections", () => {
 
   it("keeps the session sidebar open by default and toggles it", () => {
     expect(useAppStore.getState().sessionSidebarOpen).toBe(true);
+    expect(useAppStore.getState().sessionSidebarWidth).toBe(228);
+    expect(useAppStore.getState().agentPanelWidth).toBe(360);
 
     useAppStore.getState().setSessionSidebarOpen(false);
     expect(useAppStore.getState().sessionSidebarOpen).toBe(false);
 
     useAppStore.getState().setSessionSidebarOpen(true);
     expect(useAppStore.getState().sessionSidebarOpen).toBe(true);
+
+    useAppStore.getState().setSessionSidebarWidth(280);
+    useAppStore.getState().setAgentPanelWidth(420);
+    expect(useAppStore.getState().sessionSidebarWidth).toBe(280);
+    expect(useAppStore.getState().agentPanelWidth).toBe(420);
   });
 
   it("projects stdout and final result into the same task run", () => {
