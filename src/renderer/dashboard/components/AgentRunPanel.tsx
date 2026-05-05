@@ -112,7 +112,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
   return (
     <aside
       className={cn(
-        "hermes-agent-panel flex h-full w-[360px] flex-col overflow-hidden border-l border-slate-200/80 bg-[#f5f6fa] shadow-[-12px_0_32px_rgba(15,23,42,0.06)]",
+        "hermes-agent-panel flex h-full w-full flex-col overflow-hidden border-l border-slate-200/80 bg-[#f5f6fa] shadow-[-12px_0_32px_rgba(15,23,42,0.06)]",
         !props.open && "pointer-events-none",
       )}
       aria-hidden={!props.open}

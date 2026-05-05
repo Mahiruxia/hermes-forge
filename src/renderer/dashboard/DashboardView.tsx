@@ -1,4 +1,5 @@
 import { PanelLeftOpen } from "lucide-react";
+import type { KeyboardEvent, PointerEvent } from "react";
 import type { SessionMetaPatch, WorkSession } from "../../shared/types";
 import { useAppStore } from "../store";
 import { ContextInspector } from "./ContextInspector";
@@ -13,6 +14,17 @@ import { hasInlineLocalFilePath } from "../../shared/local-file-paths";
 
 type PanelId = ReturnType<typeof useAppStore.getState>["activePanel"];
 type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
+type ResizablePanel = "session" | "agent";
+
+const DEFAULT_SESSION_SIDEBAR_WIDTH = 228;
+const DEFAULT_AGENT_PANEL_WIDTH = 360;
+const SESSION_SIDEBAR_MIN_WIDTH = 200;
+const SESSION_SIDEBAR_MAX_WIDTH = 360;
+const AGENT_PANEL_MIN_WIDTH = 320;
+const AGENT_PANEL_MAX_WIDTH = 520;
+const ICON_RAIL_WIDTH = 56;
+const MIN_MAIN_CONTENT_WIDTH = 360;
+
 export function DashboardView(props: {
   onPickWorkspace: () => void;
   onSelectWorkspace: (workspacePath: string) => void;
@@ -43,6 +55,17 @@ export function DashboardView(props: {
   const runs = (store.activeSessionId ? (store.taskRunOrderBySession[store.activeSessionId] ?? []) : [])
     .map((taskRunId) => store.taskRunProjectionsById[taskRunId])
     .filter((run): run is NonNullable<typeof run> => Boolean(run));
+  const activeSession = store.sessions.find((session) => session.id === store.activeSessionId);
+  const sessionSidebarWidth = clampPanelWidth(
+    store.sessionSidebarWidth,
+    "session",
+    store.agentPanelOpen ? store.agentPanelWidth : 0,
+  );
+  const agentPanelWidth = clampPanelWidth(
+    store.agentPanelWidth,
+    "agent",
+    store.sessionSidebarOpen ? store.sessionSidebarWidth : 0,
+  );
 
   function toggleInspector() {
     const nextOpen = !store.inspectorOpen;
@@ -56,6 +79,62 @@ export function DashboardView(props: {
     if (nextOpen) store.setInspectorOpen(false);
   }
 
+  function resizePanel(panel: ResizablePanel, width: number) {
+    if (panel === "session") {
+      store.setSessionSidebarWidth(clampPanelWidth(width, panel, store.agentPanelOpen ? agentPanelWidth : 0));
+    } else {
+      store.setAgentPanelWidth(clampPanelWidth(width, panel, store.sessionSidebarOpen ? sessionSidebarWidth : 0));
+    }
+  }
+
+  function startPanelResize(panel: ResizablePanel, event: PointerEvent<HTMLDivElement>) {
+    if (!Number.isFinite(event.clientX)) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = panel === "session" ? sessionSidebarWidth : agentPanelWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function handlePointerMove(moveEvent: globalThis.PointerEvent) {
+      if (!Number.isFinite(moveEvent.clientX)) return;
+      const delta = moveEvent.clientX - startX;
+      const nextWidth = panel === "session" ? startWidth + delta : startWidth - delta;
+      resizePanel(panel, nextWidth);
+    }
+
+    function cleanup() {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+  }
+
+  function handleResizeKey(panel: ResizablePanel, event: KeyboardEvent<HTMLDivElement>) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentWidth = panel === "session" ? sessionSidebarWidth : agentPanelWidth;
+    const step = event.shiftKey ? 24 : 12;
+    if (event.key === "Home") {
+      resizePanel(panel, panel === "session" ? SESSION_SIDEBAR_MIN_WIDTH : AGENT_PANEL_MIN_WIDTH);
+      return;
+    }
+    if (event.key === "End") {
+      resizePanel(panel, panel === "session" ? SESSION_SIDEBAR_MAX_WIDTH : AGENT_PANEL_MAX_WIDTH);
+      return;
+    }
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    resizePanel(panel, currentWidth + (panel === "session" ? direction : -direction) * step);
+  }
+
   return (
     <section className="absolute inset-0 flex overflow-hidden bg-[#f6f8fb] text-slate-900">
       <IconRail />
@@ -63,6 +142,7 @@ export function DashboardView(props: {
         <HermesHeader
           onRenameSession={props.onRenameSession}
           onClearSession={props.onClearSession}
+          onDeleteActiveSession={() => activeSession && props.onDeleteSession(activeSession)}
           onToggleInspector={toggleInspector}
           onToggleWorkspace={() => store.setWorkspaceDrawerOpen(!store.workspaceDrawerOpen)}
           onToggleAgentPanel={toggleAgentPanel}
@@ -75,12 +155,13 @@ export function DashboardView(props: {
         <div className="relative flex min-h-0 flex-1 overflow-hidden">
           <div
             className={[
-              "shrink-0 overflow-hidden transition-[width,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+              "relative shrink-0 overflow-hidden transition-[width,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
               store.sessionSidebarOpen
-                ? "w-[228px] translate-x-0 opacity-100 xl:w-[240px]"
+                ? "translate-x-0 opacity-100"
                 : "pointer-events-none w-0 -translate-x-2 opacity-0",
             ].join(" ")}
             data-testid="session-sidebar-shell"
+            style={store.sessionSidebarOpen ? { width: sessionSidebarWidth } : undefined}
           >
             <SessionSidebar
               onCreateSession={props.onCreateSession}
@@ -92,6 +173,18 @@ export function DashboardView(props: {
               onUpdateSessionMeta={props.onUpdateSessionMeta ?? ((_sessionId, _patch) => undefined)}
               onCollapse={() => store.setSessionSidebarOpen(false)}
             />
+            {store.sessionSidebarOpen ? (
+              <PanelResizeHandle
+                label="调整历史会话栏宽度"
+                min={SESSION_SIDEBAR_MIN_WIDTH}
+                max={SESSION_SIDEBAR_MAX_WIDTH}
+                value={sessionSidebarWidth}
+                side="right"
+                onPointerDown={(event) => startPanelResize("session", event)}
+                onKeyDown={(event) => handleResizeKey("session", event)}
+                onDoubleClick={() => resizePanel("session", DEFAULT_SESSION_SIDEBAR_WIDTH)}
+              />
+            ) : null}
           </div>
 
           {!store.sessionSidebarOpen ? (
@@ -138,13 +231,26 @@ export function DashboardView(props: {
 
           <div
             className={[
-              "shrink-0 overflow-hidden transition-[width,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+              "relative shrink-0 overflow-hidden transition-[width,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
               store.agentPanelOpen
-                ? "w-[360px] translate-x-0 opacity-100"
+                ? "translate-x-0 opacity-100"
                 : "pointer-events-none w-0 translate-x-2 opacity-0",
             ].join(" ")}
             data-testid="agent-panel-shell"
+            style={store.agentPanelOpen ? { width: agentPanelWidth } : undefined}
           >
+            {store.agentPanelOpen ? (
+              <PanelResizeHandle
+                label="调整 Agent 面板宽度"
+                min={AGENT_PANEL_MIN_WIDTH}
+                max={AGENT_PANEL_MAX_WIDTH}
+                value={agentPanelWidth}
+                side="left"
+                onPointerDown={(event) => startPanelResize("agent", event)}
+                onKeyDown={(event) => handleResizeKey("agent", event)}
+                onDoubleClick={() => resizePanel("agent", DEFAULT_AGENT_PANEL_WIDTH)}
+              />
+            ) : null}
             <AgentRunPanel open={store.agentPanelOpen} onClose={() => store.setAgentPanelOpen(false)} onOpenFix={props.onOpenFix} />
           </div>
 
@@ -162,6 +268,46 @@ export function DashboardView(props: {
       />
     </section>
   );
+}
+
+function PanelResizeHandle(props: {
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  side: "left" | "right";
+  onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
+  onDoubleClick: () => void;
+}) {
+  return (
+    <div
+      aria-label={props.label}
+      aria-orientation="vertical"
+      aria-valuemax={props.max}
+      aria-valuemin={props.min}
+      aria-valuenow={Math.round(props.value)}
+      className={[
+        "hermes-panel-resizer group absolute top-0 z-30 flex h-full w-3 cursor-col-resize items-center justify-center outline-none",
+        props.side === "right" ? "right-0 translate-x-1/2" : "left-0 -translate-x-1/2",
+      ].join(" ")}
+      onDoubleClick={props.onDoubleClick}
+      onKeyDown={props.onKeyDown}
+      onPointerDown={props.onPointerDown}
+      role="separator"
+      tabIndex={0}
+    >
+      <span className="h-10 w-0.5 rounded-full bg-slate-300/0 transition group-hover:bg-[var(--hermes-primary-border)] group-focus-visible:bg-[var(--hermes-primary)] group-active:bg-[var(--hermes-primary)]" />
+    </div>
+  );
+}
+
+function clampPanelWidth(width: number, panel: ResizablePanel, otherPanelWidth: number) {
+  const min = panel === "session" ? SESSION_SIDEBAR_MIN_WIDTH : AGENT_PANEL_MIN_WIDTH;
+  const max = panel === "session" ? SESSION_SIDEBAR_MAX_WIDTH : AGENT_PANEL_MAX_WIDTH;
+  const viewport = typeof window === "undefined" ? 1280 : window.innerWidth || 1280;
+  const responsiveMax = Math.max(min, viewport - ICON_RAIL_WIDTH - MIN_MAIN_CONTENT_WIDTH - otherPanelWidth);
+  return Math.round(Math.min(Math.max(width, min), max, responsiveMax));
 }
 
 function computeSendBlock(store: ReturnType<typeof useAppStore.getState>): { message: string; target?: FixTarget } | undefined {

@@ -11,6 +11,8 @@ export interface UiState {
   workspaceDrawerOpen: boolean;
   agentPanelOpen: boolean;
   sessionSidebarOpen: boolean;
+  sessionSidebarWidth: number;
+  agentPanelWidth: number;
   activePanel: "chat" | "tasks" | "skills" | "memory" | "connectors" | "files" | "profiles" | "settings" | "spaces" | "projects";
   activeProfile?: string;
   selectedProjectId?: string;
@@ -30,6 +32,8 @@ export interface UiActions {
   setWorkspaceDrawerOpen(open: boolean): void;
   setAgentPanelOpen(open: boolean): void;
   setSessionSidebarOpen(open: boolean): void;
+  setSessionSidebarWidth(width: number): void;
+  setAgentPanelWidth(width: number): void;
   setActivePanel(panel: UiState["activePanel"]): void;
   setSelectedProject(projectId?: string): void;
   setSidebarGrouping(grouping: UiState["sidebarGrouping"]): void;
@@ -51,6 +55,8 @@ export const uiSlice = combine<UiState, UiActions>(
     workspaceDrawerOpen: false,
     agentPanelOpen: false,
     sessionSidebarOpen: true,
+    sessionSidebarWidth: 228,
+    agentPanelWidth: 360,
     activePanel: "chat",
     activeProfile: undefined,
     selectedProjectId: undefined,
@@ -69,6 +75,8 @@ export const uiSlice = combine<UiState, UiActions>(
     setWorkspaceDrawerOpen: (open: boolean) => set({ workspaceDrawerOpen: open }),
     setAgentPanelOpen: (open: boolean) => set({ agentPanelOpen: open }),
     setSessionSidebarOpen: (open: boolean) => set({ sessionSidebarOpen: open }),
+    setSessionSidebarWidth: (width: number) => set({ sessionSidebarWidth: width }),
+    setAgentPanelWidth: (width: number) => set({ agentPanelWidth: width }),
     setActivePanel: (panel: UiState["activePanel"]) => set({ activePanel: panel }),
     setSelectedProject: (projectId?: string) => set({ selectedProjectId: projectId }),
     setSidebarGrouping: (grouping: UiState["sidebarGrouping"]) => set({ sidebarGrouping: grouping }),

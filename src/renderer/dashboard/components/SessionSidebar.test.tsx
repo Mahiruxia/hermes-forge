@@ -21,7 +21,15 @@ describe("SessionSidebar", () => {
           pinned: true,
           sessionFilesPath: "D:/temp/pinned",
           createdAt: "2026-04-21T10:00:00.000Z",
-          updatedAt: "2026-04-21T10:00:00.000Z",
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "session-archived",
+          title: "曾被归档的会话",
+          status: "archived",
+          sessionFilesPath: "D:/temp/archived",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         },
         {
           id: "session-today",
@@ -59,15 +67,17 @@ describe("SessionSidebar", () => {
 
     expect(screen.getAllByText("最近").length).toBeGreaterThan(0);
     expect(screen.getByText("今天会话")).toBeInTheDocument();
-    expect(screen.queryByText("收藏会话")).toBeNull();
-    expect(document.querySelector("aside")).toHaveClass("w-[228px]");
-    expect(document.querySelector("aside")).toHaveClass("xl:w-[240px]");
+    expect(screen.getByText("收藏会话")).toBeInTheDocument();
+    expect(screen.getByText("曾被归档的会话")).toBeInTheDocument();
+    expect(screen.queryByTitle("归档")).toBeNull();
+    expect(document.querySelector("aside")).toHaveClass("w-full");
     expect(document.querySelector("aside")).toHaveClass("h-full");
     expect(document.querySelector("aside")).toHaveClass("min-h-0");
     expect(screen.queryByText("Hermes · 已完成")).toBeNull();
-    expect(screen.getByText("Hermes · gpt-5.4")).toBeInTheDocument();
-    expect(screen.getByText("今天会话").closest(".group")).toHaveClass("bg-[var(--hermes-primary-soft)]");
-    expect(screen.getByRole("button", { name: "删除" }).parentElement).toHaveClass("opacity-0");
+    expect(screen.getAllByText("Hermes · gpt-5.4").length).toBeGreaterThan(0);
+    const todayItem = screen.getByText("今天会话").closest(".hermes-session-item");
+    expect(todayItem).toHaveClass("bg-[var(--hermes-primary-soft)]");
+    expect(todayItem?.querySelector('[title="删除"]')?.parentElement).toHaveClass("opacity-0");
     expect(screen.getByTestId("session-sidebar-footer")).toHaveClass("mt-auto");
   });
 
@@ -86,13 +96,15 @@ describe("SessionSidebar", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "收藏" })[0]);
 
     expect(screen.getByText("收藏会话")).toBeInTheDocument();
+    expect(screen.queryByText("今天会话")).toBeNull();
   });
 
   it("keeps session selection and destructive actions reachable", () => {
     const callbacks = renderSidebar();
+    const todayItem = screen.getByText("今天会话").closest(".hermes-session-item");
 
     fireEvent.click(screen.getByRole("button", { name: /今天会话/ }));
-    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    fireEvent.click(within(todayItem as HTMLElement).getByRole("button", { name: "删除" }));
 
     expect(callbacks.onSelectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-today" }));
     expect(callbacks.onDeleteSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-today" }));

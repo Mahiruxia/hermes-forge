@@ -720,10 +720,10 @@
 }
 
 :root[data-theme="slate"] .hermes-composer-card {
-  border-color: transparent !important;
-  background: var(--hermes-surface-3) !important;
+  border-color: rgb(255 255 255 / 0.06) !important;
+  background: rgb(47 47 49 / 0.86) !important;
   box-shadow:
-    0 20px 52px rgb(0 0 0 / 0.22),
+    0 12px 36px rgb(0 0 0 / 0.18),
     inset 0 1px 0 rgb(255 255 255 / 0.035) !important;
 }
 
@@ -748,6 +748,20 @@
   box-shadow:
     inset 1px 0 rgb(255 255 255 / 0.03),
     -10px 0 34px rgb(0 0 0 / 0.18) !important;
+}
+
+:root[data-theme="slate"] .hermes-panel-resizer span,
+:root[data-theme="oled"] .hermes-panel-resizer span {
+  background-color: rgb(154 134 255 / 0);
+}
+
+:root[data-theme="slate"] .hermes-panel-resizer:hover span,
+:root[data-theme="slate"] .hermes-panel-resizer:focus-visible span,
+:root[data-theme="slate"] .hermes-panel-resizer:active span,
+:root[data-theme="oled"] .hermes-panel-resizer:hover span,
+:root[data-theme="oled"] .hermes-panel-resizer:focus-visible span,
+:root[data-theme="oled"] .hermes-panel-resizer:active span {
+  background-color: rgb(154 134 255 / 0.72) !important;
 }
 
 :root[data-theme="slate"] .hermes-agent-panel__header {

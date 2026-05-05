@@ -379,7 +379,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     return services.sessionLog.readRecent(workspaceId, 200, parsedSessionId);
   });
 
-  ipcMain.handle(IpcChannels.listSessions, () => services.workSessionService.list());
+  ipcMain.handle(IpcChannels.listSessions, () => services.workSessionService.list(true));
   ipcMain.handle(IpcChannels.createSession, async (_event, title?: string) =>
     services.workSessionService.create(typeof title === "string" ? title : undefined),
   );

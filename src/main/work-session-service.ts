@@ -25,7 +25,7 @@ export class WorkSessionService {
     return sessions
       .filter((session): session is WorkSession => Boolean(session))
       .filter((session) => includeArchived || session.status !== "archived")
-      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, Math.max(1, Math.min(limit, DEFAULT_SESSION_LIST_LIMIT)));
   }
 
