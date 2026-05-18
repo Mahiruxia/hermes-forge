@@ -540,6 +540,64 @@ describe("HermesCliAdapter WSL permission policy", () => {
 });
 
 describe("HermesCliAdapter Windows launch", () => {
+  it("keeps the Windows native query unchanged when there are no file references", () => {
+    const adapter = Object.create(HermesCliAdapter.prototype) as {
+      windowsNativeQueryWithFileReferences(request: {
+        userInput: string;
+        selectedFiles: string[];
+        attachments?: unknown[];
+      }): string;
+    };
+
+    expect(adapter.windowsNativeQueryWithFileReferences({
+      userInput: "请总结一下",
+      selectedFiles: [],
+      attachments: [],
+    })).toBe("请总结一下");
+  });
+
+  it("adds compact file references to the Windows native query", () => {
+    const adapter = Object.create(HermesCliAdapter.prototype) as {
+      windowsNativeQueryWithFileReferences(request: {
+        userInput: string;
+        selectedFiles: string[];
+        attachments?: Array<{ id: string; name: string; path: string; originalPath?: string; kind: "file" | "image" }>;
+      }): string;
+    };
+
+    const query = adapter.windowsNativeQueryWithFileReferences({
+      userInput: "请看这个文件",
+      selectedFiles: ["D:\\repo\\src\\app.ts"],
+      attachments: [{
+        id: "a1",
+        name: "notes.md",
+        path: "D:\\repo\\.sessions\\notes.md",
+        originalPath: "D:\\Downloads\\notes.md",
+        kind: "file",
+      }],
+    });
+
+    expect(query).toContain("请看这个文件");
+    expect(query).toContain("本地文件引用");
+    expect(query).toContain("D:\\repo\\src\\app.ts");
+    expect(query).toContain("D:\\repo\\.sessions\\notes.md");
+    expect(query).toContain("D:\\Downloads\\notes.md");
+    expect(query).not.toContain("附件内容");
+  });
+
+  it("keeps passing the first image attachment as --image", () => {
+    const adapter = Object.create(HermesCliAdapter.prototype) as {
+      imageArgs(request: { attachments?: Array<{ kind: "file" | "image"; path: string }> }, runtime: { mode: "windows" }): string[];
+    };
+
+    expect(adapter.imageArgs({
+      attachments: [
+        { kind: "file", path: "D:\\repo\\notes.md" },
+        { kind: "image", path: "D:\\repo\\shot.png" },
+      ],
+    }, { mode: "windows" })).toEqual(["--image", "D:\\repo\\shot.png"]);
+  });
+
   it("routes MiniMax Token Plan through Hermes' MiniMax handler", async () => {
     const adapter = new HermesCliAdapter(
       { hermesDir: () => "C:\\Users\\example\\AppData\\Roaming\\Hermes Forge\\hermes" } as never,

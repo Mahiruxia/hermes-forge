@@ -28,7 +28,7 @@ export function TasksPanel() {
   }, [jobs]);
 
   useEffect(() => {
-    void refreshGateway().finally(() => setLoading(false));
+    void Promise.all([refresh(), refreshGateway()]).finally(() => setLoading(false));
   }, []);
 
   async function refresh() {

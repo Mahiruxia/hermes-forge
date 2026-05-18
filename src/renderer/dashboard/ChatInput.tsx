@@ -496,7 +496,7 @@ export function ChatInput(props: {
     const [name, ...rest] = raw.split(/\s+/);
     const arg = rest.join(" ").trim();
     if (name === "/help") {
-      store.upsertClarifyCard({ id: `help-${Date.now()}`, question: "可用命令：/help /goal /clear /compact /model /workspace /new /usage /theme。主题可选：green-light、light、slate、oled、default-large", status: "pending", createdAt: new Date().toISOString() });
+      store.upsertClarifyCard({ id: "slash-help", question: "可用命令：/help /goal /clear /compact /model /workspace /new /usage /theme。主题可选：green-light、light、slate、oled、default-large", status: "pending", createdAt: new Date().toISOString() });
       store.setUserInput("");
       return;
     }

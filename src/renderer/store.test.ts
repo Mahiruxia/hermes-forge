@@ -28,6 +28,36 @@ describe("renderer store task projections", () => {
     expect(useAppStore.getState().agentPanelWidth).toBe(420);
   });
 
+  it("clears pending clarify cards without touching approvals or toasts", () => {
+    useAppStore.setState({
+      pendingClarifyCards: [{
+        id: "slash-help",
+        question: "可用命令",
+        status: "pending",
+        createdAt: "2026-05-18T10:00:00.000Z",
+      }],
+      pendingApprovalCards: [{
+        id: "approval-1",
+        taskRunId: "task-1",
+        title: "允许命令",
+        patternKey: "cmd:test",
+        scopeKey: "task-1",
+        actionKind: "command_run",
+        risk: "medium",
+        status: "pending",
+        createdAt: "2026-05-18T10:00:00.000Z",
+      }],
+      toasts: [{ id: "toast-1", type: "info", title: "提示" }],
+    });
+
+    useAppStore.getState().clearPendingClarifyCards();
+
+    const state = useAppStore.getState();
+    expect(state.pendingClarifyCards).toEqual([]);
+    expect(state.pendingApprovalCards).toHaveLength(1);
+    expect(state.toasts).toHaveLength(1);
+  });
+
   it("projects stdout and final result into the same task run", () => {
     useAppStore.getState().beginTaskRun({
       workSessionId: "session-1",

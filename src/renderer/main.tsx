@@ -856,6 +856,7 @@ function App() {
   const sessionLoadSeq = useRef(0);
   const coalescedRefreshes = useRef(new Map<string, Promise<unknown>>());
   const taskPerf = useRef(new Map<string, { startedAt: number; firstTokenAt?: number }>());
+  const webUiRefreshedTaskIds = useRef(new Set<string>());
   const store = useAppStore();
 
   async function loadConfigOverview(workspacePath?: string) {
@@ -892,6 +893,13 @@ function App() {
     );
     store.setWebUiOverview(overview);
     return overview;
+  }
+
+  async function refreshWebUiOverviewAfterTask(taskRunId: string, currentState: ReturnType<typeof useAppStore.getState>) {
+    if (webUiRefreshedTaskIds.current.has(taskRunId)) return;
+    if (currentState.activePanel === "chat" && !currentState.webUiOverview) return;
+    webUiRefreshedTaskIds.current.add(taskRunId);
+    await coalesceRefresh("webui:overview", loadWebUiOverview);
   }
 
   useEffect(() => {
@@ -942,6 +950,7 @@ function App() {
         store.setRunningTaskRunId(undefined);
       }
       void refreshWorkspaceSafety();
+      void refreshWebUiOverviewAfterTask(event.taskRunId, currentState);
       window.setTimeout(() => {
         void reconcileLockStateAfterTerminalEvent(event.taskRunId);
       }, 1500);
@@ -1188,6 +1197,7 @@ function App() {
     store.setActiveSession(session.id);
     store.setSessionFilesPath(session.sessionFilesPath);
     store.setWorkspacePath(session.workspacePath ?? "");
+    store.clearPendingClarifyCards();
     store.clearSelectedFiles();
     store.clearAttachments();
     store.setSessionAgentInsight(undefined);

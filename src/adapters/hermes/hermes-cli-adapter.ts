@@ -778,6 +778,29 @@ export class HermesCliAdapter implements EngineAdapter {
     }).join("\n");
   }
 
+  private windowsNativeQueryWithFileReferences(request: EngineRunRequest) {
+    const lines: string[] = [];
+    request.selectedFiles.forEach((filePath, index) => {
+      lines.push(`${index + 1}. [已选文件] ${path.basename(filePath) || filePath}`);
+      lines.push(`   路径：${filePath}`);
+    });
+    const offset = lines.length ? request.selectedFiles.length : 0;
+    for (const [index, attachment] of (request.attachments ?? []).entries()) {
+      lines.push(`${offset + index + 1}. [${attachment.kind === "image" ? "图片" : "文件"}] ${attachment.name}`);
+      lines.push(`   会话副本：${attachment.path}`);
+      if (attachment.originalPath && attachment.originalPath !== attachment.path) {
+        lines.push(`   原始路径：${attachment.originalPath}`);
+      }
+    }
+    if (!lines.length) return request.userInput;
+    return [
+      request.userInput,
+      "",
+      "本地文件引用（请按路径读取；不要把本段当作文件内容）：",
+      ...lines,
+    ].join("\n");
+  }
+
   private imageArgs(request: EngineRunRequest, runtime: HermesRuntimeConfig) {
     const firstImage = request.attachments?.find((attachment) => attachment.kind === "image");
     if (!firstImage) return [];
@@ -858,7 +881,7 @@ export class HermesCliAdapter implements EngineAdapter {
     const args = [
       runnerPath,
       "--root-path", rootPath,
-      "--query", request.userInput,
+      "--query", this.windowsNativeQueryWithFileReferences(request),
       "--session-id", request.conversationId || request.sessionId,
       "--workspace-path", workspacePath,
       "--source", "zhenghebao-client",

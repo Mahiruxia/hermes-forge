@@ -42,6 +42,7 @@ export interface UiActions {
   resolveApprovalCard(id: string, status: ApprovalRequest["status"]): void;
   upsertClarifyCard(card: ClarifyRequest): void;
   resolveClarifyCard(id: string, status: ClarifyRequest["status"]): void;
+  clearPendingClarifyCards(): void;
   setTaskType(taskType: TaskType): void;
   setFirstLaunch(firstLaunch: boolean): void;
 }
@@ -97,6 +98,7 @@ export const uiSlice = combine<UiState, UiActions>(
       set((state) => ({
         pendingClarifyCards: state.pendingClarifyCards.filter((c) => !(c.id === id && c.status === "pending")),
       })),
+    clearPendingClarifyCards: () => set({ pendingClarifyCards: [] }),
     setTaskType: (taskType: TaskType) => set({ taskType }),
     setFirstLaunch: (firstLaunch: boolean) => set({ firstLaunch }),
   })

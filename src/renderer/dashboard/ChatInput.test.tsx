@@ -72,6 +72,21 @@ describe("ChatInput", () => {
     expect(useAppStore.getState().pendingClarifyCards[0]?.question).toContain("/goal");
   });
 
+  it("updates a single /help card instead of stacking duplicates", () => {
+    renderInput();
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+
+    fireEvent.change(input, { target: { value: "/help" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "/help" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    const cards = useAppStore.getState().pendingClarifyCards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ id: "slash-help", status: "pending" });
+    expect(useAppStore.getState().userInput).toBe("");
+  });
+
   it("shows actual context usage and remaining window when usage events are available", () => {
     useAppStore.setState({
       taskEventsByRunId: {
