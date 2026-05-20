@@ -191,7 +191,7 @@ function providerNativeKeys(provider: string) {
     case "minimax":
       return ["MINIMAX_API_KEY"];
     case "minimax-cn":
-      return ["MINIMAX_CN_API_KEY", "MINIMAX_API_KEY"];
+      return ["MINIMAX_CN_API_KEY"];
     case "xiaomi":
       return ["XIAOMI_API_KEY", "MIMO_API_KEY"];
     default:
@@ -238,6 +238,7 @@ export async function deepTestModelConnection(input: {
       runtimeEnv.env.GEMINI_API_KEY?.trim() ||
       runtimeEnv.env.DEEPSEEK_API_KEY?.trim() ||
       runtimeEnv.env.KIMI_API_KEY?.trim() ||
+      runtimeEnv.env.MINIMAX_CN_API_KEY?.trim() ||
       runtimeEnv.env.MINIMAX_API_KEY?.trim() ||
       runtimeEnv.env.XIAOMI_API_KEY?.trim() ||
       runtimeEnv.env.MIMO_API_KEY?.trim() ||

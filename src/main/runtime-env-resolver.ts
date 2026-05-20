@@ -145,11 +145,13 @@ export class RuntimeEnvResolver {
     if (profile.sourceType === "minimax_token_plan_api_key") {
       const anthropicBaseUrl = toMiniMaxAnthropicBaseUrl(profile.baseUrl);
       env.AI_PROVIDER = "custom";
+      env.MINIMAX_CN_BASE_URL = anthropicBaseUrl;
       env.MINIMAX_BASE_URL = anthropicBaseUrl;
       env.AI_BASE_URL = anthropicBaseUrl;
       env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
       delete env.OPENAI_BASE_URL;
       if (secret) {
+        env.MINIMAX_CN_API_KEY = secret;
         env.MINIMAX_API_KEY = secret;
         env.ANTHROPIC_API_KEY = secret;
         env.ANTHROPIC_AUTH_TOKEN = secret;

@@ -188,6 +188,7 @@ function buildModelEnv(runtimeEnv: EngineRuntimeEnv, hermesProvider: string, rol
     OPENAI_MODEL: runtimeEnv.model,
     ...runtimeEnv.env,
   };
+  applyProviderEnvAliases(env, hermesProvider);
   if (runtimeEnv.baseUrl) {
     env.AI_BASE_URL = env.AI_BASE_URL ?? runtimeEnv.baseUrl;
     if (!usesAnthropicOnlyProvider(hermesProvider)) {
@@ -206,6 +207,25 @@ function usesAnthropicOnlyProvider(hermesProvider: string) {
   return hermesProvider === "minimax-cn";
 }
 
+function applyProviderEnvAliases(env: Record<string, string>, hermesProvider: string) {
+  if (hermesProvider !== "minimax-cn") return;
+  const apiKey = env.MINIMAX_CN_API_KEY?.trim()
+    || env.MINIMAX_API_KEY?.trim()
+    || env.ANTHROPIC_API_KEY?.trim()
+    || env.AI_API_KEY?.trim()
+    || env.OPENAI_API_KEY?.trim();
+  if (apiKey) {
+    env.MINIMAX_CN_API_KEY = apiKey;
+  }
+  const baseUrl = env.MINIMAX_CN_BASE_URL?.trim()
+    || env.MINIMAX_BASE_URL?.trim()
+    || env.ANTHROPIC_BASE_URL?.trim()
+    || env.AI_BASE_URL?.trim();
+  if (baseUrl) {
+    env.MINIMAX_CN_BASE_URL = baseUrl;
+  }
+}
+
 function resolveRuntimeApiKey(runtimeEnv: EngineRuntimeEnv) {
   return runtimeEnv.env.OPENAI_API_KEY
     ?? runtimeEnv.env.AI_API_KEY
@@ -222,6 +242,7 @@ function resolveCodingPlanApiKey(runtimeEnv: EngineRuntimeEnv) {
     ?? runtimeEnv.env.ZAI_API_KEY
     ?? runtimeEnv.env.GLM_API_KEY
     ?? runtimeEnv.env.QIANFAN_API_KEY
+    ?? runtimeEnv.env.MINIMAX_CN_API_KEY
     ?? runtimeEnv.env.MINIMAX_API_KEY
     ?? runtimeEnv.env.TENCENT_API_KEY
     ?? runtimeEnv.env.TENCENT_CODING_PLAN_API_KEY

@@ -1,5 +1,25 @@
 # Release Notes
 
+## Hermes Forge v0.2.26
+
+发布日期：2026-05-20
+
+这是一次面向模型切换与 MiniMax Token Plan 连接稳定性的修复版本。重点解决用户切换聊天模型后，已经连接的微信等第三方 Gateway 仍沿用旧模型运行时配置，以及 MiniMax-M2.7 在主聊天模型路径缺少 `minimax-cn` 规范 API Key 导致调用失败的问题。
+
+### 核心修复
+
+- **切换模型后自动同步并重启 Gateway**：保存或删除当前聊天模型配置时会同步 Hermes 运行时配置；如果 Gateway 已运行，会自动重启让微信等第三方连接器立即使用新模型。
+- **模型切换结果在 UI 可见**：模型配置向导保存后会展示“已同步并重启 Gateway / Gateway 未运行无需重启 / 重启失败”等状态，避免后台行为不可确认。
+- **MiniMax Token Plan 写入规范环境变量**：MiniMax CN 配置会写入 Hermes Agent 实际读取的 `MINIMAX_CN_API_KEY` 与 `MINIMAX_CN_BASE_URL`，并保留旧别名兼容，避免主聊天模型只拿到 Coding Plan Key。
+- **MiniMax 连接检查对齐主聊天模型**：`minimax-cn` 的原生 Key 检查改为验证 `MINIMAX_CN_API_KEY`，减少配置页显示可用但聊天运行失败的错位。
+
+### 验证
+
+- `npm run check` 通过
+- `npm test` 通过
+- `npm run build` 通过
+- `git diff --check` / secret-pattern scan 通过
+
 ## Hermes Forge v0.2.25
 
 发布日期：2026-05-20

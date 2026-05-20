@@ -11,6 +11,7 @@ import type {
   HermesWebUiOverview,
   HermesWebUiSettings,
   HermesStatusSummary,
+  ModelConfigUpdateResult,
   ModelConnectionTestResult,
   OneClickDiagnosticsExportResult,
   OneClickDiagnosticsReport,
@@ -418,7 +419,7 @@ const api = {
   testHermesSystemAudit: () =>
     ipcRenderer.invoke(IpcChannels.testHermesSystemAudit) as Promise<HermesSystemAuditResult>,
   updateHermesConfig: (input: unknown) => ipcRenderer.invoke(IpcChannels.updateHermesConfig, input) as Promise<RuntimeConfig>,
-  updateModelConfig: (input: unknown) => ipcRenderer.invoke(IpcChannels.updateModelConfig, input) as Promise<RuntimeConfig>,
+  updateModelConfig: (input: unknown) => ipcRenderer.invoke(IpcChannels.updateModelConfig, input) as Promise<ModelConfigUpdateResult>,
   setDefaultModel: (modelId: string) => ipcRenderer.invoke(IpcChannels.setDefaultModel, { modelId }) as Promise<{ success: boolean; code?: string; message?: string; defaultModelId?: string; models?: RuntimeConfig["modelProfiles"] }>,
   setModelRole: (input: { role: string; profileId: string }) => ipcRenderer.invoke(IpcChannels.setModelRole, input) as Promise<{ success: boolean; code?: string; message?: string; role?: string; profileId?: string; defaultModelId?: string; modelRoleAssignments?: RuntimeConfig["modelRoleAssignments"]; models?: RuntimeConfig["modelProfiles"] }>,
   listModelProviders: () => ipcRenderer.invoke(IpcChannels.listModelProviders) as Promise<unknown[]>,

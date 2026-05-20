@@ -12,7 +12,7 @@ import type { SessionAgentInsightService } from "./session-agent-insight-service
 import type { WorkSessionService } from "./work-session-service";
 import type { HermesCoreBridgeService } from "./hermes-core-bridge-service";
 import type { HermesConnectorService } from "./hermes-connector-service";
-import type { HermesModelSyncService } from "./hermes-model-sync";
+import type { HermesModelSyncResult, HermesModelSyncService } from "./hermes-model-sync";
 import { modelRuntimeChanged } from "./model-runtime-snapshot";
 import type { HermesWebUiService } from "./hermes-webui-service";
 import type { HermesSystemAuditService } from "./hermes-system-audit-service";
@@ -59,8 +59,10 @@ import {
 } from "../shared/schemas";
 import type {
   ClientInfo,
+  HermesGatewayStatus,
   HermesStatusSummary,
   LocalModelDiscoveryResult,
+  ModelConfigUpdateResult,
   ModelConnectionTestResult,
   ModelRole,
   ModelProfile,
@@ -309,21 +311,47 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     }
   }
 
-  async function writeRuntimeConfigWithModelSync(nextConfig: RuntimeConfig, forceModelSync = false) {
+  async function writeRuntimeConfigWithModelSyncResult(nextConfig: RuntimeConfig, forceModelSync = false) {
     const previous = await services.configStore.read();
     const saved = await services.configStore.write(nextConfig);
     invalidateTaskPreflight("runtime-config-write");
+    let sync: HermesModelSyncResult | undefined;
+    let gateway: GatewayModelRestartResult | undefined;
+    let warning: string | undefined;
     if (forceModelSync || modelRuntimeChanged(previous, saved)) {
       try {
-        const sync = await services.hermesModelSyncService.syncRuntimeConfig(saved);
+        sync = await services.hermesModelSyncService.syncRuntimeConfig(saved);
         if (sync.synced) {
-          await restartGatewayIfRunning(services);
+          gateway = await restartGatewayIfRunning(services);
         }
       } catch (error) {
+        warning = error instanceof Error ? error.message : "Hermes 运行时同步或 Gateway 重启失败。";
         console.warn("[Hermes Forge] Model sync failed after config save:", error);
       }
     }
-    return saved;
+    return { saved, sync, gateway, warning };
+  }
+
+  async function writeRuntimeConfigWithModelSync(nextConfig: RuntimeConfig, forceModelSync = false) {
+    const result = await writeRuntimeConfigWithModelSyncResult(nextConfig, forceModelSync);
+    return result.saved;
+  }
+
+  async function syncHermesModelRuntimeAndGateway(config: RuntimeConfig) {
+    let sync: HermesModelSyncResult | undefined;
+    let gateway: GatewayModelRestartResult | undefined;
+    let warning: string | undefined;
+    try {
+      sync = await services.hermesModelSyncService.syncRuntimeConfig(config);
+      if (sync.synced) {
+        gateway = await restartGatewayIfRunning(services);
+      }
+      console.info("[Hermes Forge] Hermes model runtime sync result", { sync, gateway });
+    } catch (error) {
+      warning = error instanceof Error ? error.message : "Hermes 运行时同步或 Gateway 重启失败。";
+      console.warn("[Hermes Forge] Hermes model runtime sync failed after config save", { error });
+    }
+    return { sync, gateway, warning };
   }
 
   ipcMain.handle(IpcChannels.restartApp, () => {
@@ -802,7 +830,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     const parsed = updateModelConfigSchema.parse(input);
     const config = await services.configStore.read();
     const defaultModelProfileId = parsed.defaultModelId ?? parsed.defaultProfileId ?? parsed.modelRoleAssignments?.chat ?? config.defaultModelProfileId;
-    return writeRuntimeConfigWithModelSync(migrateRuntimeConfigModels({
+    const result = await writeRuntimeConfigWithModelSyncResult(migrateRuntimeConfigModels({
       ...config,
       defaultModelProfileId,
       modelRoleAssignments: {
@@ -813,6 +841,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       modelProfiles: parsed.modelProfiles ?? config.modelProfiles,
       providerProfiles: parsed.providerProfiles ?? config.providerProfiles,
     }), true);
+    return withModelSyncMetadata(result.saved, result.gateway, result.sync, result.warning);
   });
   ipcMain.handle(IpcChannels.setDefaultModel, async (_event, input) => {
     const schema = z.union([
@@ -868,21 +897,13 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
     } catch (error) {
       console.warn("[Hermes Forge] set default model reload failed", { configPath, error });
     }
-    let syncWarning: string | undefined;
-    try {
-      const sync = await services.hermesModelSyncService.syncRuntimeConfig(reloaded);
-      if (sync.synced) await restartGatewayIfRunning(services);
-      console.info("[Hermes Forge] set default model Hermes sync result", sync);
-    } catch (error) {
-      syncWarning = error instanceof Error ? error.message : "Hermes 运行时同步失败。";
-      console.warn("[Hermes Forge] set default model Hermes sync failed after config save", { configPath, error });
-    }
+    const runtime = await syncHermesModelRuntimeAndGateway(reloaded);
     return {
       success: true,
       defaultModelId: reloaded.defaultModelProfileId,
       models: reloaded.modelProfiles,
-      code: syncWarning ? "HERMES_SYNC_DEFERRED" : undefined,
-      message: syncWarning ? `默认模型已保存；Hermes/Bridge 同步稍后重试。${syncWarning}` : undefined,
+      code: runtime.warning ? "HERMES_SYNC_DEFERRED" : undefined,
+      message: modelSwitchMessage("默认模型已保存", runtime.gateway, runtime.sync, runtime.warning),
     };
   });
   ipcMain.handle(IpcChannels.setModelRole, async (_event, input) => {
@@ -908,7 +929,8 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
         ...(parsed.role === "chat" ? { chat: profile.id } : {}),
       },
     });
-    const saved = await writeRuntimeConfigWithModelSync(next, true);
+    const writeResult = await writeRuntimeConfigWithModelSyncResult(next, true);
+    const saved = writeResult.saved;
     return {
       success: true,
       role: parsed.role,
@@ -916,9 +938,8 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
       defaultModelId: saved.defaultModelProfileId,
       modelRoleAssignments: saved.modelRoleAssignments ?? {},
       models: saved.modelProfiles,
-      message: parsed.role === "coding_plan"
-        ? "Coding Plan 模型已保存到 Hermes Forge 配置；当前 Hermes Agent 尚未消费独立 Coding Plan runtime。"
-        : "主模型已同步到 Hermes。",
+      code: writeResult.warning ? "HERMES_SYNC_DEFERRED" : undefined,
+      message: modelRoleSwitchMessage(parsed.role, writeResult.gateway, writeResult.sync, writeResult.warning),
     };
   });
   ipcMain.handle(IpcChannels.syncHermesModelRuntime, async () => {
@@ -1288,15 +1309,91 @@ async function syncHermesForgeFeedback(entry: SponsorEntry): Promise<{ ok: boole
   }
 }
 
-async function restartGatewayIfRunning(services: IpcServices) {
-  const status = await services.hermesConnectorService.status().catch(() => undefined);
-  if (!status?.running) {
-    return;
+type GatewayModelRestartResult = {
+  restarted: boolean;
+  skippedReason?: "gateway-not-running";
+  status?: HermesGatewayStatus;
+  message: string;
+};
+
+async function restartGatewayIfRunning(services: Pick<IpcServices, "hermesConnectorService">): Promise<GatewayModelRestartResult> {
+  const status = await services.hermesConnectorService.status();
+  if (!status.running) {
+    const message = "Gateway 当前未运行，已跳过模型切换重启；下次启动会使用新模型。";
+    console.info("[Hermes Forge] Gateway restart skipped after model sync", {
+      reason: "gateway-not-running",
+      healthStatus: status.healthStatus,
+      message: status.message,
+    });
+    return { restarted: false, skippedReason: "gateway-not-running", status, message };
   }
   const restart = await services.hermesConnectorService.restart();
-  if (!restart.ok) {
+  if (!restart.ok || !restart.status.running) {
     throw new Error(`模型已同步，但 Gateway 重启失败：${restart.message}`);
   }
+  console.info("[Hermes Forge] Gateway restarted after model sync", {
+    connectedPlatforms: status.connectedPlatforms,
+    previousPid: status.pid,
+    nextPid: restart.status.pid,
+  });
+  return {
+    restarted: true,
+    status: restart.status,
+    message: "Gateway 已自动重启，已连接的第三方会使用新模型。",
+  };
+}
+
+function modelRoleSwitchMessage(
+  role: ModelRole,
+  gateway: GatewayModelRestartResult | undefined,
+  sync: HermesModelSyncResult | undefined,
+  warning: string | undefined,
+) {
+  const base = role === "coding_plan"
+    ? "Coding Plan 模型已保存到 Hermes Forge 配置"
+    : "主模型已保存并同步到 Hermes";
+  const message = modelSwitchMessage(base, gateway, sync, warning);
+  if (role !== "coding_plan" || warning) return message;
+  return `${message} 当前 Hermes Agent 尚未消费独立 Coding Plan runtime。`;
+}
+
+function modelSwitchMessage(
+  prefix: string,
+  gateway: GatewayModelRestartResult | undefined,
+  sync: HermesModelSyncResult | undefined,
+  warning: string | undefined,
+) {
+  if (warning) {
+    return `${prefix}；但 Hermes/Gateway 同步需要处理：${warning}`;
+  }
+  if (gateway?.restarted) {
+    return `${prefix}；${gateway.message}`;
+  }
+  if (gateway?.skippedReason === "gateway-not-running") {
+    return `${prefix}；${gateway.message}`;
+  }
+  if (sync && !sync.synced) {
+    return `${prefix}；Hermes 模型同步已跳过（${sync.skippedReason ?? "unknown"}），Gateway 未重启。`;
+  }
+  return `${prefix}；Hermes 运行时已同步。`;
+}
+
+function withModelSyncMetadata(
+  saved: RuntimeConfig,
+  gateway: GatewayModelRestartResult | undefined,
+  sync: HermesModelSyncResult | undefined,
+  warning: string | undefined,
+): ModelConfigUpdateResult {
+  return {
+    ...saved,
+    modelSync: {
+      code: warning ? "HERMES_SYNC_DEFERRED" : undefined,
+      message: modelSwitchMessage("模型配置已保存", gateway, sync, warning),
+      synced: sync?.synced,
+      gatewayRestarted: gateway?.restarted,
+      gatewaySkippedReason: gateway?.skippedReason,
+    },
+  };
 }
 
 async function testOpenAiCompatibleModel(
@@ -1842,4 +1939,6 @@ function modelSupportsRuntimeRole(profile: ModelProfile, role: ModelRole) {
 export const testOnly = {
   validateOpenablePath,
   validateOutboundModelBaseUrl,
+  modelSwitchMessage,
+  restartGatewayIfRunning,
 };

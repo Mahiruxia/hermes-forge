@@ -234,9 +234,11 @@ describe("RuntimeEnvResolver", () => {
     expect(runtime.env).toMatchObject({
       AI_PROVIDER: "custom",
       AI_MODEL: "MiniMax-M2.7",
+      MINIMAX_CN_API_KEY: "sk-minimax-test",
       MINIMAX_API_KEY: "sk-minimax-test",
       ANTHROPIC_API_KEY: "sk-minimax-test",
       ANTHROPIC_AUTH_TOKEN: "sk-minimax-test",
+      MINIMAX_CN_BASE_URL: "https://api.minimaxi.com/anthropic",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/anthropic",
       AI_BASE_URL: "https://api.minimaxi.com/anthropic",
       ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic",
@@ -266,6 +268,8 @@ describe("RuntimeEnvResolver", () => {
     const runtime = await resolver.resolve();
 
     expect(runtime.sourceType).toBe("minimax_token_plan_api_key");
+    expect(runtime.env.MINIMAX_CN_API_KEY).toBe("sk-minimax-test");
+    expect(runtime.env.MINIMAX_CN_BASE_URL).toBe("https://api.minimaxi.com/anthropic");
     expect(runtime.env.MINIMAX_BASE_URL).toBe("https://api.minimaxi.com/anthropic");
     expect(runtime.env.ANTHROPIC_BASE_URL).toBe("https://api.minimaxi.com/anthropic");
     expect(runtime.env.OPENAI_BASE_URL).toBeUndefined();

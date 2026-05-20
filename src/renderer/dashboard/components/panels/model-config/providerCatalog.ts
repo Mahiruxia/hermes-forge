@@ -239,12 +239,14 @@ const PRESET_SETTINGS_CONFIG: Partial<Record<ModelSourceType, ProviderPreset["se
   },
   minimax_token_plan_api_key: {
     env: {
+      MINIMAX_CN_API_KEY: "${api_key}",
       MINIMAX_API_KEY: "${api_key}",
       ANTHROPIC_API_KEY: "${api_key}",
       ANTHROPIC_AUTH_TOKEN: "${api_key}",
       OPENAI_API_KEY: "${api_key}",
       AI_API_KEY: "${api_key}",
       AI_PROVIDER: "custom",
+      MINIMAX_CN_BASE_URL: "https://api.minimaxi.com/anthropic",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/anthropic",
       ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic",
       AI_BASE_URL: "https://api.minimaxi.com/anthropic",

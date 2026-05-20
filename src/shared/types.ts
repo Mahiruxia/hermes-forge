@@ -1328,6 +1328,16 @@ export type RuntimeConfig = {
   hermesRuntime?: HermesRuntimeConfig;
 };
 
+export type ModelConfigUpdateResult = RuntimeConfig & {
+  modelSync?: {
+    code?: "HERMES_SYNC_DEFERRED";
+    message: string;
+    synced?: boolean;
+    gatewayRestarted?: boolean;
+    gatewaySkippedReason?: "gateway-not-running";
+  };
+};
+
 export type SetupRequirementStatus = "ok" | "missing" | "warning" | "running" | "failed";
 export type SetupDependencyRepairId = "git" | "python" | "hermes_pyyaml" | "hermes_python_dotenv" | "weixin_aiohttp";
 export type SetupFixAction =

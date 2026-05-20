@@ -349,21 +349,25 @@ export function ModelConfigWizard(props: {
       const nextDefaultProfileId = asAuxiliary
         ? props.models.defaultProfileId
         : (roleAssignments.chat ?? props.models.defaultProfileId);
-      await window.workbenchClient.updateModelConfig({
+      const updateResult = await window.workbenchClient.updateModelConfig({
         defaultProfileId: nextDefaultProfileId,
         modelRoleAssignments: roleAssignments,
         modelProfiles: nextProfiles,
       });
       await props.onRefresh();
       setEditingProfileId(profileId);
-      const savedMessage = asAuxiliary
+      const defaultSavedMessage = asAuxiliary
         ? "模型已保存为辅助模型"
         : health.agentRole === "primary_agent"
           ? "模型已保存，并设为默认"
           : "模型已保存为辅助/待确认来源，未自动设为默认";
+      const savedMessage = !asAuxiliary && health.agentRole === "primary_agent"
+        ? updateResult.modelSync?.message ?? defaultSavedMessage
+        : defaultSavedMessage;
+      const syncWarning = !asAuxiliary && health.agentRole === "primary_agent" && updateResult.modelSync?.code === "HERMES_SYNC_DEFERRED";
       setOperationNotice({
-        tone: asAuxiliary ? "info" : health.agentRole === "primary_agent" ? "success" : "warning",
-        title: asAuxiliary ? "已保存为辅助模型" : health.agentRole === "primary_agent" ? "保存完成" : "已保存，暂未设为默认",
+        tone: syncWarning ? "warning" : asAuxiliary ? "info" : health.agentRole === "primary_agent" ? "success" : "warning",
+        title: syncWarning ? "已保存，Gateway 需确认" : asAuxiliary ? "已保存为辅助模型" : health.agentRole === "primary_agent" ? "保存完成" : "已保存，暂未设为默认",
         message: savedMessage,
       });
       props.onSaved(savedMessage);
@@ -422,7 +426,8 @@ export function ModelConfigWizard(props: {
 
   async function deleteProfile(profileId: string) {
     const nextProfiles = props.models.modelProfiles.filter((item) => item.id !== profileId);
-    await window.workbenchClient.updateModelConfig({
+    const deletesActiveProfile = props.models.defaultProfileId === profileId || props.models.roleAssignments?.chat === profileId;
+    const updateResult = await window.workbenchClient.updateModelConfig({
       defaultProfileId: props.models.defaultProfileId === profileId ? nextProfiles[0]?.id : props.models.defaultProfileId,
       modelProfiles: nextProfiles,
     });
@@ -432,7 +437,7 @@ export function ModelConfigWizard(props: {
       if (fallback) editProfile(fallback.id);
       else createNewProfile("openai_compatible");
     }
-    props.onSaved("模型已删除");
+    props.onSaved(deletesActiveProfile ? updateResult.modelSync?.message ?? "模型已删除" : "模型已删除");
   }
 
   async function ensureSecretIfNeeded(targetSource: ModelSourceType) {

@@ -42,6 +42,7 @@ import type {
   HermesStatusSummary,
   HermesWebUiOverview,
   HermesWebUiSettings,
+  ModelConfigUpdateResult,
   ModelConnectionTestResult,
   OneClickDiagnosticsExportResult,
   OneClickDiagnosticsReport,
@@ -242,7 +243,7 @@ declare global {
       testHermesWindowsBridge(): Promise<HermesWindowsBridgeTestResult>;
       testHermesSystemAudit(): Promise<HermesSystemAuditResult>;
       updateHermesConfig(input: unknown): Promise<RuntimeConfig>;
-      updateModelConfig(input: unknown): Promise<RuntimeConfig>;
+      updateModelConfig(input: unknown): Promise<ModelConfigUpdateResult>;
       setDefaultModel(modelId: string): Promise<{ success: boolean; code?: string; message?: string; defaultModelId?: string; models?: RuntimeConfig["modelProfiles"] }>;
       setModelRole(input: { role: string; profileId: string }): Promise<{ success: boolean; code?: string; message?: string; role?: string; profileId?: string; defaultModelId?: string; modelRoleAssignments?: RuntimeConfig["modelRoleAssignments"]; models?: RuntimeConfig["modelProfiles"] }>;
       listModelProviders(): Promise<unknown[]>;
