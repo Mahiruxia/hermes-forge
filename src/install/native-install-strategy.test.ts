@@ -66,6 +66,7 @@ describeWindows("NativeInstallStrategy Windows installer", () => {
         "param(",
         "  [switch]$NoVenv,",
         "  [switch]$SkipSetup,",
+        "  [string]$Tag,",
         "  [string]$HermesHome,",
         "  [string]$InstallDir",
         ")",
@@ -79,6 +80,7 @@ describeWindows("NativeInstallStrategy Windows installer", () => {
     expect(result.ok).toBe(true);
     expect(installerRuns).toHaveLength(1);
     expect(installerRuns[0]).not.toContain("-WithSystemPackages");
+    expect(installerRuns[0]).toEqual(expect.arrayContaining(["-Tag", "v2026.7.30"]));
   });
 
   it("keeps legacy official script flags when the downloaded installer supports them", async () => {
@@ -129,13 +131,13 @@ describeWindows("NativeInstallStrategy Windows installer", () => {
     const result = await service.install(undefined, { source: { kind: "official" } });
 
     expect(result.ok).toBe(true);
-    expect(downloadUrls).toEqual(["https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1"]);
+    expect(downloadUrls).toEqual(["https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.7.30/scripts/install.ps1"]);
   });
 
   it("uses the community mirror installer only when mirror source is selected", async () => {
     const downloadUrls: string[] = [];
     mockOfficialInstaller({
-      script: "param([switch]$SkipSetup,[string]$HermesHome,[string]$InstallDir)",
+      script: "param([switch]$SkipSetup,[string]$Tag,[string]$HermesHome,[string]$InstallDir)",
       downloadUrls,
     });
     const service = createStrategy();
@@ -184,7 +186,7 @@ describeWindows("NativeInstallStrategy Windows installer", () => {
   it("does not block the selected installer when system Git and winget are unavailable", async () => {
     const installerRuns: string[][] = [];
     mockOfficialInstaller({
-      script: "param([switch]$SkipSetup,[string]$HermesHome,[string]$InstallDir)",
+      script: "param([switch]$SkipSetup,[string]$Tag,[string]$HermesHome,[string]$InstallDir)",
       installerRuns,
       systemGitAvailable: false,
       wingetAvailable: false,

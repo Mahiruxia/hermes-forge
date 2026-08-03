@@ -230,6 +230,7 @@ const connectorDisableInputSchema = z.union([
 
 const modelConnectionDraftSchema = z.object({
   sourceType: z.enum([
+    "openai_api_key",
     "openrouter_api_key",
     "anthropic_api_key",
     "gemini_api_key",
@@ -1089,11 +1090,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
   ipcMain.handle(IpcChannels.saveSecret, async (_event, input) => {
     const parsed = secretSaveInputSchema.parse(input);
     const result = await services.secretVault.saveSecret(parsed.ref, parsed.plainText);
+    services.runtimeEnvResolver.invalidateCache();
     invalidateTaskPreflight("save-secret");
     return result;
   });
   ipcMain.handle(IpcChannels.deleteSecret, async (_event, ref: string) => {
     const result = await services.secretVault.deleteSecret(secretRefSchema.parse(ref));
+    services.runtimeEnvResolver.invalidateCache();
     invalidateTaskPreflight("delete-secret");
     return result;
   });
@@ -1605,7 +1608,7 @@ function sourceTypeFromProfile(profile: Pick<ModelProfile, "provider" | "baseUrl
           : "openai_compatible";
   }
   if (profile.provider === "openrouter") return "openrouter_api_key";
-  if (profile.provider === "openai") return "openai_compatible";
+  if (profile.provider === "openai") return "openai_api_key";
   if (profile.provider === "anthropic") return "anthropic_api_key";
   if (profile.provider === "gemini") return "gemini_api_key";
   if (profile.provider === "deepseek") return "deepseek_api_key";
@@ -1619,9 +1622,11 @@ function draftToModelProfile(draft: z.infer<typeof modelConnectionDraftSchema>):
   const provider =
     ["ollama", "vllm", "sglang", "lm_studio", "openai_compatible", "legacy", "dashscope_api_key", "baidu_wenxin_api_key", "zhipu_api_key", "spark_api_key", "moonshot_api_key", "baichuan_api_key", "minimax_api_key", "yi_api_key", "hunyuan_api_key", "siliconflow_api_key", "mimo_api_key", "volcengine_ark_api_key", "volcengine_coding_api_key", "dashscope_coding_api_key", "zhipu_coding_api_key", "baidu_qianfan_coding_api_key", "tencent_token_plan_api_key", "tencent_hunyuan_token_plan_api_key", "mimo_token_plan_api_key", "minimax_token_plan_api_key", "kimi_coding_api_key"].includes(draft.sourceType)
       ? "custom"
-      : draft.sourceType === "openrouter_api_key"
-        ? "openrouter"
-        : draft.sourceType === "anthropic_api_key" || draft.sourceType === "anthropic_local_credentials"
+      : draft.sourceType === "openai_api_key"
+        ? "openai"
+        : draft.sourceType === "openrouter_api_key"
+          ? "openrouter"
+          : draft.sourceType === "anthropic_api_key" || draft.sourceType === "anthropic_local_credentials"
           ? "anthropic"
           : draft.sourceType === "gemini_api_key" || draft.sourceType === "gemini_oauth"
             ? "gemini"

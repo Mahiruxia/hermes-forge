@@ -251,6 +251,7 @@ declare global {
       testModelRuntimeRole(role: string): Promise<unknown>;
       saveRuntimeConfig(config: RuntimeConfig): Promise<RuntimeConfig>;
       testModelConnection(input?: string | Record<string, unknown>): Promise<ModelConnectionTestResult>;
+      deepTestModelConnection(profileId?: string): Promise<ModelConnectionTestResult>;
       discoverLocalModelSources(): Promise<LocalModelDiscoveryResult>;
       getSetupSummary(workspacePath?: string): Promise<SetupSummary>;
       getSecretStatus(): Promise<SecretVaultStatus>;

@@ -32,6 +32,43 @@ describe("HermesModelSyncService helpers", () => {
     expect(next).not.toContain("old-model");
   });
 
+  it("preserves Hermes v33 model settings that Forge does not own", () => {
+    const original = [
+      "_config_version: 33",
+      "model:",
+      "  provider: \"openai-codex\"",
+      "  default: \"old-model\"",
+      "  reasoning_effort: \"ultra\"",
+      "  max_tokens: 32768",
+      "  api_mode: \"responses\"",
+      "  reasoning_overrides:",
+      "    title: \"low\"",
+      "auxiliary:",
+      "  vision:",
+      "    provider: \"gemini\"",
+      "fallback_providers:",
+      "  - provider: \"openrouter\"",
+      "    model: \"backup-model\"",
+    ].join("\n");
+
+    const next = testOnly.upsertModelBlock(original, {
+      provider: "custom",
+      model: "gpt-5.4",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      contextLength: 128000,
+      supportsVision: true,
+    });
+
+    expect(next).toContain("_config_version: 33");
+    expect(next).toContain("reasoning_effort: \"ultra\"");
+    expect(next).toContain("reasoning_overrides:\n    title: \"low\"");
+    expect(next).toContain("max_tokens: 32768");
+    expect(next).toContain("api_mode: \"responses\"");
+    expect(next).toContain("supports_vision: true");
+    expect(next).toContain("auxiliary:");
+    expect(next).toContain("fallback_providers:");
+  });
+
   it("keeps connector env blocks while replacing stale model env", () => {
     const original = [
       "CUSTOM_VALUE=keep",
@@ -100,6 +137,7 @@ describe("HermesModelSyncService", () => {
     await expect(fs.readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toContain("context_length: 128000");
     await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.toContain("HERMES_INFERENCE_PROVIDER=custom");
     await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.toContain("OPENAI_API_KEY=pwd");
+    await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.not.toMatch(/^(?:AI_MODEL|OPENAI_MODEL)=/m);
   });
 
   it("persists the stable upstream URL while runtime env can use a local proxy", async () => {

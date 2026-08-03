@@ -59,7 +59,7 @@ describe("model-connection-service", () => {
     expect(result.message).toContain("Gemini OAuth");
   });
 
-  it("keeps a chat-capable Windows model usable when the Forge tool probe is inconclusive", async () => {
+  it("keeps a model auxiliary when the Forge tool probe fails", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "my-model", context_length: 32000 }] }), { status: 200 }))
@@ -81,12 +81,63 @@ describe("model-connection-service", () => {
 
     expect(result.ok).toBe(true);
     expect(result.failureCategory).toBeUndefined();
-    expect(result.agentRole).toBe("primary_agent");
+    expect(result.agentRole).toBe("auxiliary_model");
     expect(result.supportsTools).toBe(false);
     expect(result.wslReachable).toBeUndefined();
-    expect(result.message).toContain("工具调用由 Hermes");
+    expect(result.message).toContain("不会自动设为 Hermes 主模型");
     expect(result.healthChecks?.map((step) => step.id)).toEqual(expect.arrayContaining(["auth", "models", "chat", "agent_capability"]));
     expect(result.healthChecks?.find((step) => step.id === "agent_capability")?.detail).toContain("标准 tools + required");
+  });
+
+  it("prefers the provider context window over an inflated client hint", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "small-model", context_length: 8192 }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "call_1" }] } }] }), { status: 200 }));
+
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "openai_compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "small-model",
+        maxTokens: 256000,
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault(),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failureCategory).toBe("context_too_low");
+    expect(result.contextWindow).toBe(8192);
+    expect(result.agentRole).toBe("auxiliary_model");
+  });
+
+  it("keeps Gemini API keys out of URLs and connection errors", async () => {
+    const fetchMock = vi.mocked(fetch).mockRejectedValue(new Error("network down"));
+    const result = await testModelConnection({
+      draft: {
+        sourceType: "gemini_api_key",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        model: "gemini-2.5-pro",
+        secretRef: "provider.gemini.apiKey",
+      },
+      config: { modelProfiles: [], updateSources: {}, hermesRuntime: { mode: "windows" } } as never,
+      secretVault: secretVault({
+        hasSecret: async () => true,
+        readSecret: async () => "super-secret-gemini-key",
+      }),
+      runtimeAdapterFactory: runtimeAdapterFactory(),
+      resolveHermesRoot: async () => "D:\\Hermes Agent",
+    });
+
+    const [requestUrl, requestInit] = fetchMock.mock.calls[0] ?? [];
+    expect(String(requestUrl)).not.toContain("super-secret-gemini-key");
+    expect(new Headers(requestInit?.headers).get("x-goog-api-key")).toBe("super-secret-gemini-key");
+    expect(result.message).not.toContain("super-secret-gemini-key");
+    expect(result.recommendedFix).not.toContain("super-secret-gemini-key");
   });
 
   it("accepts OpenAI-compatible tool calling when only required mode works", async () => {
@@ -168,7 +219,7 @@ describe("model-connection-service", () => {
 
     expect(result.ok).toBe(true);
     expect(result.failureCategory).toBeUndefined();
-    expect(result.agentRole).toBe("primary_agent");
+    expect(result.agentRole).toBe("auxiliary_model");
     expect(result.supportsTools).toBe(false);
     expect(result.recommendedFix).toContain("小时额度");
     expect(result.healthChecks?.find((step) => step.id === "agent_capability")?.detail).toContain("触发限额");
@@ -359,7 +410,7 @@ describe("model-connection-service", () => {
     expect(inferSourceType("custom", "https://token-plan-sgp.xiaomimimo.com/v1")).toBe("mimo_token_plan_api_key");
   });
 
-  it("marks tested coding-plan endpoints as coding_plan runtime compatible", async () => {
+  it("does not mark delegated coding-plan credentials as runtime-verified", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: "models endpoint disabled" }), { status: 404 }))
@@ -385,8 +436,10 @@ describe("model-connection-service", () => {
 
     expect(result.ok).toBe(true);
     expect(result.runtimeCompatibility).toBe("runtime");
-    expect(result.roleCompatibility?.coding_plan?.ok).toBe(true);
-    expect(result.roleCompatibility?.chat?.ok).toBe(true);
+    expect(result.agentRole).toBe("provider_only");
+    expect(result.roleCompatibility?.coding_plan?.ok).toBe(false);
+    expect(result.roleCompatibility?.chat?.ok).toBe(false);
+    expect(result.message).toContain("没有完成 Hermes 运行验证");
   });
 
   it("canonicalizes delegated Coding Plan model ids from preset models", async () => {

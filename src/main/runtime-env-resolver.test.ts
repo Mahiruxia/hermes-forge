@@ -61,6 +61,30 @@ describe("RuntimeEnvResolver", () => {
     });
   });
 
+  it("does not append OpenAI /v1 semantics to Anthropic base URLs", async () => {
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "claude-main",
+      modelProfiles: [{
+        id: "claude-main",
+        provider: "anthropic",
+        sourceType: "anthropic_api_key",
+        baseUrl: "https://api.anthropic.com/",
+        model: "claude-sonnet-4-5",
+        secretRef: "provider.anthropic.apiKey",
+      }],
+      updateSources: {},
+    };
+    const resolver = new RuntimeEnvResolver(
+      { read: async () => config } as never,
+      { readSecret: async () => "anthropic-key" } as never,
+    );
+
+    const runtime = await resolver.resolve();
+
+    expect(runtime.baseUrl).toBe("https://api.anthropic.com");
+    expect(runtime.env.ANTHROPIC_BASE_URL).toBe("https://api.anthropic.com");
+  });
+
   it("carries the selected model context window into the runtime environment", async () => {
     const config: RuntimeConfig = {
       defaultModelProfileId: "kimi-main",

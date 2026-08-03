@@ -35,6 +35,7 @@ import { markPerf, markPerfEnd, markPerfStart } from "./perf";
 import { targetSessionForTaskEvent } from "./session-routing";
 import { resolveRunningTaskState, runningSessionLabel } from "./sessionRunState";
 import { useAppStore, type RecentWorkspace } from "./store";
+import { resolveSelectedModelProfileId } from "./modelSelection";
 import { safePromiseWithFallback } from "./utils/safePromise";
 import { hasInlineLocalFilePath } from "../shared/local-file-paths";
 import "./styles.css";
@@ -1455,6 +1456,12 @@ function App() {
 
   async function startTask() {
     const current = useAppStore.getState();
+    const selectedModelProfileId = resolveSelectedModelProfileId({
+      runtimeConfig: current.runtimeConfig,
+      activeSessionId: current.activeSessionId,
+      preferredModelProfileId: current.preferredModelProfileId,
+      modelProfileIdBySession: current.modelProfileIdBySession,
+    });
     
     if (!window.workbenchClient || typeof window.workbenchClient.startTask !== "function") {
       store.pushEvent({
@@ -1505,11 +1512,13 @@ function App() {
         activeSessionId = newSession.id;
         sessionFilesPath = newSession.sessionFilesPath || newSession.id;
         store.setSessionFilesPath(sessionFilesPath);
+        if (selectedModelProfileId) store.setModelProfileSelection(selectedModelProfileId, activeSessionId);
       } else {
         activeSessionId = `local-${Date.now()}`;
         sessionFilesPath = activeSessionId;
         store.setActiveSession(activeSessionId);
         store.setSessionFilesPath(sessionFilesPath);
+        if (selectedModelProfileId) store.setModelProfileSelection(selectedModelProfileId, activeSessionId);
       }
     }
 
@@ -1543,7 +1552,7 @@ function App() {
         sessionFilesPath: sessionFilesPath || activeSessionId || "default",
         selectedFiles: current.selectedFiles,
         attachments: current.attachments,
-        modelProfileId: current.runtimeConfig?.defaultModelProfileId,
+        modelProfileId: selectedModelProfileId,
       });
     } catch (error) {
       taskPerf.current.delete(clientTaskId);

@@ -160,7 +160,6 @@ type LegacyRuntimeConfig = Partial<RuntimeConfig> & {
 };
 
 const PROVIDERS: ProviderId[] = ["openai", "anthropic", "openrouter", "gemini", "deepseek", "huggingface", "copilot", "copilot_acp", "local", "custom"];
-const MIN_PRIMARY_AGENT_CONTEXT = 16_000;
 
 export function stableModelProfileId(input: Pick<ModelProfile, "provider" | "model"> & { baseUrl?: string }) {
   const key = modelIdentityKey(input.provider, input.model, input.baseUrl);
@@ -234,14 +233,6 @@ function normalizeLegacyModelProfile(input: unknown): ModelProfile | undefined {
     ...(sourceType ? { sourceType } : {}),
     ...(baseUrl ? { baseUrl } : {}),
   };
-  return normalizeWindowsNativeAgentRole(profile);
-}
-
-function normalizeWindowsNativeAgentRole(profile: ModelProfile): ModelProfile {
-  const hasEnoughContext = typeof profile.maxTokens !== "number" || profile.maxTokens >= MIN_PRIMARY_AGENT_CONTEXT;
-  if (profile.agentRole === "auxiliary_model" && profile.supportsTools === false && hasEnoughContext) {
-    return { ...profile, agentRole: "primary_agent" };
-  }
   return profile;
 }
 
@@ -296,15 +287,21 @@ function normalizeSourceType(sourceType: ModelSourceType | string | undefined): 
 
 function normalizeRoleAssignments(raw: unknown, defaultModelProfileId: string | undefined, profiles: ModelProfile[]) {
   const ids = new Set(profiles.map((profile) => profile.id));
+  const chatIds = new Set(profiles
+    .filter((profile) => profile.agentRole !== "auxiliary_model" && profile.agentRole !== "provider_only" && profile.supportsTools !== false)
+    .map((profile) => profile.id));
   const next: Partial<Record<ModelRole, string>> = {};
   if (raw && typeof raw === "object") {
     for (const role of ["chat", "coding_plan", "apply", "autocomplete"] as const) {
       const value = (raw as Partial<Record<ModelRole, unknown>>)[role];
-      if (typeof value === "string" && ids.has(value)) next[role] = value;
+      if (typeof value === "string" && ids.has(value) && (role !== "chat" || chatIds.has(value))) next[role] = value;
     }
   }
-  if (!next.chat && defaultModelProfileId && ids.has(defaultModelProfileId)) next.chat = defaultModelProfileId;
-  if (!next.chat && profiles[0]) next.chat = profiles[0].id;
+  if (!next.chat && defaultModelProfileId && chatIds.has(defaultModelProfileId)) next.chat = defaultModelProfileId;
+  if (!next.chat) {
+    const fallbackChat = profiles.find((profile) => chatIds.has(profile.id))?.id;
+    if (fallbackChat) next.chat = fallbackChat;
+  }
   return Object.keys(next).length ? next : undefined;
 }
 

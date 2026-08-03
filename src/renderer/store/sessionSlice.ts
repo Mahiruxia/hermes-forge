@@ -7,6 +7,10 @@ export interface SessionState {
   sessionFilesPath: string;
   sessions: WorkSession[];
   activeSessionId?: string;
+  /** Device-local model choice used before a chat session exists. */
+  preferredModelProfileId?: string;
+  /** Per-session model overrides. Global defaults remain in RuntimeConfig. */
+  modelProfileIdBySession: Record<string, string>;
   recentWorkspaces: RecentWorkspace[];
   selectedFiles: string[];
   attachments: SessionAttachment[];
@@ -21,6 +25,7 @@ export interface SessionActions {
   setSessionFilesPath(path: string): void;
   setSessions(sessions: WorkSession[]): void;
   setActiveSession(sessionId?: string): void;
+  setModelProfileSelection(profileId: string, sessionId?: string): void;
   upsertSession(session: WorkSession): void;
   setRecentWorkspaces(workspaces: RecentWorkspace[]): void;
   rememberWorkspace(path: string): void;
@@ -41,6 +46,8 @@ export const sessionSlice = combine<SessionState, SessionActions>(
     sessionFilesPath: "",
     sessions: [],
     activeSessionId: undefined,
+    preferredModelProfileId: undefined,
+    modelProfileIdBySession: {},
     recentWorkspaces: [],
     selectedFiles: [],
     attachments: [],
@@ -54,6 +61,10 @@ export const sessionSlice = combine<SessionState, SessionActions>(
     setSessionFilesPath: (path: string) => set({ sessionFilesPath: path }),
     setSessions: (sessions: WorkSession[]) => set({ sessions }),
     setActiveSession: (sessionId?: string) => set({ activeSessionId: sessionId }),
+    setModelProfileSelection: (profileId: string, sessionId?: string) =>
+      set((state) => sessionId
+        ? { modelProfileIdBySession: { ...state.modelProfileIdBySession, [sessionId]: profileId } }
+        : { preferredModelProfileId: profileId }),
     upsertSession: (session: WorkSession) =>
       set((state) => ({
         sessions: state.sessions.filter((s) => s.id !== session.id).concat(session),

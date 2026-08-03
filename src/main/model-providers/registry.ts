@@ -29,6 +29,17 @@ import {
 } from "./adapters/coding-plan-providers";
 
 const builtinDefinitions = {
+  openai_api_key: {
+    sourceType: "openai_api_key",
+    family: "api_key",
+    authMode: "api_key",
+    label: "OpenAI API",
+    provider: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    modelPlaceholder: "选择或填写 OpenAI 模型 ID",
+    presetModels: ["gpt-5.4", "gpt-5.4-mini"],
+    group: "international",
+  },
   openrouter_api_key: {
     sourceType: "openrouter_api_key",
     family: "api_key",
@@ -168,6 +179,7 @@ export class ProviderRegistry {
 /** Creates the default provider registry used by the desktop app. */
 export function createDefaultProviderRegistry() {
   const registry = new ProviderRegistry();
+  registry.register(new OpenAiCompatibleProvider(builtinDefinitions.openai_api_key, { urlPatterns: [/api\.openai\.com/i] }));
   registry.register(new OpenAiCompatibleProvider(builtinDefinitions.openrouter_api_key, { urlPatterns: [/openrouter\.ai/i] }));
   registry.register(new AnthropicProvider(builtinDefinitions.anthropic_api_key));
   registry.register(new GeminiProvider(builtinDefinitions.gemini_api_key));
@@ -208,6 +220,7 @@ export function createDefaultProviderRegistry() {
 }
 
 export function providerFromProfile(provider: ModelProfile["provider"], baseUrl?: string, registry = defaultProviderRegistry) {
+  if (provider === "openai") return registry.get("openai_api_key");
   if (provider === "openrouter") return registry.get("openrouter_api_key");
   if (provider === "anthropic") return registry.get("anthropic_api_key");
   if (provider === "gemini") return registry.get("gemini_api_key");

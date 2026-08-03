@@ -163,20 +163,20 @@ export abstract class BaseProvider {
     }
 
     const toolCheck = await this.testToolCalling({ ...input, profile: effectiveProfile }, baseUrl, auth.auth);
-    const contextWindow = effectiveProfile.maxTokens ?? inferContextWindow(effectiveProfile.model, modelInfo.rawModelPayload);
-    const agentRole = classifyAgentRole({ contextWindow, supportsTools: true });
+    // Prefer the provider's discovered capability. A UI hint must never inflate
+    // a smaller context window returned by the service itself.
+    const contextWindow = inferContextWindow(effectiveProfile.model, modelInfo.rawModelPayload) ?? effectiveProfile.maxTokens;
+    const agentRole = classifyAgentRole({ contextWindow, supportsTools: toolCheck.ok });
     const runtimeCompatibility = this.effectiveRuntimeCompatibility();
     const roleCompatibility = this.buildRoleCompatibility(agentRole, runtimeCompatibility);
     steps.push(step(
       "agent_capability",
       agentRole === "primary_agent",
       agentRole === "primary_agent"
-        ? toolCheck.ok
-          ? "满足 Hermes agent 主模型要求"
-          : "最小 chat 已通过；Forge 侧 tool calling 未确认，Windows Native Hermes 会在运行时验证实际工具能力。"
-        : toolCheck.ok
-          ? `上下文窗口只有 ${contextWindow ?? 0}，更适合作为辅助模型`
-          : "上下文窗口不足，暂不适合作为 Hermes 主模型",
+        ? "满足 Hermes agent 主模型要求"
+        : !toolCheck.ok
+          ? "最小 chat 已通过，但工具调用探针未通过；仅可作为辅助模型保存。"
+          : `上下文窗口只有 ${contextWindow ?? 0}，更适合作为辅助模型`,
       toolCheck.detail,
     ));
     steps.push(step(
@@ -228,7 +228,7 @@ export abstract class BaseProvider {
       authMode: this.definition.authMode,
       message: toolCheck.ok
         ? "连接成功；鉴权、模型发现、最小 chat、tool calling 和 agent 能力检查均已通过。"
-        : "连接成功；鉴权、模型发现和最小 chat 已通过。Forge 侧 tool calling 未确认，已按 Windows Native Hermes 主模型保存，实际工具调用由 Hermes 在任务运行时验证。",
+        : "连接成功；鉴权、模型发现和最小 chat 已通过，但工具调用探针未通过。可保存为辅助模型，不会自动设为 Hermes 主模型。",
       steps,
       normalizedBaseUrl: baseUrl,
       availableModels: modelInfo.availableModels,
@@ -268,13 +268,13 @@ export abstract class BaseProvider {
     const profile = this.withCanonicalModel(input.profile, this.definition.presetModels ?? []);
     const steps: ModelHealthCheckStep[] = [
       step("auth", true, "API Key 已就绪"),
-      step("models", true, "Coding Plan / Token Plan 直通 Hermes Agent，跳过 Forge 侧模型发现。"),
-      step("agent_capability", true, "Agent 能力由 Hermes Agent 内置 handler 在运行时验证。"),
-      step("runtime", true, "运行态由 Hermes Agent 直接接管。"),
+      step("models", false, "Coding Plan / Token Plan 不提供可靠的标准模型发现，本次未验证模型。"),
+      step("agent_capability", false, "Agent 能力尚未验证，需要保存后通过真实 Hermes 会话验证。"),
+      step("runtime", false, "本次仅确认凭据就绪，尚未执行保存或 Hermes 运行验证。"),
     ];
     const wsl = await this.testWslIfNeeded({ ...input, profile }, baseUrl, steps);
     const runtimeCompatibility = this.effectiveRuntimeCompatibility();
-    const roleCompatibility = this.buildRoleCompatibility("primary_agent", runtimeCompatibility);
+    const roleCompatibility = this.buildRoleCompatibility("provider_only", runtimeCompatibility);
     if (!wsl.ok) {
       return this.fail(
         profile,
@@ -286,7 +286,7 @@ export abstract class BaseProvider {
           normalizedBaseUrl: baseUrl,
           availableModels: [],
           authResolved: true,
-          agentRole: "primary_agent",
+          agentRole: "provider_only",
           runtimeCompatibility,
           roleCompatibility,
           wslReachable: false,
@@ -300,12 +300,12 @@ export abstract class BaseProvider {
       sourceType: this.sourceType,
       family: this.definition.family,
       authMode: this.definition.authMode,
-      message: "Coding Plan / Token Plan 配置已保存，运行时由 Hermes Agent 直接验证。请在实际会话中确认实际可用性。",
+      message: "Coding Plan / Token Plan 凭据已就绪，但本次测试没有保存配置，也没有完成 Hermes 运行验证。",
       steps,
       normalizedBaseUrl: baseUrl,
       availableModels: [],
       authResolved: true,
-      agentRole: "primary_agent",
+      agentRole: "provider_only",
       runtimeCompatibility,
       roleCompatibility,
       wslReachable: wsl.reachable,

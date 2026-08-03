@@ -6,6 +6,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { EngineEvent, EngineUpdateStatus, ModelProfile, SessionAgentInsightUsage } from "../../shared/types";
 import { estimateTextTokens } from "../../shared/token-estimator";
 import { useAppStore } from "../store";
+import { resolveSelectedModelProfileId } from "../modelSelection";
 import { resolveRunningTaskState } from "../sessionRunState";
 import { cn } from "./DashboardPrimitives";
 import { buildPreflightState, preflightChipsForUser, preflightDetailForUser, preflightSummaryForUser } from "./permissionModel";
@@ -36,7 +37,9 @@ export function ChatInput(props: {
     events: state.events,
     hermesStatus: state.hermesStatus,
     info: state.info,
+    modelProfileIdBySession: state.modelProfileIdBySession,
     permissionOverview: state.permissionOverview,
+    preferredModelProfileId: state.preferredModelProfileId,
     providerProfiles: state.providerProfiles,
     pushEvent: state.pushEvent,
     pushSessionMessage: state.pushSessionMessage,
@@ -47,7 +50,7 @@ export function ChatInput(props: {
     sessionAgentInsight: state.sessionAgentInsight,
     sessionFilesPath: state.sessionFilesPath,
     sessions: state.sessions,
-    setRuntimeConfig: state.setRuntimeConfig,
+    setModelProfileSelection: state.setModelProfileSelection,
     setUserInput: state.setUserInput,
     setWebUiOverview: state.setWebUiOverview,
     setWorkspacePath: state.setWorkspacePath,
@@ -89,7 +92,13 @@ export function ChatInput(props: {
   const permissionsLabel = permissions
     ? `读${permissions.workspaceRead === false ? "关" : "开"} 写${permissions.fileWrite === false ? "关" : "开"} 命令${permissions.commandRun === false ? "关" : "开"}`
     : "权限默认开启";
-  const currentModelProfile = store.runtimeConfig?.modelProfiles.find((profile) => profile.id === store.runtimeConfig?.defaultModelProfileId)
+  const currentModelProfileId = resolveSelectedModelProfileId({
+    runtimeConfig: store.runtimeConfig,
+    activeSessionId: store.activeSessionId,
+    preferredModelProfileId: store.preferredModelProfileId,
+    modelProfileIdBySession: store.modelProfileIdBySession,
+  });
+  const currentModelProfile = store.runtimeConfig?.modelProfiles.find((profile) => profile.id === currentModelProfileId)
     ?? store.runtimeConfig?.modelProfiles[0];
   const currentModelLabel = currentModelProfile?.model || currentModelProfile?.name || currentModelProfile?.id || "未配置模型";
   const currentContextWindow = resolveComposerContextWindow(store, currentModelProfile, currentModelLabel);
@@ -433,7 +442,7 @@ export function ChatInput(props: {
     }
   }
 
-  async function switchDefaultModel(profileId: string) {
+  function switchSessionModel(profileId: string) {
     if (!store.runtimeConfig) {
       store.error("切换失败", "运行时配置未加载");
       return;
@@ -443,29 +452,12 @@ export function ChatInput(props: {
       store.warning("模型不存在", "找不到要切换的模型");
       return;
     }
-    try {
-      if (!window.workbenchClient || typeof window.workbenchClient.setDefaultModel !== "function") {
-        throw new Error("模型切换接口未就绪");
-      }
-      const result = await window.workbenchClient.setDefaultModel(profileId);
-      if (!result.success) {
-        throw new Error(result.message || "无法同步默认模型");
-      }
-      const latestConfig = useAppStore.getState().runtimeConfig ?? store.runtimeConfig;
-      store.setRuntimeConfig({
-        ...latestConfig,
-        defaultModelProfileId: result.defaultModelId ?? profileId,
-        modelRoleAssignments: {
-          ...(latestConfig.modelRoleAssignments ?? {}),
-          chat: result.defaultModelId ?? profileId,
-        },
-        modelProfiles: result.models ?? latestConfig.modelProfiles,
-      });
-      store.success("模型已切换", result.message || `当前使用：${target.name ?? target.model}`);
-      setModelMenuOpen(false);
-    } catch (error) {
-      store.error("切换失败", error instanceof Error ? error.message : "无法同步模型配置与 Gateway");
-    }
+    store.setModelProfileSelection(profileId, store.activeSessionId);
+    store.success(
+      "会话模型已切换",
+      `当前使用：${target.name ?? target.model}。仅影响${store.activeSessionId ? "当前会话" : "接下来新建的会话"}；全局默认请在模型设置中更改。`,
+    );
+    setModelMenuOpen(false);
   }
 
   function handleAttachmentDragEnter(event: DragEvent<HTMLDivElement>) {
@@ -584,7 +576,7 @@ export function ChatInput(props: {
         (profile) => profile.id.toLowerCase() === arg.toLowerCase() || (profile.name ?? profile.id).toLowerCase() === arg.toLowerCase(),
       );
       if (matchedProfile) {
-        await switchDefaultModel(matchedProfile.id);
+        switchSessionModel(matchedProfile.id);
       } else {
         const availableModels = profiles.map((profile) => profile.name ?? profile.id).join(", ");
         store.warning("模型不存在", `未找到模型 "${arg}"。可用模型：${availableModels || "无"}`);
@@ -782,28 +774,31 @@ export function ChatInput(props: {
                 <button
                   className="inline-flex h-8 max-w-[176px] items-center rounded-full border border-[var(--hermes-primary-border)] bg-[var(--hermes-primary-soft)] px-3 text-[12px] font-medium text-[var(--hermes-primary)] transition hover:bg-white max-sm:max-w-[128px]"
                   onClick={() => setModelMenuOpen((value) => !value)}
-                  title={currentModelLabel}
+                  title={`当前会话模型：${currentModelLabel}`}
                   type="button"
                 >
                   <span className="truncate">{currentModelLabel}</span>
                 </button>
                 {modelMenuOpen ? (
                   <div className="hermes-model-menu absolute bottom-[calc(100%+10px)] left-0 z-20 max-h-72 w-72 overflow-auto rounded-2xl border border-[var(--hermes-card-border)] bg-white p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
+                    <div className="px-3 py-2 text-[11px] leading-5 text-slate-400">
+                      仅影响当前会话；全局默认请到模型设置中更改
+                    </div>
                     {(store.runtimeConfig?.modelProfiles ?? []).length ? (
                       (store.runtimeConfig?.modelProfiles ?? []).map((profile) => {
-                        const active = profile.id === store.runtimeConfig?.defaultModelProfileId || (!store.runtimeConfig?.defaultModelProfileId && profile.id === currentModelProfile?.id);
+                        const active = profile.id === currentModelProfile?.id;
                         return (
                           <button
                             key={profile.id}
                             className={cn("flex w-full items-center justify-between gap-3 rounded-xl px-3 py-3 text-left text-[12px] transition", active ? "bg-[var(--hermes-primary-soft)] text-[var(--hermes-primary)]" : "text-slate-600 hover:bg-slate-50")}
-                            onClick={() => void switchDefaultModel(profile.id)}
+                            onClick={() => switchSessionModel(profile.id)}
                             type="button"
                           >
                             <span className="min-w-0">
                               <span className="block truncate font-semibold">{profile.name ?? profile.model}</span>
                               <span className="mt-0.5 block truncate font-mono text-[11px] text-slate-400">{profile.model}</span>
                             </span>
-                            {active ? <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[var(--hermes-primary)]">默认</span> : null}
+                            {active ? <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[var(--hermes-primary)]">当前会话</span> : null}
                           </button>
                         );
                       })

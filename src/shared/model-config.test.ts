@@ -54,7 +54,7 @@ describe("model config helpers", () => {
     });
   });
 
-  it("promotes old no-tools Windows profiles when context is sufficient", () => {
+  it("does not promote a no-tools auxiliary profile to the chat role", () => {
     const migrated = migrateRuntimeConfigModels({
       defaultModelProfileId: "old-main",
       modelProfiles: [{
@@ -70,10 +70,10 @@ describe("model config helpers", () => {
     });
 
     expect(migrated.modelProfiles[0]).toMatchObject({
-      agentRole: "primary_agent",
+      agentRole: "auxiliary_model",
       supportsTools: false,
     });
-    expect(migrated.modelRoleAssignments?.chat).toBe("old-main");
+    expect(migrated.modelRoleAssignments?.chat).toBeUndefined();
   });
 
   it("migrates an OpenAI-compatible MiMo Token Plan endpoint to the dedicated source", () => {

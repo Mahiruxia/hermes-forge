@@ -723,7 +723,7 @@ describe("DashboardView", () => {
     expect(modelButton).toHaveClass("h-8");
     expect(modelButton).toHaveClass("max-w-[176px]");
     expect(modelButton).toHaveClass("bg-[var(--hermes-primary-soft)]");
-    expect(modelButton).toHaveAttribute("title", "qwen");
+    expect(modelButton).toHaveAttribute("title", "当前会话模型：qwen");
   });
 
   it("keeps yellow runtime protection as compact helper text with expandable details", () => {

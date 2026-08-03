@@ -144,14 +144,8 @@ describe("ChatInput", () => {
     expect(useAppStore.getState().toasts.at(-1)?.title).toBe("任务运行中");
   });
 
-  it("switches models through setDefaultModel so Gateway sync feedback is visible", async () => {
-    const setDefaultModel = vi.fn(async () => ({
-      success: true,
-      message: "模型已保存，Gateway 已自动重启。",
-      defaultModelId: "alt",
-      models: useAppStore.getState().runtimeConfig?.modelProfiles ?? [],
-    }));
-    const saveRuntimeConfig = vi.fn();
+  it("switches the active session model without mutating the global default", async () => {
+    const setDefaultModel = vi.fn();
     useAppStore.setState({
       runtimeConfig: {
         defaultModelProfileId: "main",
@@ -165,7 +159,6 @@ describe("ChatInput", () => {
     window.workbenchClient = {
       ...window.workbenchClient,
       setDefaultModel,
-      saveRuntimeConfig,
     } as unknown as Window["workbenchClient"];
 
     renderInput();
@@ -173,20 +166,14 @@ describe("ChatInput", () => {
     fireEvent.change(input, { target: { value: "/model MiniMax" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(setDefaultModel).toHaveBeenCalledWith("alt"));
-    expect(saveRuntimeConfig).not.toHaveBeenCalled();
-    expect(useAppStore.getState().runtimeConfig?.defaultModelProfileId).toBe("alt");
-    expect(useAppStore.getState().runtimeConfig?.modelRoleAssignments?.chat).toBe("alt");
-    expect(useAppStore.getState().toasts.at(-1)?.message).toBe("模型已保存，Gateway 已自动重启。");
+    await waitFor(() => expect(useAppStore.getState().modelProfileIdBySession["session-1"]).toBe("alt"));
+    expect(setDefaultModel).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeConfig?.defaultModelProfileId).toBe("main");
+    expect(useAppStore.getState().toasts.at(-1)?.message).toContain("仅影响当前会话");
   });
 
-  it("uses setDefaultModel from the inline model menu", async () => {
-    const setDefaultModel = vi.fn(async () => ({
-      success: true,
-      message: "Gateway 已同步新模型。",
-      defaultModelId: "alt",
-      models: useAppStore.getState().runtimeConfig?.modelProfiles ?? [],
-    }));
+  it("uses a per-session override from the inline model menu", async () => {
+    const setDefaultModel = vi.fn();
     useAppStore.setState({
       runtimeConfig: {
         defaultModelProfileId: "main",
@@ -206,8 +193,9 @@ describe("ChatInput", () => {
     fireEvent.click(screen.getByRole("button", { name: "qwen" }));
     fireEvent.click(screen.getByText("MiniMax"));
 
-    await waitFor(() => expect(setDefaultModel).toHaveBeenCalledWith("alt"));
-    expect(useAppStore.getState().runtimeConfig?.defaultModelProfileId).toBe("alt");
+    await waitFor(() => expect(useAppStore.getState().modelProfileIdBySession["session-1"]).toBe("alt"));
+    expect(setDefaultModel).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeConfig?.defaultModelProfileId).toBe("main");
   });
 
   it("compacts the active session from task projections instead of legacy messages", () => {

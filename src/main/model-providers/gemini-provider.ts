@@ -27,9 +27,12 @@ export class GeminiProvider extends BaseProvider {
   }
 
   protected async fetchModels(_input: ProviderTestContext, baseUrl: string, auth?: string): Promise<ModelListResult> {
-    const modelsUrl = `${baseUrl}/models?key=${encodeURIComponent(auth ?? "")}`;
+    const modelsUrl = `${baseUrl}/models`;
     try {
-      const response = await fetchWithRetry(modelsUrl, { method: "GET" });
+      const response = await fetchWithRetry(modelsUrl, {
+        method: "GET",
+        headers: auth ? { "x-goog-api-key": auth } : undefined,
+      });
       if (!response.ok) {
         return {
           ok: false,
@@ -56,7 +59,7 @@ export class GeminiProvider extends BaseProvider {
     } catch (error) {
       return {
         ok: false,
-        message: `连不上 Gemini 接口 ${modelsUrl}。`,
+        message: `连不上 Gemini 接口 ${baseUrl}/models。`,
         failureCategory: "network_unreachable",
         recommendedFix: error instanceof Error ? error.message : "请检查网络、代理和 Google API 地址。",
         availableModels: [],
@@ -87,10 +90,13 @@ export class GeminiProvider extends BaseProvider {
   }
 
   private generateContent(input: ProviderTestContext, baseUrl: string, auth: string | undefined, body: Record<string, unknown>) {
-    const url = `${baseUrl}/models/${input.profile.model}:generateContent?key=${encodeURIComponent(auth ?? "")}`;
+    const url = `${baseUrl}/models/${input.profile.model}:generateContent`;
     return fetchWithRetry(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(auth ? { "x-goog-api-key": auth } : {}),
+      },
       body: JSON.stringify(body),
     });
   }

@@ -29,9 +29,10 @@ import type {
 import { installStep } from "./install-types";
 import { DEFAULT_PINNED_HERMES_SOURCE, resolveInstallSource, resolveInstallSourceFromOption } from "./install-source";
 import type { InstallSource } from "./install-source";
+import { AUDITED_HERMES_RELEASE_TAG } from "./hermes-version-constants";
 
 const DEFAULT_INSTALL_TIMEOUT_MS = 30 * 60 * 1000;
-const OFFICIAL_WINDOWS_INSTALLER_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1";
+const OFFICIAL_WINDOWS_INSTALLER_URL = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${AUDITED_HERMES_RELEASE_TAG}/scripts/install.ps1`;
 const COMMUNITY_MIRROR_WINDOWS_INSTALLER_URL = "https://res1.hermesagent.org.cn/install.ps1";
 const OFFICIAL_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
 
@@ -445,7 +446,8 @@ export class NativeInstallStrategy implements InstallStrategy {
       } else {
         emit("running_installer", 45, "正在运行 Hermes Windows 安装脚本。", rootPath, { sourceUrl: download.url });
       }
-      const installerArgs = await this.officialInstallerArgs(scriptPath, hermesHome, rootPath);
+      const installerInvocation = await this.officialInstallerArgs(scriptPath, hermesHome, rootPath, installSource);
+      const installerArgs = installerInvocation.args;
       log.push(`Hermes installer args: ${installerArgs.join(" ")}`);
       let installerProgress = 45;
       const install = await this.runLogged("powershell.exe", installerArgs, logDir, log, DEFAULT_INSTALL_TIMEOUT_MS, {
@@ -478,7 +480,12 @@ export class NativeInstallStrategy implements InstallStrategy {
         return await finish({ ok: false, rootPath, message: `Hermes 安装脚本报告失败：${diagnostic}` }, "failed");
       }
 
-      const sourceSync = await this.syncInstalledSourceIfNeeded(rootPath, installSource, log, signal);
+      const sourceSync = installerInvocation.sourcePinHandled
+        ? { ok: true, message: "安装版本已由官方安装器锁定。" }
+        : await this.syncInstalledSourceIfNeeded(rootPath, installSource, log, signal);
+      if (installerInvocation.sourcePinHandled) {
+        log.push(`Install source pin handled by installer: ${installSource.commit ?? installSource.branch ?? "main"}`);
+      }
       if (!sourceSync.ok) {
         return await finish({ ok: false, rootPath, message: `${sourceSync.message} 详情见安装日志。` }, "failed");
       }
@@ -577,10 +584,14 @@ export class NativeInstallStrategy implements InstallStrategy {
     return { ok: false };
   }
 
-  private async officialInstallerArgs(scriptPath: string, hermesHome: string, rootPath: string) {
+  private async officialInstallerArgs(scriptPath: string, hermesHome: string, rootPath: string, source: InstallSource) {
     const script = await fs.readFile(scriptPath, "utf8").catch(() => "");
     const supportsWithSystemPackages = /(?:param\s*\(|,)\s*\[switch\]\s*\$WithSystemPackages\b/i.test(script);
     const supportsSkipGateway = /(?:param\s*\(|,)\s*\[switch\]\s*\$SkipGatewayStartup\b/i.test(script);
+    const supportsBranch = /(?:param\s*\(|,)\s*\[string\]\s*\$Branch\b/i.test(script);
+    const supportsCommit = /(?:param\s*\(|,)\s*\[string\]\s*\$Commit\b/i.test(script);
+    const supportsTag = /(?:param\s*\(|,)\s*\[string\]\s*\$Tag\b/i.test(script);
+    const supportsForceCommit = /(?:param\s*\(|,)\s*\[switch\]\s*\$ForceCommit\b/i.test(script);
     const args = [
       "-NoProfile",
       "-ExecutionPolicy",
@@ -595,8 +606,23 @@ export class NativeInstallStrategy implements InstallStrategy {
     if (supportsWithSystemPackages) {
       args.push("-WithSystemPackages");
     }
+    let sourcePinHandled = false;
+    const isOfficialRepo = source.repoUrl === OFFICIAL_HERMES_REPO_URL;
+    const branch = source.branch?.trim();
+    const commit = source.commit?.trim();
+    if (isOfficialRepo && commit && supportsCommit) {
+      args.push("-Commit", commit);
+      if (supportsForceCommit) args.push("-ForceCommit");
+      sourcePinHandled = true;
+    } else if (isOfficialRepo && branch && /^v\d{4}\.\d{1,2}\.\d{1,2}(?:[-+].*)?$/i.test(branch) && supportsTag) {
+      args.push("-Tag", branch);
+      sourcePinHandled = true;
+    } else if (isOfficialRepo && branch && supportsBranch) {
+      args.push("-Branch", branch);
+      sourcePinHandled = true;
+    }
     args.push("-HermesHome", hermesHome, "-InstallDir", rootPath);
-    return args;
+    return { args, sourcePinHandled };
   }
 
   private officialInstallerReportedFailure(stdout: string, stderr: string) {

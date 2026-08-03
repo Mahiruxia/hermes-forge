@@ -67,6 +67,7 @@ export const secretSaveInputSchema = z.object({
 export const providerIdSchema = z.enum(["openai", "anthropic", "openrouter", "gemini", "deepseek", "huggingface", "copilot", "copilot_acp", "local", "custom"]);
 
 export const modelSourceTypeSchema = z.enum([
+  "openai_api_key",
   "openrouter_api_key",
   "anthropic_api_key",
   "gemini_api_key",

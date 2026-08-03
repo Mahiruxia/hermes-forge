@@ -59,15 +59,15 @@ export function buildRepoSyncSteps(options: {
 }
 
 /**
- * Official Hermes source: NousResearch/hermes-agent@main
+ * Official Hermes stable source audited by Forge.
  *
  * Forge aligns with the official Hermes Agent repository to ensure
- * compatibility with upstream releases. Install flows track the official
- * main branch so users receive the latest stable Hermes features.
+ * compatibility with upstream releases. Stable installs are pinned to an
+ * audited release tag; users can still opt into main in advanced settings.
  */
 export const DEFAULT_PINNED_HERMES_SOURCE: InstallSource = {
   repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-  branch: "main",
+  branch: "v2026.7.30",
   sourceLabel: "official",
 };
 

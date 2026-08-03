@@ -36,7 +36,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "main",
+      branch: "v2026.7.30",
     });
   });
 
@@ -56,7 +56,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "main",
+      branch: "v2026.7.30",
     });
   });
 
@@ -78,7 +78,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "main",
+      branch: "v2026.7.30",
     });
   });
 
@@ -150,7 +150,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "main",
+      branch: "v2026.7.30",
     });
   });
 

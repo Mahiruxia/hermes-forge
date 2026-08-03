@@ -9,6 +9,15 @@ const DEFAULT_TEMPLATE_VALUES: ProviderPreset["templateValues"] = {
 };
 
 const PRESET_SETTINGS_CONFIG: Partial<Record<ModelSourceType, ProviderPreset["settingsConfig"]>> = {
+  openai_api_key: {
+    env: {
+      OPENAI_API_KEY: "${api_key}",
+      AI_API_KEY: "${api_key}",
+      AI_PROVIDER: "openai",
+      OPENAI_BASE_URL: "${base_url}",
+      AI_BASE_URL: "${base_url}",
+    },
+  },
   openai_compatible: {
     env: {
       OPENAI_API_KEY: "${api_key}",
@@ -406,6 +415,7 @@ function provider(
 
 export const PROVIDERS: ProviderPreset[] = [
   provider("openai_compatible", "OpenAI-compatible", "recommended", "兼容 /v1/chat/completions", "http://127.0.0.1:8080/v1", undefined, "填写兼容网关模型 ID", "optional", PlugZap, "适合各类 OpenAI 兼容网关", ["openai", "compatible", "custom", "gateway"], "推荐", "optional_api_key"),
+  provider("openai_api_key", "OpenAI API", "international", "需要 API Key", "https://api.openai.com/v1", "gpt-5.4", "选择或填写 OpenAI 模型 ID", "required", Cloud, "OpenAI 官方 API", ["openai", "gpt"], undefined, "api_key", ["gpt-5.4", "gpt-5.4-mini"]),
   provider("openrouter_api_key", "OpenRouter", "international", "需要 API Key", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4-5", "选择或填写 OpenRouter 模型 ID", "required", Network, "统一接入多个云模型", ["openrouter", "router"], undefined, "api_key", ["anthropic/claude-sonnet-4-5", "openai/gpt-5", "google/gemini-2.5-pro"]),
   provider("anthropic_api_key", "Anthropic", "international", "需要 API Key", "https://api.anthropic.com", "claude-sonnet-4-5", "选择或填写 Claude 模型 ID", "required", Cloud, "Anthropic 官方 API", ["anthropic", "claude"], undefined, "api_key", ["claude-sonnet-4-5", "claude-opus-4"]),
   provider("gemini_api_key", "Gemini", "international", "需要 API Key", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-pro", "选择或填写 Gemini 模型 ID", "required", Cloud, "Google AI Studio / Gemini API", ["gemini", "google"], undefined, "api_key", ["gemini-2.5-pro", "gemini-2.5-flash"]),
@@ -458,11 +468,11 @@ export function providerPresetsForDefinitions(definitions: ModelSourceDefinition
       id: def.sourceType,
       label: def.label,
       group: def.group ?? preset?.group ?? "international",
-      authHint: preset?.authHint ?? "需要 API Key",
+      authHint: preset?.authHint ?? authHintForMode(def.authMode),
       baseUrl: def.baseUrl,
       defaultModel: def.presetModels?.[0],
       modelPlaceholder: def.modelPlaceholder,
-      keyMode: def.keyOptional ? "optional" : "required",
+      keyMode: def.keyOptional || def.authMode !== "api_key" ? "optional" : "required",
       icon: preset?.icon ?? Cloud,
       description: def.description ?? preset?.description ?? "",
       keywords: def.keywords ?? preset?.keywords ?? [],
@@ -476,4 +486,12 @@ export function providerPresetsForDefinitions(definitions: ModelSourceDefinition
   });
   const existingIds = new Set(mapped.map((item) => item.id));
   return [...mapped, ...PROVIDERS.filter((item) => !existingIds.has(item.id))];
+}
+
+function authHintForMode(mode: ModelSourceDefinition["authMode"]) {
+  if (mode === "oauth") return "通过 Hermes 完成 OAuth 授权";
+  if (mode === "local_credentials") return "使用本机已有凭据";
+  if (mode === "external_process") return "通过外部登录流程授权";
+  if (mode === "optional_api_key") return "API Key 可选";
+  return "需要 API Key";
 }

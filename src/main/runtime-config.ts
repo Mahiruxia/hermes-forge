@@ -82,7 +82,7 @@ const defaultConfig: RuntimeConfig = {
     workerMode: "off",
     installSource: {
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "main",
+      branch: "v2026.7.30",
       sourceLabel: "official",
     },
   },

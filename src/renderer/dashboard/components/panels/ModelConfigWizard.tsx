@@ -6,7 +6,6 @@ import { ModelConfigForm } from "./model-config/ModelConfigForm";
 import { ProviderSelector } from "./model-config/ProviderSelector";
 import { SavedModelList } from "./model-config/SavedModelList";
 import {
-  DEFAULT_MAX_CONTEXT,
   defaultSecretRefForSource,
   draftStateForNewProfile,
   draftStateForProfile,
@@ -225,7 +224,6 @@ export function ModelConfigWizard(props: {
       model: draft.model.trim(),
       baseUrl: draft.baseUrl.trim(),
       secretRef: ref,
-      maxTokens: DEFAULT_MAX_CONTEXT,
     });
   }
 
@@ -296,7 +294,6 @@ export function ModelConfigWizard(props: {
           model: draft.model.trim(),
           baseUrl: draft.baseUrl.trim(),
           secretRef: ref,
-          maxTokens: DEFAULT_MAX_CONTEXT,
         });
         setTestResult(health);
       }
@@ -326,7 +323,7 @@ export function ModelConfigWizard(props: {
         model: savedModel,
         ...(draft.baseUrl.trim() ? { baseUrl: draft.baseUrl.trim() } : {}),
         ...(ref ? { secretRef: ref } : {}),
-        maxTokens: health.contextWindow ?? DEFAULT_MAX_CONTEXT,
+        ...(typeof health.contextWindow === "number" ? { maxTokens: health.contextWindow } : {}),
         ...(health.agentRole ? { agentRole: health.agentRole } : {}),
         ...(typeof health.supportsTools === "boolean" ? { supportsTools: health.supportsTools } : {}),
         ...(typeof health.supportsVision === "boolean" ? { supportsVision: health.supportsVision } : {}),
@@ -424,6 +421,25 @@ export function ModelConfigWizard(props: {
     props.onSaved(result.message ?? (role === "coding_plan" ? "Coding Plan 模型已切换" : "主模型已切换"));
   }
 
+  async function deepTestProfile(profileId: string) {
+    setBusyAction("test");
+    setOperationNotice({ tone: "info", title: "正在验证 Hermes 运行环境", message: "检查模型、Provider、密钥映射和运行时环境，不会修改默认模型。" });
+    revealFeedbackPanel();
+    try {
+      const result = await window.workbenchClient.deepTestModelConnection(profileId);
+      setTestResult(result);
+      setOperationNotice({
+        tone: result.ok ? "success" : "error",
+        title: result.ok ? "Hermes 运行验证通过" : "Hermes 运行验证未通过",
+        message: result.message,
+      });
+    } catch (error) {
+      setOperationNotice({ tone: "error", title: "运行验证失败", message: error instanceof Error ? error.message : "无法完成运行环境验证。" });
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
   async function deleteProfile(profileId: string) {
     const nextProfiles = props.models.modelProfiles.filter((item) => item.id !== profileId);
     const deletesActiveProfile = props.models.defaultProfileId === profileId || props.models.roleAssignments?.chat === profileId;
@@ -517,6 +533,7 @@ export function ModelConfigWizard(props: {
           onDelete={deleteProfile}
           onSetDefault={setDefaultProfile}
           onSetRole={setModelRole}
+          onDeepTest={(profileId) => void deepTestProfile(profileId)}
         />
       </details>
     </div>

@@ -26,6 +26,7 @@ type HermesModelConfig = {
   model: string;
   baseUrl?: string;
   contextLength?: number;
+  supportsVision?: boolean;
 };
 
 export class HermesModelSyncService {
@@ -65,6 +66,7 @@ export class HermesModelSyncService {
       model: chatRuntimeEnv.model,
       baseUrl: persistedModelBaseUrl(chatProfile, chatRuntimeEnv, provider),
       contextLength: normalizeContextLength(chatProfile.maxTokens),
+      supportsVision: chatProfile.supportsVision,
     };
     const roles: NonNullable<HermesModelSyncResult["roles"]> = {
       chat: {
@@ -114,13 +116,13 @@ export class HermesModelSyncService {
     const existingConfig = await fs.readFile(configPath, "utf8").catch(() => "");
     const nextConfig = upsertModelBlock(existingConfig, modelConfig);
     if (nextConfig !== existingConfig) {
-      await fs.writeFile(configPath, nextConfig, "utf8");
+      await atomicWriteFile(configPath, nextConfig);
     }
 
     const existingEnv = await fs.readFile(envPath, "utf8").catch(() => "");
     const nextEnv = upsertManagedEnvBlock(existingEnv, modelEnv);
     if (nextEnv !== existingEnv) {
-      await fs.writeFile(envPath, nextEnv, "utf8");
+      await atomicWriteFile(envPath, nextEnv, 0o600);
       await fs.chmod(envPath, 0o600).catch((error) => {
         console.warn("[Hermes Forge] Failed to apply strict permissions to Hermes .env:", error);
       });
@@ -179,14 +181,15 @@ function buildModelEnv(runtimeEnv: EngineRuntimeEnv, hermesProvider: string, rol
       Object.entries(env).filter((entry): entry is [string, string] => Boolean(entry[1]?.trim())),
     );
   }
+  const persistedRuntimeEnv = Object.fromEntries(
+    Object.entries(runtimeEnv.env).filter(([key]) => key !== "AI_MODEL" && key !== "OPENAI_MODEL"),
+  );
   const env: Record<string, string> = {
     HERMES_INFERENCE_PROVIDER: hermesProvider,
     HERMES_FORGE_MODEL_PROFILE_ID: runtimeEnv.profileId,
     HERMES_FORGE_CHAT_MODEL_PROFILE_ID: role === "chat" ? runtimeEnv.profileId : "",
     AI_PROVIDER: runtimeEnv.provider,
-    AI_MODEL: runtimeEnv.model,
-    OPENAI_MODEL: runtimeEnv.model,
-    ...runtimeEnv.env,
+    ...persistedRuntimeEnv,
   };
   applyProviderEnvAliases(env, hermesProvider);
   if (runtimeEnv.baseUrl) {
@@ -252,21 +255,43 @@ function resolveCodingPlanApiKey(runtimeEnv: EngineRuntimeEnv) {
 }
 
 function upsertModelBlock(content: string, model: HermesModelConfig) {
-  const withoutModel = removeTopLevelModelBlock(content);
-  const block = buildModelBlock(model);
-  const rest = withoutModel.trim();
-  return rest ? `${block}\n\n${rest}\n` : `${block}\n`;
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const start = lines.findIndex((line) => /^model\s*:/.test(line));
+  if (start < 0) {
+    const block = buildModelBlock(model);
+    const rest = content.trim();
+    return rest ? `${block}\n\n${rest}\n` : `${block}\n`;
+  }
+
+  let end = start + 1;
+  while (end < lines.length) {
+    const candidate = lines[end];
+    if (candidate.trim() && !candidate.startsWith(" ") && !candidate.startsWith("\t")) break;
+    end += 1;
+  }
+
+  const ownedKeys = ["managed_by", "provider", "default", "base_url", "context_length"];
+  if (typeof model.supportsVision === "boolean") ownedKeys.push("supports_vision");
+  const ownedPattern = new RegExp(`^(?: {2}|\\t)(?:${ownedKeys.join("|")})\\s*:`);
+  const preserved = trimBlankLines(lines.slice(start + 1, end).filter((line) => !ownedPattern.test(line)));
+  const replacement = ["model:", ...buildModelEntries(model), ...preserved];
+  const next = [...lines.slice(0, start), ...replacement, ...lines.slice(end)];
+  return `${trimTrailingBlankLines(next).join("\n")}\n`;
 }
 
 function buildModelBlock(model: HermesModelConfig) {
+  return ["model:", ...buildModelEntries(model)].join("\n");
+}
+
+function buildModelEntries(model: HermesModelConfig) {
   return [
-    "model:",
     "  managed_by: \"Hermes Forge\"",
     `  provider: ${yamlString(model.provider)}`,
     `  default: ${yamlString(model.model)}`,
     model.baseUrl ? `  base_url: ${yamlString(model.baseUrl)}` : undefined,
     model.contextLength ? `  context_length: ${model.contextLength}` : undefined,
-  ].filter(Boolean).join("\n");
+    typeof model.supportsVision === "boolean" ? `  supports_vision: ${model.supportsVision}` : undefined,
+  ].filter((line): line is string => Boolean(line));
 }
 
 function persistedModelBaseUrl(profile: Pick<ModelProfile, "baseUrl">, runtimeEnv: EngineRuntimeEnv, hermesProvider?: string) {
@@ -305,6 +330,25 @@ function removeTopLevelModelBlock(content: string) {
     next.push(line);
   }
   return trimTrailingBlankLines(next).join("\n");
+}
+
+function trimBlankLines(lines: string[]) {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start].trim()) start += 1;
+  while (end > start && !lines[end - 1].trim()) end -= 1;
+  return lines.slice(start, end);
+}
+
+async function atomicWriteFile(targetPath: string, content: string, mode?: number) {
+  const temporaryPath = `${targetPath}.forge-${process.pid}-${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, content, { encoding: "utf8", ...(mode ? { mode } : {}) });
+    await fs.rename(temporaryPath, targetPath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function upsertManagedEnvBlock(content: string, env: Record<string, string>) {

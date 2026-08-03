@@ -2,10 +2,10 @@ import type { ModelCapabilityRole, ModelConnectionTestResult, ModelSourceType } 
 import type { DraftState, OverviewModels, ProviderPreset, SecretMeta } from "./types";
 import { providerFor, providerForCatalog, providerPresetsForDefinitions } from "./providerCatalog";
 
-export const DEFAULT_MAX_CONTEXT = 256_000;
 export const MIN_AGENT_CONTEXT = 16_000;
 
 export function inferSourceType(provider: string, baseUrl?: string): ModelSourceType {
+  if (provider === "openai") return "openai_api_key";
   if (provider === "openrouter") return "openrouter_api_key";
   if (provider === "anthropic") return "anthropic_api_key";
   if (provider === "gemini") return "gemini_api_key";
@@ -46,6 +46,7 @@ export function inferSourceType(provider: string, baseUrl?: string): ModelSource
 
 export function defaultSecretRefForSource(sourceType: ModelSourceType) {
   switch (sourceType) {
+    case "openai_api_key": return "provider.openai.apiKey";
     case "openrouter_api_key": return "provider.openrouter.apiKey";
     case "anthropic_api_key": return "provider.anthropic.apiKey";
     case "gemini_api_key": return "provider.gemini.apiKey";
@@ -86,6 +87,7 @@ export function defaultSecretRefForSource(sourceType: ModelSourceType) {
 
 export function providerIdForSource(sourceType: ModelSourceType) {
   switch (sourceType) {
+    case "openai_api_key": return "openai" as const;
     case "openrouter_api_key": return "openrouter" as const;
     case "anthropic_api_key":
     case "anthropic_local_credentials": return "anthropic" as const;

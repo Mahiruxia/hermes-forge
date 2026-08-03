@@ -129,6 +129,7 @@ export function inferSourceType(provider: ModelProfile["provider"], baseUrl?: st
 /** Returns the default secret reference used for a provider source. */
 export function defaultSecretRefForSource(sourceType: ModelSourceType) {
   switch (sourceType) {
+    case "openai_api_key": return "provider.openai.apiKey";
     case "openrouter_api_key": return "provider.openrouter.apiKey";
     case "anthropic_api_key": return "provider.anthropic.apiKey";
     case "gemini_api_key": return "provider.gemini.apiKey";

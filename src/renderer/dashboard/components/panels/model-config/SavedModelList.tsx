@@ -1,4 +1,4 @@
-import { Code2, MessageSquare, Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { Activity, Code2, MessageSquare, Pencil, Plus, Star, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ModelSourceType } from "../../../../../shared/types";
 import { providerForCatalog } from "./providerCatalog";
@@ -23,6 +23,7 @@ export function SavedModelList(props: {
   onDelete: (profileId: string) => void;
   onSetDefault: (profileId: string) => void;
   onSetRole: (role: "chat" | "coding_plan", profileId: string) => void;
+  onDeepTest: (profileId: string) => void;
 }) {
   return (
     <section className="bg-white">
@@ -94,6 +95,9 @@ export function SavedModelList(props: {
                     <span />
                   )}
                   <div className="flex gap-1">
+                    <IconButton label="深度运行验证" onClick={() => props.onDeepTest(profile.id)}>
+                      <Activity size={14} />
+                    </IconButton>
                     <IconButton label={isChat ? "当前主模型" : "设为主模型"} disabled={isChat || !canChat} onClick={() => props.onSetRole("chat", profile.id)}>
                       <MessageSquare size={14} />
                     </IconButton>

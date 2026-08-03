@@ -17,6 +17,10 @@ export class RuntimeEnvResolver {
     return this.configStore.read();
   }
 
+  invalidateCache() {
+    this.cache.clear();
+  }
+
   async resolve(modelProfileId?: string): Promise<EngineRuntimeEnv> {
     const config = await this.configStore.read();
     return this.resolveFromConfig(config, modelProfileId);
@@ -54,7 +58,10 @@ export class RuntimeEnvResolver {
     const secret = profile.secretRef ? await this.secretVault.readSecret(profile.secretRef) : undefined;
     const providerProfile = config.providerProfiles?.find((item) => item.provider === profile.provider || item.id === profile.id);
     const modelOption = providerProfile?.models.find((item) => item.id === profile.model || item.label === profile.model);
-    const baseUrl = normalizeOpenAiCompatibleBaseUrl(profile.baseUrl ?? providerProfile?.baseUrl);
+    const configuredBaseUrl = profile.baseUrl ?? providerProfile?.baseUrl;
+    const baseUrl = profile.provider === "anthropic" || profile.sourceType === "anthropic_api_key" || profile.sourceType === "anthropic_local_credentials"
+      ? configuredBaseUrl?.trim().replace(/\/$/, "")
+      : normalizeOpenAiCompatibleBaseUrl(configuredBaseUrl);
     const sourceType = normalizeSourceTypeForProfile({ sourceType: profile.sourceType, baseUrl, model: profile.model });
     const normalizedProfile = {
       ...profile,
@@ -86,6 +93,7 @@ export class RuntimeEnvResolver {
       profile.model,
       profile.baseUrl ?? "",
       profile.sourceType ?? "",
+      profile.secretRef ?? "",
       JSON.stringify(profile.settingsConfig ?? {}),
       config.providerProfiles?.map((p) => `${p.id}:${p.provider}:${p.baseUrl ?? ""}`).join(",") ?? "",
     ].join("|");

@@ -195,6 +195,7 @@ const IpcChannels = {
   testModelRuntimeRole: "config:test-model-runtime-role",
   saveRuntimeConfig: "config:save-runtime",
   testModelConnection: "config:test-model-connection",
+  deepTestModelConnection: "config:deep-test-model-connection",
   getSetupSummary: "setup:get-summary",
   getSecretStatus: "secrets:status",
   saveSecret: "secrets:save",
@@ -429,6 +430,8 @@ const api = {
     ipcRenderer.invoke(IpcChannels.saveRuntimeConfig, config) as Promise<RuntimeConfig>,
   testModelConnection: (input?: string | Record<string, unknown>) =>
     ipcRenderer.invoke(IpcChannels.testModelConnection, input) as Promise<ModelConnectionTestResult>,
+  deepTestModelConnection: (profileId?: string) =>
+    ipcRenderer.invoke(IpcChannels.deepTestModelConnection, profileId) as Promise<ModelConnectionTestResult>,
   discoverLocalModelSources: () =>
     ipcRenderer.invoke(IpcChannels.discoverLocalModelSources) as Promise<LocalModelDiscoveryResult>,
   getSetupSummary: (workspacePath?: string) =>
