@@ -5,6 +5,10 @@
   "author": "",
   "license": "MIT",
   "homepage": "https://github.com/Mahiruxia/hermes-forge#readme",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Mahiruxia/hermes-forge.git"
@@ -29,6 +33,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^25.6.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/sql.js": "^1.4.11",
@@ -38,6 +43,7 @@
     "cross-env": "^10.1.0",
     "electron": "^41.2.1",
     "electron-builder": "^26.8.1",
+    "jsdom": "^26.1.0",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.19",
     "typescript": "^6.0.3",
@@ -46,11 +52,7 @@
     "wait-on": "^9.0.5"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.99.0",
-    "@types/qrcode": "^1.5.6",
-    "clsx": "^2.1.1",
     "electron-updater": "^6.8.3",
-    "jsdom": "^26.1.0",
     "lucide-react": "^1.8.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.5",
@@ -60,7 +62,6 @@
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "sql.js": "^1.14.1",
-    "tailwind-merge": "^3.5.0",
     "zod": "^4.3.6",
     "zustand": "^5.0.12"
   },

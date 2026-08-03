@@ -166,7 +166,7 @@ export const hermesRuntimeSchema = z.object({
   pythonCommand: z.string().trim().min(1).max(120).default("python"),
   managedRoot: z.string().trim().max(1000).optional(),
   windowsAgentMode: z.enum(["hermes_native", "host_tool_loop", "disabled"]).default("hermes_native"),
-  cliPermissionMode: z.enum(["yolo", "safe", "guarded"]).default("yolo"),
+  cliPermissionMode: z.enum(["yolo", "safe", "guarded"]).default("guarded"),
   permissionPolicy: z.enum(["passthrough", "bridge_guarded", "restricted_workspace"]).default("bridge_guarded"),
   workerMode: z.preprocess((value) => value === "experimental_wsl" ? "off" : value, z.literal("off")).default("off"),
   installSource: z.object({
@@ -187,7 +187,7 @@ export const runtimeConfigSchema = z.object({
   startupWarmupMode: z.enum(["off", "cheap", "real_probe"]).default("off"),
   startupGatewayAutoStart: z.boolean().default(false),
   enginePermissions: z.record(z.string(), enginePermissionPolicySchema.partial()).optional(),
-  hermesRuntime: hermesRuntimeSchema.default({ mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native", cliPermissionMode: "yolo", permissionPolicy: "bridge_guarded", workerMode: "off" }),
+  hermesRuntime: hermesRuntimeSchema.default({ mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native", cliPermissionMode: "guarded", permissionPolicy: "bridge_guarded", workerMode: "off" }),
 }).transform((config) => ({
   ...config,
   defaultModelProfileId: config.modelRoleAssignments?.chat ?? config.defaultModelProfileId,

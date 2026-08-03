@@ -594,6 +594,23 @@ export function SettingsPanel(props: {
                 ]}
               />
 
+              <AdvancedSelect
+                label="启动时自动运行 Gateway"
+                tooltip="仅在已经配置并启用连接器时生效。关闭后仍可在连接器页面手动启动。"
+                value={store.runtimeConfig?.startupGatewayAutoStart ? "on" : "off"}
+                onChange={async (value) => {
+                  const config = await window.workbenchClient.getRuntimeConfig();
+                  const enabled = value === "on";
+                  const next = await window.workbenchClient.saveRuntimeConfig({ ...config, startupGatewayAutoStart: enabled });
+                  store.setRuntimeConfig(next);
+                  store.success("Gateway 启动设置已更新", enabled ? "下次启动时会自动运行已配置的 Gateway。" : "下次启动时不会自动运行 Gateway。");
+                }}
+                options={[
+                  { value: "off", label: "关闭（推荐）" },
+                  { value: "on", label: "开启" },
+                ]}
+              />
+
               <InstallSourceSettings
                 runtime={runtime}
                 setRuntime={setRuntime}

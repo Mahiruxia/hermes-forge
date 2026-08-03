@@ -13,7 +13,7 @@ Hermes Forge is meant to be shaped in public. We welcome UI experiments, runtime
 ## Local Setup
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 npm run dev
 ```

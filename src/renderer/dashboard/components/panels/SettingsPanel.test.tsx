@@ -9,6 +9,8 @@ const checkUpdates = vi.fn();
 const updateHermesConfig = vi.fn();
 const installHermes = vi.fn();
 const saveWebUiSettings = vi.fn();
+const getRuntimeConfig = vi.fn();
+const saveRuntimeConfig = vi.fn();
 let installEventHandler: ((event: HermesInstallEvent) => void) | undefined;
 
 const runtimeConfig: RuntimeConfig = {
@@ -28,6 +30,8 @@ beforeEach(() => {
   updateHermesConfig.mockReset();
   installHermes.mockReset();
   saveWebUiSettings.mockReset();
+  getRuntimeConfig.mockReset();
+  saveRuntimeConfig.mockReset();
   installEventHandler = undefined;
   useAppStore.setState({
     webUiOverview: {
@@ -63,6 +67,8 @@ beforeEach(() => {
       updateHermes: vi.fn(),
       testHermesWindowsBridge: vi.fn(),
       saveWebUiSettings,
+      getRuntimeConfig,
+      saveRuntimeConfig,
     },
   });
   getConfigOverview.mockResolvedValue({
@@ -75,6 +81,8 @@ beforeEach(() => {
   });
   checkUpdates.mockResolvedValue([]);
   updateHermesConfig.mockResolvedValue(runtimeConfig);
+  getRuntimeConfig.mockResolvedValue(runtimeConfig);
+  saveRuntimeConfig.mockImplementation(async (config) => config);
 });
 
 describe("SettingsPanel Hermes installation", () => {
@@ -139,6 +147,19 @@ describe("SettingsPanel Hermes installation", () => {
 
     await waitFor(() => expect(saveWebUiSettings).toHaveBeenCalledWith({ showUsage: true }));
     expect(useAppStore.getState().webUiOverview?.settings.showUsage).toBe(true);
+  });
+
+  it("persists the Gateway startup preference", async () => {
+    renderSettingsPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: /高级设置/ }));
+    fireEvent.click(screen.getByRole("combobox", { name: "启动时自动运行 Gateway" }));
+    fireEvent.click(screen.getByRole("option", { name: "开启" }));
+
+    await waitFor(() => expect(saveRuntimeConfig).toHaveBeenCalledWith({
+      ...runtimeConfig,
+      startupGatewayAutoStart: true,
+    }));
   });
 });
 

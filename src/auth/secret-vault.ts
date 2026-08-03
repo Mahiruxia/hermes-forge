@@ -11,6 +11,8 @@ type VaultFile = {
 };
 
 export class SecretVault {
+  private mutationQueue: Promise<void> = Promise.resolve();
+
   constructor(private readonly vaultPath: string) {}
 
   async status() {
@@ -27,54 +29,59 @@ export class SecretVault {
       throw new Error("当前系统不可用安全存储，无法保存凭证。");
     }
 
-    const vault = await this.readVault();
-    const at = new Date().toISOString();
-    vault.items[ref] = safeStorage.encryptString(plainText).toString("base64");
-    vault.metadata ??= {};
-    vault.metadata[ref] = {
-      createdAt: vault.metadata[ref]?.createdAt ?? at,
-      updatedAt: at,
-      lastUsedAt: vault.metadata[ref]?.lastUsedAt,
-    };
-    await this.writeVault(vault);
-    return { secretRef: ref };
+    return this.withMutation(async () => {
+      const vault = await this.readVault();
+      const at = new Date().toISOString();
+      vault.items[ref] = safeStorage.encryptString(plainText).toString("base64");
+      vault.metadata ??= {};
+      vault.metadata[ref] = {
+        createdAt: vault.metadata[ref]?.createdAt ?? at,
+        updatedAt: at,
+        lastUsedAt: vault.metadata[ref]?.lastUsedAt,
+      };
+      await this.writeVault(vault);
+      return { secretRef: ref };
+    });
   }
 
   async readSecret(ref: string) {
-    const vault = await this.readVault();
-    const encrypted = vault.items[ref];
-    if (!encrypted) {
-      return undefined;
-    }
-    let plainText: string | undefined;
-    try {
-      plainText = safeStorage.decryptString(Buffer.from(encrypted, "base64"));
-    } catch (error) {
-      vault.metadata ??= {};
-      const at = new Date().toISOString();
-      vault.metadata[ref] = {
-        createdAt: vault.metadata[ref]?.createdAt ?? at,
-        updatedAt: vault.metadata[ref]?.updatedAt ?? at,
-        lastUsedAt: vault.metadata[ref]?.lastUsedAt,
-        corruptedAt: at,
-        lastError: error instanceof Error ? error.message : String(error),
-      };
-      await this.writeVault(vault);
-      return undefined;
-    }
+    return this.withMutation(async () => {
+      const vault = await this.readVault();
+      const encrypted = vault.items[ref];
+      if (!encrypted) {
+        return undefined;
+      }
+      let plainText: string | undefined;
+      try {
+        plainText = safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+      } catch (error) {
+        vault.metadata ??= {};
+        const at = new Date().toISOString();
+        vault.metadata[ref] = {
+          createdAt: vault.metadata[ref]?.createdAt ?? at,
+          updatedAt: vault.metadata[ref]?.updatedAt ?? at,
+          lastUsedAt: vault.metadata[ref]?.lastUsedAt,
+          corruptedAt: at,
+          lastError: error instanceof Error ? error.message : String(error),
+        };
+        await this.writeVault(vault);
+        return undefined;
+      }
 
-    vault.metadata ??= {};
-    if (vault.metadata[ref]) {
-      vault.metadata[ref] = {
-        ...vault.metadata[ref],
-        lastUsedAt: new Date().toISOString(),
-      };
-      await this.writeVault(vault);
-    }
-    return plainText;
+      vault.metadata ??= {};
+      if (vault.metadata[ref]) {
+        vault.metadata[ref] = {
+          ...vault.metadata[ref],
+          lastUsedAt: new Date().toISOString(),
+        };
+        await this.writeVault(vault);
+      }
+      return plainText;
+    });
   }
 
   async hasSecret(ref: string) {
+    await this.mutationQueue;
     const vault = await this.readVault();
     const encrypted = vault.items[ref];
     if (!encrypted) {
@@ -89,11 +96,13 @@ export class SecretVault {
   }
 
   async getSecretMeta(ref: string) {
+    await this.mutationQueue;
     const vault = await this.readVault();
     return vault.metadata?.[ref];
   }
 
   async listSecretMeta() {
+    await this.mutationQueue;
     const vault = await this.readVault();
     return Object.keys({ ...vault.items, ...(vault.metadata ?? {}) }).map((ref) => ({
       ref,
@@ -103,14 +112,16 @@ export class SecretVault {
   }
 
   async deleteSecret(ref: string) {
-    const vault = await this.readVault();
-    const existed = Boolean(vault.items[ref]);
-    delete vault.items[ref];
-    if (vault.metadata) {
-      delete vault.metadata[ref];
-    }
-    await this.writeVault(vault);
-    return { ref, existed };
+    return this.withMutation(async () => {
+      const vault = await this.readVault();
+      const existed = Boolean(vault.items[ref]);
+      delete vault.items[ref];
+      if (vault.metadata) {
+        delete vault.metadata[ref];
+      }
+      await this.writeVault(vault);
+      return { ref, existed };
+    });
   }
 
   private async readVault(): Promise<VaultFile> {
@@ -127,7 +138,22 @@ export class SecretVault {
   }
 
   private async writeVault(vault: VaultFile) {
-    await fs.mkdir(path.dirname(this.vaultPath), { recursive: true });
-    await fs.writeFile(this.vaultPath, JSON.stringify(vault, null, 2), "utf8");
+    const directory = path.dirname(this.vaultPath);
+    const tempPath = `${this.vaultPath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.mkdir(directory, { recursive: true });
+    try {
+      await fs.writeFile(tempPath, JSON.stringify(vault, null, 2), { encoding: "utf8", mode: 0o600 });
+      await fs.rename(tempPath, this.vaultPath);
+      await fs.chmod(this.vaultPath, 0o600).catch(() => undefined);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private withMutation<T>(operation: () => Promise<T>) {
+    const result = this.mutationQueue.then(operation, operation);
+    this.mutationQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 }

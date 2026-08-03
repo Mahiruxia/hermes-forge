@@ -123,7 +123,7 @@ export class DiagnosticsService {
       providerProfileCount: config.providerProfiles?.length ?? 0,
       runtimeMode: config.hermesRuntime?.mode ?? "windows",
       permissionPolicy: config.hermesRuntime?.permissionPolicy ?? "bridge_guarded",
-      cliPermissionMode: config.hermesRuntime?.cliPermissionMode ?? "yolo",
+      cliPermissionMode: config.hermesRuntime?.cliPermissionMode ?? "guarded",
       windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
       hermesInstallSource: config.hermesRuntime?.installSource,
       hermesInstallSourceLabel: installSourceLabel,

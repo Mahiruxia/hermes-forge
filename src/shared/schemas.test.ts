@@ -52,7 +52,7 @@ describe("runtimeConfigSchema", () => {
       distro: undefined,
       pythonCommand: "python",
       windowsAgentMode: "hermes_native",
-      cliPermissionMode: "yolo",
+      cliPermissionMode: "guarded",
       permissionPolicy: "bridge_guarded",
       workerMode: "off",
     });

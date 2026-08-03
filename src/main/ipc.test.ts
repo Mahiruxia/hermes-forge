@@ -34,6 +34,16 @@ describe("ipc safety helpers", () => {
     expect(testOnly.validateOpenablePath("C:\\Users\\xia\\Desktop\\report.pdf")).toMatchObject({ ok: true });
   });
 
+  it("accepts IPC only from the active main frame", () => {
+    const mainFrame = {};
+    const webContents = { isDestroyed: () => false, mainFrame };
+    const mainWindow = { webContents };
+
+    expect(testOnly.isTrustedIpcSender({ sender: webContents, senderFrame: mainFrame } as never, mainWindow as never)).toBe(true);
+    expect(testOnly.isTrustedIpcSender({ sender: webContents, senderFrame: {} } as never, mainWindow as never)).toBe(false);
+    expect(testOnly.isTrustedIpcSender({ sender: {}, senderFrame: mainFrame } as never, mainWindow as never)).toBe(false);
+  });
+
   it("allows existing local directories after stat validation", () => {
     expect(testOnly.validateOpenablePath("C:\\Users\\xia\\Hermes Agent", { isDirectory: true })).toMatchObject({ ok: true });
   });

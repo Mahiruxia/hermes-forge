@@ -1436,7 +1436,7 @@ function normalizeRuntime(config: RuntimeConfig): NonNullable<RuntimeConfig["her
     pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python",
     managedRoot: config.hermesRuntime?.managedRoot?.trim() || undefined,
     windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
-    cliPermissionMode: config.hermesRuntime?.cliPermissionMode ?? "yolo",
+    cliPermissionMode: config.hermesRuntime?.cliPermissionMode ?? "guarded",
     permissionPolicy: config.hermesRuntime?.permissionPolicy ?? "bridge_guarded",
     installSource: config.hermesRuntime?.installSource,
     workerMode: "off",

@@ -1867,7 +1867,7 @@ export class HermesCliAdapter implements EngineAdapter {
       distro: config?.hermesRuntime?.distro?.trim() || undefined,
       pythonCommand: config?.hermesRuntime?.pythonCommand?.trim() || "python3",
       windowsAgentMode: config?.hermesRuntime?.windowsAgentMode ?? "hermes_native",
-      cliPermissionMode: config?.hermesRuntime?.cliPermissionMode ?? "yolo",
+      cliPermissionMode: config?.hermesRuntime?.cliPermissionMode ?? "guarded",
       permissionPolicy: config?.hermesRuntime?.permissionPolicy ?? "bridge_guarded",
     };
   }

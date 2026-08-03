@@ -280,7 +280,7 @@ describe("HermesCliAdapter prompt isolation", () => {
 });
 
 describe("HermesCliAdapter WSL permission mode", () => {
-  it("uses yolo CLI mode by default and passes --yolo", async () => {
+  it("uses guarded CLI mode by default and omits --yolo", async () => {
     const adapter = new HermesCliAdapter({ baseDir: () => os.tmpdir(), hermesDir: () => os.tmpdir() } as never, {} as never, async () => "C:\\Hermes Agent");
     const invocation = await (adapter as never as {
       conversationInvocation(

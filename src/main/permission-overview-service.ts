@@ -80,7 +80,7 @@ function runtimeWithDefaults(runtime: RuntimeConfig["hermesRuntime"]): HermesRun
     managedRoot: runtime?.managedRoot,
     pythonCommand: runtime?.pythonCommand ?? (runtime?.mode === "windows" ? "python" : "python3"),
     windowsAgentMode: runtime?.windowsAgentMode ?? "hermes_native",
-    cliPermissionMode: runtime?.cliPermissionMode ?? "yolo",
+    cliPermissionMode: runtime?.cliPermissionMode ?? "guarded",
     permissionPolicy: runtime?.permissionPolicy ?? "bridge_guarded",
   };
 }

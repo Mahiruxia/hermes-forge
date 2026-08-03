@@ -30,6 +30,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     const config = await store.read();
 
     expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.cliPermissionMode).toBe("guarded");
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",

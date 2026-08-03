@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain as electronIpcMain, shell } from "electron";
 import { z } from "zod";
 import type { AppPaths } from "./app-paths";
 import type { RuntimeConfigStore } from "./runtime-config";
@@ -306,7 +306,17 @@ export type IpcServices = {
   clientInfo: () => ClientInfo;
 };
 
-export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcServices) {
+export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServices) {
+  const ipcMain = {
+    handle(channel: string, listener: Parameters<typeof electronIpcMain.handle>[1]) {
+      electronIpcMain.handle(channel, (event, ...args) => {
+        if (!isTrustedIpcSender(event, mainWindow)) {
+          throw new Error(`拒绝来自非主应用页面的 IPC 调用：${channel}`);
+        }
+        return listener(event, ...args);
+      });
+    },
+  };
   function invalidateTaskPreflight(reason: string) {
     services.preflightService.invalidateCaches();
     console.info("[Hermes Forge] Task preflight cache invalidated", { reason });
@@ -819,7 +829,7 @@ export function registerIpcHandlers(_mainWindow: BrowserWindow, services: IpcSer
         pythonCommand: parsed.runtime?.pythonCommand?.trim() || config.hermesRuntime?.pythonCommand || (runtimeMode === "windows" ? "python" : "python3"),
         distro: parsed.runtime?.distro?.trim() || undefined,
         windowsAgentMode: parsed.runtime?.windowsAgentMode ?? config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
-        cliPermissionMode: parsed.runtime?.cliPermissionMode ?? config.hermesRuntime?.cliPermissionMode ?? "yolo",
+        cliPermissionMode: parsed.runtime?.cliPermissionMode ?? config.hermesRuntime?.cliPermissionMode ?? "guarded",
         permissionPolicy: parsed.runtime?.permissionPolicy ?? config.hermesRuntime?.permissionPolicy ?? "bridge_guarded",
         workerMode: parsed.runtime?.workerMode ?? config.hermesRuntime?.workerMode ?? "off",
         installSource: parsed.runtime?.installSource
@@ -1946,7 +1956,15 @@ function modelSupportsRuntimeRole(profile: ModelProfile, role: ModelRole) {
   return { ok: true, message: "ok" };
 }
 
+function isTrustedIpcSender(event: Electron.IpcMainInvokeEvent, mainWindow: BrowserWindow) {
+  const webContents = mainWindow.webContents;
+  return !webContents.isDestroyed()
+    && event.sender === webContents
+    && event.senderFrame === webContents.mainFrame;
+}
+
 export const testOnly = {
+  isTrustedIpcSender,
   validateOpenablePath,
   validateOutboundModelBaseUrl,
   modelSwitchMessage,

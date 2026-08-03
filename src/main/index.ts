@@ -44,6 +44,9 @@ import { InstallOrchestrator } from "../install/install-orchestrator";
 import { NativeInstallStrategy } from "../install/native-install-strategy";
 import { OneClickDiagnosticsOrchestrator } from "./diagnostics/one-click-diagnostics-orchestrator";
 import { LegacyWslMigrationService } from "./legacy-wsl-migration-service";
+import { isSafeExternalUrl, isTrustedAppUrl as isTrustedNavigationUrl } from "./navigation-security";
+
+loadDevelopmentEnv();
 
 const portableRoot = process.env.PORTABLE_EXECUTABLE_DIR;
 const isPortable = Boolean(portableRoot);
@@ -113,15 +116,6 @@ app.whenReady().then(async () => {
   const modelRuntimeProxyService = new ModelRuntimeProxyService();
   const runtimeEnvResolver = new RuntimeEnvResolver(configStore, secretVault, modelRuntimeProxyService);
   const hermesModelSyncService = new HermesModelSyncService(runtimeEnvResolver, () => appPaths.hermesDir());
-  // Ensure the standalone Hermes CLI can find Forge-managed config by linking
-  // the official ~/.hermes to our managed home directory.
-  ensureOfficialHermesHomeLink(appPaths.hermesDir()).then((result) => {
-    if (!result.linked && result.reason) {
-      console.warn("[Hermes Forge] Official Hermes home was left untouched:", result.reason);
-    }
-  }).catch((error) => {
-    console.warn("[Hermes Forge] Failed to link official Hermes home:", error);
-  });
   // Startup must stay lightweight: model/bridge synchronization can touch Hermes
   // files or local bridge processes, so it is deferred to explicit UI actions
   // and config-save paths.
@@ -202,6 +196,16 @@ app.whenReady().then(async () => {
     return;
   }
 
+  // System audit mode must not mutate the user's official Hermes home.
+  // Link it only during a normal interactive app launch.
+  ensureOfficialHermesHomeLink(appPaths.hermesDir()).then((result) => {
+    if (!result.linked && result.reason) {
+      console.warn("[Hermes Forge] Official Hermes home was left untouched:", result.reason);
+    }
+  }).catch((error) => {
+    console.warn("[Hermes Forge] Failed to link official Hermes home:", error);
+  });
+
   function createWindow() {
     mainWindow = new BrowserWindow({
       width: 1280,
@@ -235,6 +239,16 @@ app.whenReady().then(async () => {
       console.warn("[Hermes Forge] Blocked untrusted window open:", url);
       return { action: "deny" };
     });
+
+    const guardMainFrameNavigation = (event: Electron.Event, url: string) => {
+      if (isTrustedAppUrl(url)) return;
+      event.preventDefault();
+      if (!openExternalUrl(url)) {
+        console.warn("[Hermes Forge] Blocked untrusted main-frame navigation:", url);
+      }
+    };
+    mainWindow.webContents.on("will-navigate", guardMainFrameNavigation);
+    mainWindow.webContents.on("will-redirect", guardMainFrameNavigation);
 
     const devServerUrl = process.env.VITE_DEV_SERVER_URL;
     if (devServerUrl) {
@@ -368,6 +382,10 @@ app.whenReady().then(async () => {
   setTimeout(() => {
     void (async () => {
       try {
+        const config = await configStore.read();
+        if (!config.startupGatewayAutoStart) {
+          return;
+        }
         await hermesConnectorService.autoStartIfConfigured();
       } catch (error) {
         console.warn("[Hermes Forge] Gateway auto-start failed:", error);
@@ -441,14 +459,20 @@ function resolveAppIconPath() {
 }
 
 function isTrustedAppUrl(value: string) {
-  if (!value) return false;
+  return isTrustedNavigationUrl(value, {
+    builtEntryPath: path.join(__dirname, "..", "..", "renderer", "index.html"),
+    devServerUrl: process.env.VITE_DEV_SERVER_URL,
+  });
+}
+
+function loadDevelopmentEnv() {
+  if (app.isPackaged) return;
   try {
-    const url = new URL(value);
-    if (url.protocol === "file:") return true;
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-    return devServerUrl ? url.origin === new URL(devServerUrl).origin : false;
-  } catch {
-    return false;
+    process.loadEnvFile(path.join(process.cwd(), ".env"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn("[Hermes Forge] Failed to load development .env:", error);
+    }
   }
 }
 
@@ -458,13 +482,4 @@ function openExternalUrl(value: string) {
     console.warn("[Hermes Forge] Failed to open external URL:", error);
   });
   return true;
-}
-
-function isSafeExternalUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" || url.protocol === "mailto:";
-  } catch {
-    return false;
-  }
 }
