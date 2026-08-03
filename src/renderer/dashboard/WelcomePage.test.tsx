@@ -32,7 +32,7 @@ beforeEach(() => {
 });
 
 describe("WelcomePage Hermes installation", () => {
-  it("routes first launch to model settings when Hermes is healthy but model setup is missing", async () => {
+  it("lets the user confirm before routing first launch to model settings", async () => {
     const onComplete = vi.fn();
     getHermesProbe.mockResolvedValue({
       probe: {
@@ -58,12 +58,16 @@ describe("WelcomePage Hermes installation", () => {
 
     render(<WelcomePage onComplete={onComplete} />);
 
+    const continueButton = await screen.findByRole("button", { name: "继续配置模型" });
+    expect(onComplete).not.toHaveBeenCalled();
+    fireEvent.click(continueButton);
+
     await waitFor(() => {
       expect(onComplete).toHaveBeenCalledWith("model");
-    }, { timeout: 1500 });
+    });
   });
 
-  it("opens source selection on first missing Hermes detection instead of installing silently", async () => {
+  it("waits for an explicit install action before opening source selection", async () => {
     getHermesProbe.mockResolvedValue({
       probe: {
         status: "offline",
@@ -74,6 +78,9 @@ describe("WelcomePage Hermes installation", () => {
 
     render(<WelcomePage onComplete={vi.fn()} />);
 
+    expect(await screen.findByRole("button", { name: /选择安装方式/ })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /选择安装方式/ }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText("选择 Hermes Agent 安装来源")).toBeInTheDocument();
     expect(installHermes).not.toHaveBeenCalled();
@@ -91,11 +98,24 @@ describe("WelcomePage Hermes installation", () => {
 
     render(<WelcomePage onComplete={vi.fn()} />);
 
+    fireEvent.click(await screen.findByRole("button", { name: /选择安装方式/ }));
     const mirrorButton = await screen.findByRole("button", { name: /国内社区镜像/ });
     fireEvent.click(mirrorButton);
 
     await waitFor(() => {
       expect(installHermes).toHaveBeenCalledWith({ source: { kind: "mirror" } });
     });
+  });
+
+  it("routes manual path configuration directly to Hermes settings", async () => {
+    const onComplete = vi.fn();
+    getHermesProbe.mockResolvedValue({
+      probe: { status: "offline", message: "missing", secondaryMetric: "" },
+    });
+
+    render(<WelcomePage onComplete={onComplete} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "手动配置路径" }));
+    expect(onComplete).toHaveBeenCalledWith("hermes");
   });
 });

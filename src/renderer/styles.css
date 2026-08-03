@@ -97,8 +97,8 @@
   body {
     margin: 0;
     min-width: 320px;
-    min-height: 100vh;
-    font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+    min-height: 100dvh;
+    font-family: "Segoe UI Variable Text", "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
     font-size: 14px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
@@ -110,6 +110,15 @@
     transition:
       background-color 260ms ease,
       color 260ms ease;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--hermes-primary);
+    outline-offset: 2px;
   }
 
   :root[data-theme="default-large"] html,
@@ -705,6 +714,37 @@
   background: rgb(42 42 42 / 0.72) !important;
   color: var(--hermes-text-muted) !important;
   box-shadow: none !important;
+}
+
+.hermes-skip-link {
+  position: fixed;
+  left: 1rem;
+  top: 0.75rem;
+  z-index: 100;
+  transform: translateY(-180%);
+  border-radius: 0.65rem;
+  background: #0f172a;
+  color: #fff;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  box-shadow: 0 12px 32px rgb(15 23 42 / 0.2);
+  transition: transform 160ms ease;
+}
+
+.hermes-skip-link:focus {
+  transform: translateY(0);
+}
+
+.hermes-welcome-page {
+  background:
+    radial-gradient(circle at 82% 4%, rgb(148 163 184 / 0.16), transparent 30rem),
+    radial-gradient(circle at 8% 90%, rgb(203 213 225 / 0.2), transparent 24rem),
+    #f4f5f7;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 :root[data-theme="slate"] .hermes-status-detail-row {

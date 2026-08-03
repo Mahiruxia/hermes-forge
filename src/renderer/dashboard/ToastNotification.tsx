@@ -20,7 +20,7 @@ interface ToastProps {
 
 export function ToastNotification(props: ToastProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const remainingRef = useRef(props.toast.duration ?? 4000);
+  const remainingRef = useRef(props.toast.duration ?? (props.toast.type === "error" ? 8000 : 4500));
   const startRef = useRef(Date.now());
 
   const startTimer = useCallback(() => {
@@ -65,8 +65,9 @@ export function ToastNotification(props: ToastProps) {
 
   return (
     <div
+      role={props.toast.type === "error" ? "alert" : "status"}
       className={cn(
-        "group flex items-start gap-3 rounded-lg border px-4 py-3 shadow-lg transition-all duration-300 animate-slide-in",
+        "group flex items-start gap-3 rounded-xl border px-4 py-3 shadow-[0_16px_42px_rgba(15,23,42,0.13)] transition-all duration-300 animate-slide-in",
         colors[props.toast.type]
       )}
       onMouseEnter={pauseTimer}
@@ -100,7 +101,7 @@ export function ToastContainer(props: ToastContainerProps) {
   if (props.toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex max-w-sm flex-col gap-2">
+    <div className="fixed bottom-5 right-5 z-50 flex max-w-[min(24rem,calc(100vw-2.5rem))] flex-col gap-2" aria-atomic="false" aria-live="polite">
       {props.toasts.map((toast) => (
         <ToastNotification key={toast.id} toast={toast} onClose={props.onClose} />
       ))}

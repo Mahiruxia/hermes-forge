@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, DownloadCloud, Loader2, RadioTower, Server, ServerOff, ShieldCheck, Wifi, WifiOff } from "lucide-react";
+import { AlertCircle, ArrowRight, ChevronDown, DownloadCloud, Loader2, RadioTower, Server, ServerOff, ShieldCheck, Wifi, WifiOff } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import type { ClientUpdateEvent, HermesGatewayStatus, HermesProbeSummary, HermesStatusSummary } from "../../../shared/types";
 import { useAppStore } from "../../store";
@@ -9,7 +9,7 @@ type ConnectionState = "connected" | "warning" | "disconnected" | "checking";
 type BadgeTone = "ok" | "warn" | "error" | "idle";
 type StatusLevel = BadgeTone | "checking" | "notice";
 
-export function StatusBar() {
+export function StatusBar(props: { onOpenHealth?: () => void } = {}) {
   const statusSource = useAppStore(useShallow((state) => ({
     clientInfo: state.clientInfo,
     hermesProbe: state.hermesProbe,
@@ -122,6 +122,9 @@ export function StatusBar() {
   ], [apiStatus, clientUpdate, gatewayStatus, hermesStatus, hermesUpdate, lastChecked, statusSource.hermesProbe, statusSource.hermesRuntimeMode, statusSource.hermesStatus]);
   const overall = summarizeStatus(statusItems);
   const OverallIcon = overall.icon;
+  const needsHealthAction = statusItems.some((item) =>
+    ["api", "hermes", "gateway"].includes(item.key) && (item.level === "error" || item.level === "warn")
+  );
 
   return (
     <div ref={statusRef} className="relative">
@@ -150,7 +153,7 @@ export function StatusBar() {
         <div className="hermes-popover absolute right-0 top-[calc(100%+10px)] z-[45] w-72 rounded-2xl border border-slate-200/80 bg-white p-2 shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
           <div className="px-2 pb-2 pt-1">
             <p className="text-[13px] font-semibold text-slate-900">{overall.label}</p>
-            <p className="mt-0.5 truncate text-[11px] text-slate-400">{overall.detail}</p>
+            <p className="mt-0.5 break-words text-[11px] leading-4 text-slate-400">{overall.detail}</p>
           </div>
         {statusItems.map((item) => {
           const Icon = item.icon;
@@ -170,7 +173,7 @@ export function StatusBar() {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[12px] font-semibold">{item.shortLabel}</span>
-                <span className="mt-0.5 block truncate text-[11px] opacity-75">{item.detail}</span>
+                <span className="mt-0.5 block break-words text-[11px] leading-4 opacity-75">{item.detail}</span>
               </span>
               <span
                 data-testid={`status-light-${item.key}`}
@@ -181,6 +184,18 @@ export function StatusBar() {
             </div>
           );
         })}
+        {needsHealthAction && props.onOpenHealth ? (
+          <button
+            className="mt-1 flex w-full items-center justify-between rounded-xl bg-slate-950 px-3 py-2.5 text-left text-[12px] font-semibold text-white transition hover:bg-slate-800"
+            onClick={() => {
+              setOpen(false);
+              props.onOpenHealth?.();
+            }}
+            type="button"
+          >
+            打开健康检查 <ArrowRight size={13} />
+          </button>
+        ) : null}
         </div>
       ) : null}
     </div>

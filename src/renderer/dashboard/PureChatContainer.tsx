@@ -1,4 +1,4 @@
-import { AlertCircle, Brain, ChevronDown, Copy, Ellipsis, FileDown, Loader2, RefreshCcw, Sparkles, Timer, Wrench } from "lucide-react";
+import { AlertCircle, ArrowRight, Brain, ChevronDown, Copy, Ellipsis, FileDown, Loader2, RefreshCcw, Sparkles, Timer, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -717,47 +717,60 @@ function ToolSummary(props: { tools: ToolEvent[] }) {
 function EmptyPureChat(props: { hasWorkspace: boolean; onPickWorkspace: () => void; onUsePromptSuggestion?: (prompt: string) => void; onOpenWorkspaceDrawer?: () => void }) {
   const suggestions = props.hasWorkspace
     ? [
-        "分析这个项目结构，并告诉我入口文件和关键模块。",
-        "帮我修复当前报错，并说明你准备怎么处理。",
-        "整理这个目录，并给我一个更清晰的文件分组方案。",
+        { title: "快速理解项目", detail: "找出入口、关键模块和运行方式", prompt: "分析这个项目结构，并告诉我入口文件和关键模块。" },
+        { title: "定位并修复问题", detail: "先说明原因，再实施可验证的修复", prompt: "帮我修复当前报错，并说明你准备怎么处理。" },
+        { title: "整理项目结构", detail: "给出更清晰、可落地的文件分组", prompt: "整理这个目录，并给我一个更清晰的文件分组方案。" },
       ]
     : [
-        "先选择一个工作区，然后分析这个项目结构。",
-        "先选择一个工作区，然后检查配置和启动状态。",
-        "先选择一个工作区，然后帮我跑一次基础诊断。",
+        { title: "分析项目结构", detail: "选择目录后定位入口和关键模块", prompt: "先选择一个工作区，然后分析这个项目结构。" },
+        { title: "检查启动状态", detail: "核对配置、依赖和运行命令", prompt: "先选择一个工作区，然后检查配置和启动状态。" },
+        { title: "运行基础诊断", detail: "检查 Hermes 与项目环境是否就绪", prompt: "先选择一个工作区，然后帮我跑一次基础诊断。" },
       ];
   return (
-    <div className="grid min-h-[46vh] place-items-center text-center">
-      <div className="max-w-xl px-8 py-10">
-        <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-slate-400">Hermes Workspace</p>
-        <h3 className="mt-4 text-[30px] font-semibold tracking-tight text-slate-900">默认保持安静，需要时再展开细节。</h3>
-        <p className="mt-4 text-[15px] leading-7 text-slate-500">
-          {props.hasWorkspace
-            ? "把任务交给 Hermes，主区优先看最终回复；工具过程、诊断和附加动作会按需出现。"
-            : "先选择一个工作区，再开始一轮任务。你也可以先点下面的建议，让输入框直接填好。"}
-        </p>
-        <div className="mt-6 grid gap-2 text-left text-[13px] text-slate-500">
-          {suggestions.map((suggestion) => (
+    <div className="grid min-h-[48vh] place-items-center">
+      <div className="grid w-full max-w-[920px] gap-8 px-5 py-10 text-left lg:grid-cols-[minmax(0,0.9fr)_minmax(360px,1.1fr)] lg:items-center lg:px-8">
+        <div>
+          <p className="text-[11px] font-semibold tracking-[0.14em] text-slate-400">新任务</p>
+          <h3 className="mt-3 text-balance text-[32px] font-semibold leading-[1.1] tracking-[-0.04em] text-slate-950">
+            {props.hasWorkspace ? "今天想推进什么？" : "先连接你的项目"}
+          </h3>
+          <p className="mt-4 max-w-[46ch] text-pretty text-[14px] leading-6 text-slate-500">
+            {props.hasWorkspace
+              ? "描述目标即可开始。Hermes 会在当前工作区读取上下文，执行过程和需要确认的操作会就地显示。"
+              : "选择一个项目目录后，Hermes 才能读取真实文件、运行命令并保存修改。你仍然可以先写下需求，草稿会自动保留。"}
+          </p>
+          <button
+            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-[13px] font-semibold text-white shadow-[0_12px_28px_rgba(15,23,42,0.16)] transition hover:-translate-y-0.5 hover:bg-slate-800 active:translate-y-0"
+            onClick={props.hasWorkspace ? props.onOpenWorkspaceDrawer : props.onPickWorkspace}
+            type="button"
+          >
+            {props.hasWorkspace ? "打开工作区文件" : "选择工作区"}
+            <ArrowRight size={14} />
+          </button>
+          <p className="mt-4 text-[11px] leading-5 text-slate-400">
+            提示：按 <kbd className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-500">Ctrl K</kbd> 聚焦输入框，也支持拖拽文件、粘贴图片和 <span className="font-mono text-slate-500">/</span> 命令。
+          </p>
+        </div>
+
+        <div className="grid gap-2" aria-label="任务建议">
+          <p className="mb-1 px-1 text-[11px] font-semibold text-slate-400">从常见任务开始</p>
+          {suggestions.map((suggestion, index) => (
             <button
-              key={suggestion}
-              className="rounded-2xl border border-slate-200/80 bg-white px-4 py-3 text-left transition hover:border-slate-300 hover:bg-slate-50"
-              onClick={() => props.onUsePromptSuggestion?.(suggestion)}
+              key={suggestion.prompt}
+              className="group flex items-center gap-4 rounded-2xl border border-slate-200/80 bg-white px-4 py-3.5 text-left shadow-[0_10px_28px_rgba(15,23,42,0.035)] transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_14px_34px_rgba(15,23,42,0.07)]"
+              onClick={() => props.onUsePromptSuggestion?.(suggestion.prompt)}
               type="button"
             >
-              试试：{suggestion}
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-100 font-mono text-[11px] font-semibold tabular-nums text-slate-500 transition group-hover:bg-slate-900 group-hover:text-white">0{index + 1}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold text-slate-800">{suggestion.title}</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-slate-400">{suggestion.detail}</span>
+                <span className="sr-only">：{suggestion.prompt}</span>
+              </span>
+              <ChevronDown size={14} className="-rotate-90 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-600" />
             </button>
           ))}
         </div>
-        {!props.hasWorkspace ? (
-          <button className="mt-5 rounded-full bg-slate-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-slate-800" onClick={props.onPickWorkspace} type="button">
-            选择工作区
-          </button>
-        ) : null}
-        {props.hasWorkspace ? (
-          <button className="mt-5 rounded-full border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50" onClick={props.onOpenWorkspaceDrawer} type="button">
-            打开工作区文件
-          </button>
-        ) : null}
       </div>
     </div>
   );
@@ -891,7 +904,7 @@ function playfulStatusCopy(status: ThoughtStatus | undefined, phase: "handoff" |
     return { label: "还在打磨", detail: "不是卡住，是在把话说顺一点。" };
   }
   if (elapsedSeconds < 5) return { label: "整理材料中", detail: "把上下文摊开，给 Hermes 留一条清爽的跑道。" };
-  if (elapsedSeconds < 14) return { label: "正在热身", detail: "模型在系鞋带，马上开始认真跑。" };
+  if (elapsedSeconds < 14) return { label: "正在热身", detail: "模型正在载入上下文，稍后开始输出。" };
   return { label: "快准备好了", detail: "上下文基本摆好，正在把第一句话找出来。" };
 }
 

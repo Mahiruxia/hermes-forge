@@ -1,4 +1,5 @@
 import { PanelLeftOpen } from "lucide-react";
+import { useEffect } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { SessionMetaPatch, WorkSession } from "../../shared/types";
@@ -101,6 +102,28 @@ export function DashboardView(props: {
     store.sessionSidebarOpen ? store.sessionSidebarWidth : 0,
   );
 
+  useEffect(() => {
+    function handleGlobalShortcut(event: globalThis.KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "k") {
+        event.preventDefault();
+        window.dispatchEvent(new Event("hermes:focus-composer"));
+      } else if (key === "n") {
+        event.preventDefault();
+        props.onCreateSession();
+      } else if (key === "o") {
+        event.preventDefault();
+        props.onPickWorkspace();
+      } else if (key === "b") {
+        event.preventDefault();
+        store.setSessionSidebarOpen(!store.sessionSidebarOpen);
+      }
+    }
+    window.addEventListener("keydown", handleGlobalShortcut);
+    return () => window.removeEventListener("keydown", handleGlobalShortcut);
+  }, [props.onCreateSession, props.onPickWorkspace, store.sessionSidebarOpen, store.setSessionSidebarOpen]);
+
   function toggleInspector() {
     const nextOpen = !store.inspectorOpen;
     store.setInspectorOpen(nextOpen);
@@ -170,7 +193,7 @@ export function DashboardView(props: {
   }
 
   return (
-    <section className="hermes-dashboard-root absolute inset-0 flex overflow-hidden bg-[#f6f8fb] text-slate-900">
+    <section id="main-content" tabIndex={-1} className="hermes-dashboard-root absolute inset-0 flex overflow-hidden bg-[#f6f8fb] text-slate-900">
       <IconRail />
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         <HermesHeader
@@ -183,6 +206,7 @@ export function DashboardView(props: {
           onUpdateActiveSessionMeta={props.onUpdateActiveSessionMeta ?? (() => undefined)}
           onOpenSessionFolder={props.onOpenSessionFolder}
           onOpenSupport={props.onOpenSupport}
+          onOpenHealth={() => props.onOpenFix?.("health")}
           inspectorOpen={store.inspectorOpen}
           workspaceDrawerOpen={store.workspaceDrawerOpen}
           agentPanelOpen={store.agentPanelOpen}

@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen, X, ExternalLink, Terminal, ChevronDown, ChevronUp, Globe } from "lucide-react";
+import { Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Settings, HelpCircle, Wrench, BookOpen, X, ExternalLink, Terminal, ChevronDown, ChevronUp, Globe, Bot, ScanLine } from "lucide-react";
 import { useAppStore } from "../store";
 import type { HermesInstallEvent, SetupCheck, SetupDependencyRepairId } from "../../shared/types";
 import { InstallSourceDialog, type InstallSourceChoice } from "./components/InstallSourceDialog";
 
 const OFFICIAL_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent";
 const OFFICIAL_HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/";
-export type WelcomeCompleteTarget = "workbench" | "model";
+export type WelcomeCompleteTarget = "workbench" | "model" | "hermes";
 
 export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget) => void }) {
   const store = useAppStore();
@@ -20,11 +20,10 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   const [installStartTime, setInstallStartTime] = useState<number | null>(null);
   const [installLogs, setInstallLogs] = useState<string[]>([]);
   const [showLogs, setShowLogs] = useState(false);
-  const [networkHint, setNetworkHint] = useState<string | null>(null);
   const [macRuntime, setMacRuntime] = useState(false);
   const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
   const [showMirrorRetry, setShowMirrorRetry] = useState(false);
-  const autoInstallAttemptedRef = useRef(false);
+  const [nextTarget, setNextTarget] = useState<WelcomeCompleteTarget>("workbench");
   const installRunningRef = useRef(false);
   const lastInstallSourceKindRef = useRef<InstallSourceChoice | undefined>(undefined);
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -35,17 +34,6 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
     });
     return () => unsubscribe?.();
   }, []);
-
-  async function runPreflightThenDeploy() {
-    if (await shouldUseManualMacSetup()) {
-      setStatus("not-found");
-      setProgress(68);
-      setMessage("未检测到可用 Hermes，请选择 macOS Hermes Agent 安装位置。");
-      setDetail("macOS 暂不使用 Windows 自动安装脚本。请先安装 Hermes Agent，然后在设置中选择 Hermes 根目录。");
-      return;
-    }
-    openInstallSourceDialog();
-  }
 
   useEffect(() => {
     async function detectHermes() {
@@ -72,34 +60,17 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
         setStatus("not-found");
         setMessage("未检测到可用 Hermes，请选择安装来源。");
         setDetail(probe?.probe?.message ?? "你可以优先使用官方 GitHub；如果 GitHub/uv/Python 下载较慢，可主动选择国内社区镜像。");
-
-        if (!autoInstallAttemptedRef.current) {
-          autoInstallAttemptedRef.current = true;
-          await runPreflightThenDeploy();
-        }
       } catch (error) {
         console.error("Hermes detection failed:", error);
         setStatus("not-found");
         const manualMac = await shouldUseManualMacSetup();
         setMessage(manualMac ? "检测失败，请手动选择 macOS Hermes 安装位置。" : "检测失败，请选择 Hermes 安装来源。");
         setDetail(error instanceof Error ? error.message : "未知错误");
-        if (!manualMac && !autoInstallAttemptedRef.current) {
-          autoInstallAttemptedRef.current = true;
-          openInstallSourceDialog();
-        }
       }
     }
 
     void detectHermes();
   }, []);
-
-  useEffect(() => {
-    if (status !== "found") return;
-    const timer = window.setTimeout(() => {
-      void completeWelcome();
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [props, status, store]);
 
   async function completeWelcome(target?: WelcomeCompleteTarget) {
     const nextTarget = target ?? await nextWelcomeTarget();
@@ -110,10 +81,14 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   async function nextWelcomeTarget(): Promise<WelcomeCompleteTarget> {
     try {
       const summary = await window.workbenchClient.getSetupSummary();
+      const primaryIds = new Set(["git", "python", "winget", "hermes", "model", "model-placeholder", "model-secret", "weixin-aiohttp"]);
+      setSetupChecks(summary.checks.filter((check) => primaryIds.has(check.id)).slice(0, 8));
       const modelBlocked = summary.blocking.some((check) =>
         check.id === "model" || check.id === "model-secret" || check.fixAction === "configure_model"
       );
-      return modelBlocked ? "model" : "workbench";
+      const target = modelBlocked ? "model" : "workbench";
+      setNextTarget(target);
+      return target;
     } catch {
       return "workbench";
     }
@@ -153,6 +128,7 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
       const summary = await window.workbenchClient.getSetupSummary();
       const primaryIds = new Set(["git", "python", "winget", "hermes", "model", "model-placeholder", "model-secret", "weixin-aiohttp"]);
       setSetupChecks(summary.checks.filter((check) => primaryIds.has(check.id)).slice(0, 8));
+      setNextTarget(summary.blocking.some((check) => check.id === "model" || check.id === "model-secret" || check.fixAction === "configure_model") ? "model" : "workbench");
     } catch (error) {
       console.warn("Failed to load setup summary:", error);
     }
@@ -178,9 +154,6 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   function openInstallSourceDialog() {
     if (installRunningRef.current) return;
     setSourceDialogOpen(true);
-    void detectSlowNetwork().then((hint) => {
-      if (hint) setNetworkHint(hint);
-    });
   }
 
   async function handleAutoDeploy() {
@@ -262,7 +235,7 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   }
 
   function handleManualConfig() {
-    void completeWelcome("workbench");
+    void completeWelcome("hermes");
   }
 
   function handleSkip() {
@@ -277,78 +250,105 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-indigo-50 via-white to-rose-50">
+    <main id="main-content" tabIndex={-1} className="hermes-welcome-page min-h-screen overflow-y-auto bg-[#f4f5f7] text-slate-900">
+      <a className="hermes-skip-link" href="#main-content">跳到主要内容</a>
       <InstallSourceDialog
         busy={installRunningRef.current}
         onClose={() => setSourceDialogOpen(false)}
         onSelect={(kind) => void installWithSource(kind)}
         open={sourceDialogOpen}
       />
-      <div className="w-full max-w-md px-6">
-        <div className="text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 shadow-lg shadow-indigo-500/25">
-            <Sparkles size={32} className="text-white" />
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-5 pb-8 pt-6 sm:px-8 sm:pt-8">
+        <header className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-[14px] bg-slate-950 text-white shadow-[0_12px_30px_rgba(15,23,42,0.16)]">
+              <Sparkles size={19} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold tracking-[-0.01em] text-slate-950">Hermes Forge</p>
+              <p className="text-xs text-slate-500">本地 Agent 工作台</p>
+            </div>
           </div>
+          <span className="rounded-lg bg-white px-2.5 py-1.5 font-mono text-[11px] tabular-nums text-slate-400 ring-1 ring-slate-200/70">
+            v{store.clientInfo?.appVersion || "unknown"}
+          </span>
+        </header>
 
-          <h1 className="text-2xl font-bold text-slate-900">欢迎使用 Hermes Forge</h1>
-          <p className="mt-2 text-slate-500">本地优先的 Hermes Agent 桌面工坊</p>
+        <div className="mt-10 max-w-2xl">
+          <p className="text-xs font-semibold tracking-[0.12em] text-slate-500">首次设置</p>
+          <h1 className="mt-3 text-balance text-[clamp(2rem,4vw,3.4rem)] font-semibold leading-[1.06] tracking-[-0.045em] text-slate-950">
+            让 Hermes 在这台电脑上就绪
+          </h1>
+          <p className="mt-4 max-w-[62ch] text-pretty text-[15px] leading-7 text-slate-500">
+            Forge 会先检查本机环境，再由你确认安装来源。整个过程不会静默安装，也不会在完成后突然跳转。
+          </p>
         </div>
 
-        <div className="mt-8 rounded-2xl bg-white p-6 shadow-lg shadow-slate-200/50">
+        <OnboardingSteps status={status} nextTarget={nextTarget} />
+
+        <div className="mt-6 grid min-h-0 flex-1 items-start gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+          <section className="rounded-[26px] bg-white p-6 shadow-[0_24px_80px_rgba(30,41,59,0.08)] ring-1 ring-slate-200/65 sm:p-8" aria-live="polite">
           {status === "detecting" && (
-            <div className="text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-50">
-                <Loader2 size={28} className="animate-spin text-indigo-600" />
+            <div className="flex min-h-[320px] flex-col justify-center">
+              <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-[18px] bg-slate-100 text-slate-700">
+                <ScanLine size={25} className="animate-pulse" />
               </div>
-              <p className="text-slate-600">{message}</p>
-              <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
+              <p className="text-xs font-semibold tracking-[0.12em] text-slate-400">步骤 1 / 3</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em] text-slate-950">正在检查这台电脑</h2>
+              <p className="mt-3 max-w-[56ch] text-sm leading-6 text-slate-500">{message}</p>
+              <div className="mt-8 h-1.5 overflow-hidden rounded-full bg-slate-100">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-200"
+                  className="h-full rounded-full bg-slate-800 transition-all duration-300"
                   style={{ width: `${progress}%` }}
                 />
               </div>
+              <p className="mt-3 text-xs text-slate-400">只读取版本、路径和可用性，不会修改系统配置。</p>
             </div>
           )}
 
           {status === "found" && (
-            <div className="text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-50">
-                <CheckCircle2 size={28} className="text-green-600" />
+            <div className="flex min-h-[320px] flex-col justify-center">
+              <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-[18px] bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                <CheckCircle2 size={25} />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">Hermes 已就绪</h3>
-              <p className="mt-2 text-sm text-slate-500">客户端已经连上本机 Hermes，可以继续完成模型配置并开始使用。</p>
-              {detail ? <p className="mt-2 break-all text-xs text-slate-400">{detail}</p> : null}
+              <p className="text-xs font-semibold tracking-[0.12em] text-emerald-700">环境连接成功</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em] text-slate-950">Hermes 已就绪</h2>
+              <p className="mt-3 max-w-[58ch] text-sm leading-6 text-slate-500">
+                {nextTarget === "model"
+                  ? "本机 Hermes 已连接。下一步补齐模型来源和 API Key，完成后就能发送第一项任务。"
+                  : "Hermes 和默认模型都已可用，可以进入工作台开始第一项任务。"}
+              </p>
+              {detail ? <p className="mt-3 break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-xs text-slate-500 ring-1 ring-slate-100">{detail}</p> : null}
               <button
-                className="mt-6 w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
+                className="mt-8 inline-flex w-fit items-center justify-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-[0_12px_28px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:bg-slate-800 active:translate-y-0"
                 onClick={() => {
                   void completeWelcome();
                 }}
               >
-                <span className="flex items-center justify-center gap-2">
-                  进入工作台 <ArrowRight size={16} />
-                </span>
+                {nextTarget === "model" ? "继续配置模型" : "进入工作台"} <ArrowRight size={16} />
               </button>
+              <p className="mt-3 text-xs text-slate-400">由你确认后再继续，不会自动跳页。</p>
             </div>
           )}
 
           {status === "not-found" && (
-            <div className="text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-50">
-                <AlertCircle size={28} className="text-amber-600" />
+            <div>
+              <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-[18px] bg-amber-50 text-amber-700 ring-1 ring-amber-100">
+                <AlertCircle size={25} />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">Hermes 还未就绪</h3>
-              <p className="mt-2 text-sm text-slate-500">{message}</p>
-              {detail ? <p className="mt-2 break-all text-xs leading-5 text-slate-400">{detail}</p> : null}
+              <p className="text-xs font-semibold tracking-[0.12em] text-amber-700">需要你确认</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em] text-slate-950">Hermes 还未就绪</h2>
+              <p className="mt-3 max-w-[58ch] text-sm leading-6 text-slate-500">{message}</p>
+              {detail ? <p className="mt-3 break-all rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500 ring-1 ring-slate-100">{detail}</p> : null}
 
-              <div className="mt-6 space-y-3">
+              <div className="mt-7 space-y-3">
                 {!macRuntime ? (
                   <button
-                    className="w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
+                    className="flex w-full items-center justify-between rounded-xl bg-slate-950 px-4 py-3.5 text-left text-sm font-semibold text-white shadow-[0_12px_28px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:bg-slate-800 active:translate-y-0"
                     onClick={() => void handleAutoDeploy()}
                   >
-                    <span className="flex items-center justify-center gap-2">
-                      <Sparkles size={16} /> 重新自动安装 Hermes
-                    </span>
+                    <span className="flex items-center gap-2"><Sparkles size={16} /> 选择安装方式</span>
+                    <ArrowRight size={16} />
                   </button>
                 ) : null}
                 {showMirrorRetry && !macRuntime ? (
@@ -363,30 +363,29 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
                   </button>
                 ) : null}
 
-                <a
-                  href={macRuntime ? OFFICIAL_HERMES_DOCS_URL : OFFICIAL_HERMES_REPO_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"
-                >
-                  <BookOpen size={16} /> {macRuntime ? "查看 Hermes 官方文档" : "查看官方 GitHub"}
-                </a>
-
-                <button
-                  className="w-full rounded-xl border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"
-                  onClick={handleManualConfig}
-                >
-                  <span className="flex items-center justify-center gap-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button
+                    className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                    onClick={handleManualConfig}
+                  >
                     <Settings size={16} /> 手动配置路径
-                  </span>
-                </button>
+                  </button>
+                  <a
+                    href={macRuntime ? OFFICIAL_HERMES_DOCS_URL : OFFICIAL_HERMES_REPO_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    <BookOpen size={16} /> {macRuntime ? "官方文档" : "官方 GitHub"}
+                  </a>
+                </div>
 
                 <button
-                  className="w-full rounded-xl px-6 py-3 text-sm text-slate-500 transition-colors hover:text-slate-700"
+                  className="w-full rounded-lg px-4 py-2 text-sm text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700"
                   onClick={handleSkip}
                 >
                   <span className="flex items-center justify-center gap-2">
-                    <HelpCircle size={16} /> 跳过，稍后配置
+                    <HelpCircle size={15} /> 暂时跳过，稍后在设置中心继续
                   </span>
                 </button>
               </div>
@@ -396,34 +395,24 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
           )}
 
           {status === "installing" && (
-            <div className="text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-50">
-                <Loader2 size={28} className="animate-spin text-indigo-600" />
+            <div className="flex min-h-[320px] flex-col justify-center">
+              <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-[18px] bg-slate-100 text-slate-700">
+                <Loader2 size={25} className="animate-spin" />
               </div>
-              <p className="text-slate-600">{message}</p>
-              {detail ? <p className="mt-2 break-words text-xs leading-5 text-slate-400">{detail}</p> : null}
-              <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
+              <p className="text-xs font-semibold tracking-[0.12em] text-slate-400">步骤 2 / 3</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em] text-slate-950">{message}</h2>
+              {detail ? <p className="mt-3 max-w-[58ch] break-words text-sm leading-6 text-slate-500">{detail}</p> : null}
+              <div className="mt-7 h-1.5 overflow-hidden rounded-full bg-slate-100">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-200"
+                  className="h-full rounded-full bg-slate-800 transition-all duration-300"
                   style={{ width: `${progress}%` }}
                 />
               </div>
-              <div className="mt-2 flex items-center justify-center gap-2 text-xs text-slate-400">
+              <div className="mt-2 flex items-center gap-2 font-mono text-xs tabular-nums text-slate-400">
                 <span>{progress}%</span>
                 <span>·</span>
                 <span>{installStageLabel(progress)}</span>
               </div>
-              {networkHint ? (
-                <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-left">
-                  <div className="flex items-start gap-2">
-                    <Globe size={14} className="mt-0.5 shrink-0 text-amber-600" />
-                    <div>
-                      <p className="text-[11px] font-medium text-amber-800">网络提示</p>
-                      <p className="mt-1 text-[11px] leading-4 text-amber-700">{networkHint}</p>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
               {installLogs.length > 0 && (
                 <div className="mt-3 text-left">
                   <button
@@ -447,9 +436,9 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
                   )}
                 </div>
               )}
-              <div className="mt-4 flex flex-col gap-2">
+              <div className="mt-5 flex flex-wrap items-center gap-3">
                 <button
-                  className="mx-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                   onClick={() => void handleCancelInstall()}
                   type="button"
                 >
@@ -459,28 +448,67 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
                   href={OFFICIAL_HERMES_DOCS_URL}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-1 text-xs text-indigo-600 hover:text-indigo-700 hover:underline"
+                  className="inline-flex items-center justify-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-800 hover:underline"
                 >
                   <ExternalLink size={12} /> 查看 Nous 官方文档
                 </a>
               </div>
             </div>
           )}
+          </section>
 
-          {setupChecks.length ? (
+          <aside className="space-y-4">
+            {setupChecks.length ? (
             <DependencyChecklist
               checks={setupChecks}
               repairingDependency={repairingDependency}
               onRepair={handleRepairDependency}
             />
-          ) : null}
+            ) : (
+              <div className="rounded-[22px] bg-white p-5 ring-1 ring-slate-200/65">
+                <div className="flex items-center gap-3">
+                  <span className="grid h-9 w-9 place-items-center rounded-xl bg-slate-100 text-slate-500"><ScanLine size={17} /></span>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">环境检查</p>
+                    <p className="mt-0.5 text-xs text-slate-500">检测完成后会列出可修复项。</p>
+                  </div>
+                </div>
+                <div className="mt-5 space-y-2" aria-hidden="true">
+                  {[76, 92, 64].map((width) => <div key={width} className="h-10 animate-pulse rounded-xl bg-slate-100" style={{ width: `${width}%` }} />)}
+                </div>
+              </div>
+            )}
+            <div className="rounded-[22px] bg-slate-900 p-5 text-slate-100 shadow-[0_20px_60px_rgba(15,23,42,0.16)]">
+              <Bot size={18} className="text-slate-300" />
+              <p className="mt-4 text-sm font-semibold">本地优先</p>
+              <p className="mt-2 text-xs leading-5 text-slate-400">
+                工作区内容和密钥默认留在本机。安装来源由你选择，执行进度和日志可随时查看。
+              </p>
+            </div>
+          </aside>
         </div>
-
-        <p className="mt-6 text-center text-xs text-slate-400">
-          Hermes Forge v{store.clientInfo?.appVersion || "unknown"}
-        </p>
       </div>
-    </div>
+    </main>
+  );
+}
+
+function OnboardingSteps(props: { status: "detecting" | "found" | "not-found" | "installing"; nextTarget: WelcomeCompleteTarget }) {
+  const steps = [
+    { label: "检查环境", state: props.status === "detecting" ? "active" : "done" },
+    { label: "安装 Hermes", state: props.status === "detecting" ? "upcoming" : props.status === "found" ? "done" : "active" },
+    { label: "配置模型", state: props.status === "found" ? (props.nextTarget === "model" ? "active" : "done") : "upcoming" },
+  ] as const;
+  return (
+    <ol className="mt-8 grid gap-2 sm:grid-cols-3" aria-label="首次设置进度">
+      {steps.map((step, index) => (
+        <li key={step.label} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 ${step.state === "active" ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200" : "text-slate-500"}`}>
+          <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg font-mono text-[11px] font-semibold tabular-nums ${step.state === "done" ? "bg-emerald-100 text-emerald-700" : step.state === "active" ? "bg-slate-900 text-white" : "bg-slate-200/70 text-slate-400"}`}>
+            {step.state === "done" ? <CheckCircle2 size={14} /> : index + 1}
+          </span>
+          <span className="text-xs font-semibold">{step.label}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -490,11 +518,11 @@ function DependencyChecklist(props: {
   onRepair: (id: SetupDependencyRepairId) => void | Promise<void>;
 }) {
   return (
-    <div className="mt-6 border-t border-slate-100 pt-4 text-left">
+    <div className="rounded-[22px] bg-white p-5 text-left shadow-[0_18px_55px_rgba(30,41,59,0.06)] ring-1 ring-slate-200/65">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Preflight</p>
-          <p className="mt-1 text-sm font-semibold text-slate-800">首次运行体检</p>
+          <p className="text-xs font-semibold tracking-[0.12em] text-slate-400">环境检查</p>
+          <p className="mt-1 text-sm font-semibold text-slate-800">{props.checks.some((check) => check.status !== "ok") ? "还有项目需要处理" : "关键依赖已通过"}</p>
         </div>
         <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-500">
           {props.checks.filter((check) => check.status === "ok").length}/{props.checks.length}
@@ -502,7 +530,7 @@ function DependencyChecklist(props: {
       </div>
       <div className="space-y-2">
         {props.checks.map((check) => (
-          <div key={check.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+          <div key={check.id} className="rounded-xl bg-slate-50 px-3 py-3 ring-1 ring-slate-100">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -557,37 +585,6 @@ function installStageLabel(progress: number) {
   if (progress <= 62) return "执行安装脚本";
   if (progress <= 82) return "健康检查";
   return "完成";
-}
-
-async function detectSlowNetwork(): Promise<string | null> {
-  const hints: string[] = [];
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
-    const start = Date.now();
-    await fetch("https://pypi.org/simple/", { method: "HEAD", signal: controller.signal, mode: "no-cors" });
-    const elapsed = Date.now() - start;
-    clearTimeout(timer);
-    if (elapsed > 3000) {
-      hints.push("检测到 PyPI 访问较慢（" + elapsed + "ms），建议在设置中心切换国内社区镜像，或手动设置 pip 国内源后重试。");
-    }
-  } catch {
-    hints.push("检测到 PyPI 无法访问，可能是网络受限。建议在设置中心切换国内社区镜像，或手动配置 pip 国内源。");
-  }
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
-    const start = Date.now();
-    await fetch("https://github.com/NousResearch/hermes-agent", { method: "HEAD", signal: controller.signal, mode: "no-cors" });
-    const elapsed = Date.now() - start;
-    clearTimeout(timer);
-    if (elapsed > 3000) {
-      hints.push("检测到 GitHub 访问较慢（" + elapsed + "ms），安装脚本下载可能需要更长时间。");
-    }
-  } catch {
-    hints.push("检测到 GitHub 无法访问，安装脚本可能下载失败。建议在设置中心切换国内社区镜像。");
-  }
-  return hints.length > 0 ? hints.join(" ") : null;
 }
 
 function ManualInstallGuide(props: { defaultOpen?: boolean }) {

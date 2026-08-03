@@ -71,7 +71,7 @@ export function SupportView(props: { onBack: () => void }) {
   }
 
   return (
-    <section className="hermes-support-page flex min-h-screen flex-col bg-[#f7f8fb] text-slate-900">
+    <section id="main-content" tabIndex={-1} className="hermes-support-page flex min-h-screen flex-col bg-[#f7f8fb] text-slate-900">
       <header className="hermes-support-header flex h-[58px] items-center justify-between border-b border-slate-200/70 bg-white px-6">
         <button
           className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
@@ -123,7 +123,7 @@ export function SupportView(props: { onBack: () => void }) {
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold text-slate-950">反馈墙</h2>
-                <p className="mt-2 text-sm text-slate-500">感谢各位点赞、浏览、试用和支持项目的佬们！</p>
+                <p className="mt-2 text-sm text-slate-500">感谢每一位试用、反馈和支持这个项目的人。</p>
                 <p className="mt-1 text-sm text-slate-500">提交反馈后会同步到这里；我在服务器仪表盘的回复也会显示在这里。</p>
               </div>
               <button

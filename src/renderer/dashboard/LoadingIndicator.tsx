@@ -1,4 +1,4 @@
-import { Loader2 } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { cn } from "./DashboardPrimitives";
 
 interface LoadingProps {
@@ -39,13 +39,23 @@ export function LoadingIndicator(props: LoadingProps) {
 
 export function PageLoader() {
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-white/80 backdrop-blur-sm z-50">
-      <div className="flex flex-col items-center gap-6">
-        <div className="relative">
-          <div className="absolute inset-0 animate-ping rounded-full bg-indigo-200 opacity-75" />
-          <div className="relative h-10 w-10 rounded-full bg-indigo-500" />
+    <div className="fixed inset-0 z-50 grid place-items-center bg-[#f4f5f7]/95 px-5 backdrop-blur-sm" role="status" aria-live="polite">
+      <div className="w-full max-w-sm rounded-[24px] bg-white p-6 shadow-[0_28px_90px_rgba(15,23,42,0.12)] ring-1 ring-slate-200/70">
+        <div className="flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-[13px] bg-slate-950 text-white">
+            <Sparkles size={17} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-900">正在恢复工作台</p>
+            <p className="mt-0.5 text-xs text-slate-500">载入会话、工作区和运行状态</p>
+          </div>
         </div>
-        <p className="text-sm text-slate-500">正在加载...</p>
+        <div className="mt-6 space-y-2.5" aria-hidden="true">
+          <div className="h-10 w-full animate-pulse rounded-xl bg-slate-100" />
+          <div className="h-10 w-[86%] animate-pulse rounded-xl bg-slate-100" />
+          <div className="h-10 w-[68%] animate-pulse rounded-xl bg-slate-100" />
+        </div>
+        <p className="sr-only">正在加载应用数据</p>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import { Copy, Download, FolderPlus, PanelLeftClose, PencilLine, Pin, Plus, Search, Trash2, Upload } from "lucide-react";
+import { Copy, Download, FolderPlus, PanelLeftClose, PencilLine, Pin, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { SessionMetaPatch, WorkSession } from "../../../shared/types";
 import { useAppStore } from "../../store";
@@ -45,7 +45,7 @@ export function SessionSidebar(props: {
     <aside className="hermes-session-sidebar flex h-full min-h-0 w-full shrink-0 flex-col border-r border-slate-200/80 bg-[#fbfbfd] p-2">
       <div className="space-y-2 border-b border-slate-200/70 pb-2">
         <div className="flex min-w-0 items-center gap-2">
-          <button className="flex h-[34px] min-w-0 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--hermes-primary)] px-2.5 text-[12px] font-medium text-white shadow-[0_10px_24px_rgba(91,77,255,0.24)] transition hover:bg-[var(--hermes-primary-strong)]" onClick={props.onCreateSession} type="button">
+          <button className="flex h-[34px] min-w-0 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--hermes-primary)] px-2.5 text-[12px] font-medium text-white shadow-[0_10px_24px_rgba(91,77,255,0.24)] transition hover:bg-[var(--hermes-primary-strong)]" onClick={props.onCreateSession} title="新建会话 (Ctrl+N)" type="button">
             <Plus size={14} />
             新建
           </button>
@@ -55,7 +55,12 @@ export function SessionSidebar(props: {
         </div>
         <div className="hermes-session-search flex h-8 items-center gap-2 rounded-xl border border-[var(--hermes-card-border)] bg-white px-2.5 focus-within:hermes-purple-focus">
           <Search size={13} className="text-slate-400" />
-          <input className="hermes-session-search__input min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-slate-400" placeholder="搜索会话" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input aria-label="搜索会话" className="hermes-session-search__input min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-slate-400" placeholder="搜索会话" value={query} onChange={(event) => setQuery(event.target.value)} />
+          {query ? (
+            <button aria-label="清除会话搜索" className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onClick={() => setQuery("")} type="button">
+              <X size={11} />
+            </button>
+          ) : null}
         </div>
         <div className="flex items-center justify-between px-0.5">
           <button className={tabClass(tab === "recent")} onClick={() => setTab("recent")} type="button">最近</button>
@@ -83,9 +88,16 @@ export function SessionSidebar(props: {
         {shownSessionCount === 0 ? (
           <div className="flex flex-col items-center justify-center py-10">
             <FolderPlus size={24} className="text-slate-300" />
-            <p className="mt-2 text-[12px] text-slate-400">暂无会话</p>
-            <button className="mt-2 rounded-lg px-3 py-1.5 text-[12px] font-medium text-indigo-600 transition-colors hover:bg-white" onClick={props.onCreateSession} type="button">
-              新建会话
+            <p className="mt-2 text-[12px] font-medium text-slate-500">{query ? "没有匹配的会话" : tab === "favorite" ? "还没有收藏会话" : "还没有会话"}</p>
+            <p className="mt-1 max-w-[18ch] text-center text-[10px] leading-4 text-slate-400">
+              {query ? "换个关键词，或清除搜索查看全部。" : tab === "favorite" ? "在会话上点收藏，重要上下文会更容易找到。" : "新建会话后，草稿和上下文会独立保存。"}
+            </p>
+            <button
+              className="mt-3 rounded-lg px-3 py-1.5 text-[12px] font-medium text-[var(--hermes-primary)] transition-colors hover:bg-white"
+              onClick={query ? () => setQuery("") : tab === "favorite" ? () => setTab("recent") : props.onCreateSession}
+              type="button"
+            >
+              {query ? "清除搜索" : tab === "favorite" ? "查看最近会话" : "新建会话"}
             </button>
           </div>
         ) : null}
@@ -93,10 +105,10 @@ export function SessionSidebar(props: {
 
       <div className="mt-auto shrink-0 border-t border-slate-200/70 px-1 pt-2" data-testid="session-sidebar-footer">
         <div className="flex gap-1">
-          <button className={actionButtonClass} onClick={props.onImportSession} title="导入会话" type="button">
+          <button aria-label="导入会话" className={actionButtonClass} onClick={props.onImportSession} title="导入会话" type="button">
             <Upload size={13} />
           </button>
-          <button className={actionButtonClass} disabled={!activeSession} onClick={() => activeSession && props.onExportSession(activeSession, "json")} title="导出会话" type="button">
+          <button aria-label="导出会话" className={actionButtonClass} disabled={!activeSession} onClick={() => activeSession && props.onExportSession(activeSession, "json")} title="导出会话" type="button">
             <Download size={13} />
           </button>
         </div>

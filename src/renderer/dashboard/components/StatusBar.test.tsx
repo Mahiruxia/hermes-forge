@@ -220,6 +220,7 @@ describe("StatusBar", () => {
   });
 
   it("prioritizes gateway errors in the summary", async () => {
+    const onOpenHealth = vi.fn();
     useAppStore.setState({
       clientInfo: {
         appVersion: "0.1.2",
@@ -263,11 +264,13 @@ describe("StatusBar", () => {
       onClientUpdateEvent: vi.fn().mockReturnValue(() => undefined),
     };
 
-    render(<StatusBar />);
+    render(<StatusBar onOpenHealth={onOpenHealth} />);
 
     await waitFor(() => expect(screen.getByRole("button", { name: /环境需处理/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /环境需处理/ }));
     expect(screen.getAllByText("Gateway exited with code 1.").length).toBeGreaterThan(0);
     expect(screen.getByTestId("status-light-gateway")).toHaveClass("hermes-status-light--error");
+    fireEvent.click(screen.getByRole("button", { name: /打开健康检查/ }));
+    expect(onOpenHealth).toHaveBeenCalledTimes(1);
   });
 });

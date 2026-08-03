@@ -1,4 +1,5 @@
 import { Globe2, ShieldCheck, X } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { cn } from "../DashboardPrimitives";
 
 export type InstallSourceChoice = "official" | "mirror";
@@ -9,19 +10,44 @@ export function InstallSourceDialog(props: {
   onClose: () => void;
   onSelect: (kind: InstallSourceChoice) => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!props.open) return undefined;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const timer = window.setTimeout(() => dialogRef.current?.querySelector<HTMLButtonElement>("[data-install-source]")?.focus(), 0);
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !props.busy) props.onClose();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, [props.busy, props.onClose, props.open]);
+
   if (!props.open) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 px-4 py-6 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !props.busy) props.onClose();
+      }}
+    >
       <div
+        ref={dialogRef}
+        aria-describedby="install-source-description"
+        aria-labelledby="install-source-title"
         aria-modal="true"
-        className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20"
+        className="w-full max-w-2xl rounded-[22px] border border-slate-200 bg-white shadow-[0_32px_100px_rgba(15,23,42,0.28)]"
         role="dialog"
       >
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-slate-950">选择 Hermes Agent 安装来源</h2>
-            <p className="mt-1 text-sm leading-5 text-slate-500">
+            <h2 id="install-source-title" className="text-base font-semibold text-slate-950">选择 Hermes Agent 安装来源</h2>
+            <p id="install-source-description" className="mt-1 max-w-[58ch] text-sm leading-5 text-slate-500">
               官方源可信优先，国内社区镜像可用性优先。镜像为非官方来源，请按网络情况主动选择。
             </p>
           </div>
@@ -38,7 +64,7 @@ export function InstallSourceDialog(props: {
 
         <div className="grid gap-3 px-5 py-4 md:grid-cols-2">
           <InstallSourceOption
-            badge="可信优先"
+            badge="推荐"
             busy={props.busy}
             detail="安装脚本来自 GitHub Raw，仓库为 NousResearch/hermes-agent。适合可以稳定访问 GitHub 的环境。"
             icon={ShieldCheck}
@@ -47,7 +73,7 @@ export function InstallSourceDialog(props: {
             tone="official"
           />
           <InstallSourceOption
-            badge="非官方"
+            badge="备用 · 非官方"
             busy={props.busy}
             detail="安装脚本来自中文社区镜像，适合 GitHub、uv 或 Python 依赖下载慢、失败时使用。"
             icon={Globe2}
@@ -77,6 +103,7 @@ function InstallSourceOption(props: {
   const Icon = props.icon;
   return (
     <button
+      data-install-source
       className={cn(
         "group flex min-h-40 flex-col items-start rounded-xl border bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60",
         props.tone === "official"
@@ -98,7 +125,7 @@ function InstallSourceOption(props: {
         </span>
         <span
           className={cn(
-            "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+            "rounded-md px-2 py-0.5 text-[11px] font-semibold",
             props.tone === "official" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700",
           )}
         >

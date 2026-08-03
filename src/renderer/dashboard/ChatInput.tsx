@@ -133,6 +133,14 @@ export function ChatInput(props: {
   }, [store.userInput]);
 
   useEffect(() => {
+    function focusComposer() {
+      textareaRef.current?.focus();
+    }
+    window.addEventListener("hermes:focus-composer", focusComposer);
+    return () => window.removeEventListener("hermes:focus-composer", focusComposer);
+  }, []);
+
+  useEffect(() => {
     return () => {
       listeningRef.current = false;
       stoppingVoiceRef.current = true;
@@ -668,6 +676,13 @@ export function ChatInput(props: {
         {hermesUpdate?.updateAvailable ? (
           <HermesUpdateBanner update={hermesUpdate} onOpenSettings={() => props.onOpenFix?.("hermes")} />
         ) : null}
+        {props.sendBlockReason && props.sendBlockTarget ? (
+          <ComposerReadinessNotice
+            message={props.sendBlockReason}
+            target={props.sendBlockTarget}
+            onOpenFix={props.onOpenFix}
+          />
+        ) : null}
         <div
           className={cn(
             "hermes-composer-card relative overflow-visible rounded-[24px] border border-slate-200/70 bg-[#f6f7f9] shadow-none transition focus-within:border-[var(--hermes-primary-border)] focus-within:bg-[#f8f8ff] focus-within:shadow-[0_0_0_3px_rgba(91,77,255,0.055)]",
@@ -829,16 +844,17 @@ export function ChatInput(props: {
               <ContextMeterPill meter={contextMeter} />
               {running.isActiveSessionRunning ? (
                 <button
-                  className="grid h-8 w-8 place-items-center rounded-full border border-rose-200 bg-rose-50 text-rose-600 transition hover:bg-rose-100"
+                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-2.5 text-rose-600 transition hover:bg-rose-100"
                   onClick={props.onCancelTask}
                   aria-label="停止 Hermes"
                   type="button"
                 >
                   <Square size={15} />
+                  <span className="hidden text-[11px] font-semibold sm:inline">停止</span>
                 </button>
               ) : (
                 <button
-                  className="grid h-8 w-8 place-items-center rounded-full bg-[var(--hermes-primary)] text-white shadow-[0_10px_24px_rgba(91,77,255,0.24)] transition hover:bg-[var(--hermes-primary-strong)] disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                  className="inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-full bg-[var(--hermes-primary)] px-2.5 text-white shadow-[0_10px_24px_rgba(91,77,255,0.20)] transition hover:-translate-y-px hover:bg-[var(--hermes-primary-strong)] active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
                   aria-label="发送"
                   title={props.sendBlockReason ?? "发送"}
                   onClick={handleSubmit}
@@ -846,6 +862,7 @@ export function ChatInput(props: {
                   type="button"
                 >
                   <Send size={15} />
+                  <span className="hidden text-[11px] font-semibold sm:inline">发送</span>
                 </button>
               )}
             </div>
@@ -1339,6 +1356,32 @@ function SendKeyInlinePrompt(props: { value: "enter" | "mod-enter"; saving: bool
       <span className="h-4 w-px bg-slate-200 max-sm:hidden" />
       <SendKeyPromptButton label="Enter" ariaLabel="Enter 发送" active={props.value === "enter"} saving={props.saving} onClick={() => props.onChange("enter")} />
       <SendKeyPromptButton label="Ctrl+Enter" ariaLabel="Ctrl+Enter 发送" active={props.value === "mod-enter"} saving={props.saving} onClick={() => props.onChange("mod-enter")} />
+    </div>
+  );
+}
+
+function ComposerReadinessNotice(props: {
+  message: string;
+  target: FixTarget;
+  onOpenFix?: (target: FixTarget) => void;
+}) {
+  const actionLabel: Record<FixTarget, string> = {
+    model: "配置模型",
+    hermes: "检查 Hermes",
+    health: "查看阻塞项",
+    diagnostics: "打开诊断",
+    workspace: "选择工作区",
+  };
+  return (
+    <div className="mb-2 flex items-start justify-between gap-3 rounded-xl border border-amber-200/80 bg-amber-50 px-3 py-2.5 text-left" role="status">
+      <span className="min-w-0 text-[12px] leading-5 text-amber-800">{props.message}</span>
+      <button
+        className="shrink-0 rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200 transition hover:bg-amber-100"
+        onClick={() => props.onOpenFix?.(props.target)}
+        type="button"
+      >
+        {actionLabel[props.target]}
+      </button>
     </div>
   );
 }

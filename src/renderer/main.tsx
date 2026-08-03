@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   ActivityLog,
@@ -24,13 +24,9 @@ import type {
   WindowsBridgeStatus,
   WorkSession,
 } from "../shared/types";
-import { DashboardView } from "./dashboard/DashboardView";
-import { SupportView } from "./dashboard/SupportView";
-import { WelcomePage, type WelcomeCompleteTarget } from "./dashboard/WelcomePage";
+import type { WelcomeCompleteTarget } from "./dashboard/WelcomePage";
 import { ToastContainer } from "./dashboard/ToastNotification";
 import { PageLoader } from "./dashboard/LoadingIndicator";
-import { ModelConfigWizard } from "./dashboard/components/panels/ModelConfigWizard";
-import { SettingsPanel as HermesSettingsPanel } from "./dashboard/components/panels/SettingsPanel";
 import { InstallSourceDialog, type InstallSourceChoice } from "./dashboard/components/InstallSourceDialog";
 import { ConfigCenterLayout, type ConfigSectionId } from "./dashboard/components/settings/ConfigCenterLayout";
 import { buildConversationHistory } from "./conversationHistory";
@@ -42,6 +38,22 @@ import { useAppStore, type RecentWorkspace } from "./store";
 import { safePromiseWithFallback } from "./utils/safePromise";
 import { hasInlineLocalFilePath } from "../shared/local-file-paths";
 import "./styles.css";
+
+const DashboardView = lazy(() =>
+  import("./dashboard/DashboardView").then((module) => ({ default: module.DashboardView }))
+);
+const SupportView = lazy(() =>
+  import("./dashboard/SupportView").then((module) => ({ default: module.SupportView }))
+);
+const WelcomePage = lazy(() =>
+  import("./dashboard/WelcomePage").then((module) => ({ default: module.WelcomePage }))
+);
+const ModelConfigWizard = lazy(() =>
+  import("./dashboard/components/panels/ModelConfigWizard").then((module) => ({ default: module.ModelConfigWizard }))
+);
+const HermesSettingsPanel = lazy(() =>
+  import("./dashboard/components/panels/SettingsPanel").then((module) => ({ default: module.SettingsPanel }))
+);
 
 const RECENT_WORKSPACES_KEY = "zhenghebao.hermes.recentWorkspaces";
 
@@ -86,7 +98,7 @@ function defaultHermesRuntime(): HermesRuntimeConfig {
     mode: "windows",
     pythonCommand: "python",
     windowsAgentMode: "hermes_native",
-    cliPermissionMode: "yolo",
+    cliPermissionMode: "guarded",
     permissionPolicy: "bridge_guarded",
     workerMode: "off",
     installSource: {
@@ -1747,6 +1759,9 @@ function App() {
     if (target === "model") {
       setSettingsInitialSection("providers");
       store.setView("settings");
+    } else if (target === "hermes") {
+      setSettingsInitialSection("general");
+      store.setView("settings");
     }
   }
 
@@ -1756,6 +1771,7 @@ function App() {
 
   return (
     <>
+      <a className="hermes-skip-link" href="#main-content">跳到主要内容</a>
       {store.isLoading("bootstrap") && <PageLoader />}
       {store.view === "support" ? (
         <SupportView onBack={() => store.setView("home")} />
@@ -1908,7 +1924,11 @@ try {
     console.error("Root element not found");
     throw new Error("Root element not found");
   }
-  createRoot(rootElement).render(<App />);
+  createRoot(rootElement).render(
+    <Suspense fallback={<PageLoader />}>
+      <App />
+    </Suspense>
+  );
 } catch (error) {
   console.error("Failed to render app:", error);
   const rootElement = document.getElementById("root");

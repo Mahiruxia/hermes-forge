@@ -15,7 +15,7 @@ Hermes Forge 为 Windows 与 macOS 提供统一的 Hermes Agent 桌面界面，�
 
 核心能力：
 
-- **零配置 onboarding** — 自动检测 Git、Python、Hermes Agent 等依赖缺失，提供一键修复或自动安装。
+- **引导式首启** — 按“环境检测 → 安装 Hermes → 配置模型”推进；安装来源由用户确认，缺失依赖可就地修复。
 - **模型同步** — 桌面端模型配置实时同步至 Hermes CLI 与 Gateway 运行时，避免多端配置漂移。
 - **Windows 原生桥接** — 文件操作、PowerShell、剪贴板、截图、窗口管理与键鼠自动化，统一走主进程审批服务。
 - **Kanban 任务看板** — 完整任务生命周期管理，集成 Gateway 调度器，支持拖拽与实时诊断。
@@ -31,17 +31,33 @@ Hermes Forge 为 Windows 与 macOS 提供统一的 Hermes Agent 桌面界面，�
 
 > 当前为未签名二进制，首次启动时系统安全提示为预期行为。
 
+## 首次使用
+
+1. 启动后等待本机环境检测完成。
+2. 未发现 Hermes 时，点击“选择安装方式”，优先使用官方 GitHub；网络受限时可主动选择国内社区镜像。
+3. Hermes 就绪后继续配置模型来源和 API Key。密钥只保存到本机安全存储，不会在界面回显。
+4. 进入工作台并选择项目目录，然后描述希望完成的目标。
+
+常用快捷键：
+
+- `Ctrl/Cmd + K`：聚焦任务输入框
+- `Ctrl/Cmd + N`：新建会话
+- `Ctrl/Cmd + O`：选择工作区
+- `Ctrl/Cmd + B`：展开或收起会话栏
+
 ## 开发
 
-环境要求：Node.js 20+、npm、Git、Python 3.10+
+环境要求：Node.js 22.12+、npm 10+、Git、Python 3.10+
 
 ```bash
 git clone https://github.com/Mahiruxia/hermes-forge.git
 cd hermes-forge
-npm install
+npm ci
 cp .env.example .env
 npm run dev
 ```
+
+开发模式会由 Electron 主进程加载仓库根目录的 `.env`，且不会覆盖终端中已经设置的同名环境变量。生产安装包不读取工作目录中的 `.env`；模型凭证应通过应用内设置保存到系统安全存储。
 
 ```bash
 npm run check    # TypeScript

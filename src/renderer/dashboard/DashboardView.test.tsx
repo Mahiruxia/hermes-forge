@@ -47,13 +47,15 @@ describe("DashboardView", () => {
     onOpenFix?: (target: "model" | "hermes" | "health" | "diagnostics" | "workspace") => void;
     onDeleteSession?: (session: WorkSession) => void;
     onCancelTask?: () => void;
+    onCreateSession?: () => void;
+    onPickWorkspace?: () => void;
   }) {
     const onDeleteSession = overrides?.onDeleteSession ?? vi.fn();
     const view = render(
       <DashboardView
-        onPickWorkspace={vi.fn()}
+        onPickWorkspace={overrides?.onPickWorkspace ?? vi.fn()}
         onSelectWorkspace={vi.fn()}
-        onCreateSession={vi.fn()}
+        onCreateSession={overrides?.onCreateSession ?? vi.fn()}
         onSelectSession={vi.fn()}
         onDeleteSession={onDeleteSession}
         onRenameSession={vi.fn()}
@@ -226,6 +228,22 @@ describe("DashboardView", () => {
     expect(useAppStore.getState().agentPanelOpen).toBe(true);
     expect(useAppStore.getState().inspectorOpen).toBe(false);
     expect(agentShell).toHaveStyle({ width: "360px" });
+  });
+
+  it("supports high-frequency workspace keyboard shortcuts", () => {
+    const onCreateSession = vi.fn();
+    const onPickWorkspace = vi.fn();
+    renderView({ onCreateSession, onPickWorkspace });
+
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    expect(onCreateSession).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+    expect(onPickWorkspace).toHaveBeenCalledTimes(1);
+
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(input).toHaveFocus();
   });
 
   it("opens and closes workspace files from the user-visible controls", () => {
@@ -813,6 +831,7 @@ describe("DashboardView", () => {
     );
 
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "配置模型" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /未配置可用模型/ }));
     expect(onOpenFix).toHaveBeenCalledWith("model");
   });

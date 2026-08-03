@@ -16,6 +16,7 @@ export function HermesHeader(props: {
   onUpdateActiveSessionMeta: (patch: SessionMetaPatch) => void;
   onOpenSessionFolder: () => void;
   onOpenSupport: () => void;
+  onOpenHealth?: () => void;
   inspectorOpen?: boolean;
   workspaceDrawerOpen?: boolean;
   agentPanelOpen?: boolean;
@@ -291,7 +292,7 @@ export function HermesHeader(props: {
       </div>
 
       <div className="flex items-center gap-1.5">
-        <StatusBar />
+        <StatusBar onOpenHealth={props.onOpenHealth} />
 
         <button
           className={cn(headerActionClass(updateBusy), "relative")}
