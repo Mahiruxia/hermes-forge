@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppPaths } from "./app-paths";
 import { runCommand } from "../process/command-runner";
+import { defaultHermesCliPath } from "../runtime/hermes-cli-paths";
 import { HermesWebUiService } from "./hermes-webui-service";
 
 vi.mock("../process/command-runner", () => ({
@@ -11,6 +12,11 @@ vi.mock("../process/command-runner", () => ({
 }));
 
 let tempRoot = "";
+const nativePythonCommand = process.platform === "win32" ? "python" : "python3";
+
+function nativeHermesCliPath() {
+  return defaultHermesCliPath(path.join(tempRoot, "Hermes Agent"));
+}
 
 describe("HermesWebUiService", () => {
   beforeEach(async () => {
@@ -114,8 +120,8 @@ describe("HermesWebUiService", () => {
     await service.saveCronJob({ name: "Morning check", schedule: "every 1h", prompt: "Summarize project status", status: "active" });
 
     expect(runCommand).toHaveBeenCalledWith(
-      "python",
-      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "create", "--name", "Morning check", "every 1h", "Summarize project status"],
+      nativePythonCommand,
+      [nativeHermesCliPath(), "cron", "create", "--name", "Morning check", "every 1h", "Summarize project status"],
       expect.objectContaining({ commandId: "webui.hermes" }),
     );
   });
@@ -193,9 +199,9 @@ describe("HermesWebUiService", () => {
     });
 
     expect(runCommand).toHaveBeenCalledWith(
-      "python",
+      nativePythonCommand,
       [
-        path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"),
+        nativeHermesCliPath(),
         "cron", "create", "--name", "Watchdog", "--script", "watchdog.py", "--no-agent", "every 1h",
       ],
       expect.objectContaining({ commandId: "webui.hermes" }),
@@ -257,8 +263,8 @@ describe("HermesWebUiService", () => {
     await service.saveCronJob({ id: "abc123", name: "Updated", schedule: "0 9 * * *", prompt: "New prompt", status: "active" });
 
     expect(runCommand).toHaveBeenCalledWith(
-      "python",
-      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "edit", "abc123", "--name", "Updated", "--schedule", "0 9 * * *", "--prompt", "New prompt"],
+      nativePythonCommand,
+      [nativeHermesCliPath(), "cron", "edit", "abc123", "--name", "Updated", "--schedule", "0 9 * * *", "--prompt", "New prompt"],
       expect.objectContaining({ commandId: "webui.hermes" }),
     );
   });
@@ -286,14 +292,14 @@ describe("HermesWebUiService", () => {
     expect(result.ok).toBe(true);
     expect(runCommand).toHaveBeenNthCalledWith(
       1,
-      "python",
-      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "run", "abc123"],
+      nativePythonCommand,
+      [nativeHermesCliPath(), "cron", "run", "abc123"],
       expect.objectContaining({ timeoutMs: 30000 }),
     );
     expect(runCommand).toHaveBeenNthCalledWith(
       2,
-      "python",
-      [path.join(tempRoot, "Hermes Agent", "venv", "Scripts", "hermes.exe"), "cron", "tick"],
+      nativePythonCommand,
+      [nativeHermesCliPath(), "cron", "tick"],
       expect.objectContaining({ timeoutMs: 10 * 60 * 1000 }),
     );
   });

@@ -5,7 +5,13 @@ import type { AppPaths } from "./app-paths";
 import { ensureHermesHomeLayout, resolveActiveHermesHome } from "./hermes-home";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
-import { defaultWindowsHermesCliPath, resolveWindowsHermesCliPathSync } from "../runtime/hermes-cli-paths";
+import {
+  defaultHermesCliPath,
+  defaultWindowsHermesCliPath,
+  resolveHermesCliPathSync,
+  resolveWindowsHermesCliPathSync,
+} from "../runtime/hermes-cli-paths";
+import { getDefaultPythonCommand, getPlatformKind } from "../platform";
 import { validateSkillId, validateProfileName, validateCronSchedule, validateSkillDirectoryName, validateSkillUploadPath } from "../security";
 import type {
   FilePreviewResult,
@@ -995,7 +1001,9 @@ export class HermesWebUiService {
         pythonArgs: [
           runtime.mode === "wsl"
             ? `${runtimeRoot.replace(/\/+$/, "")}/hermes`
-            : this.windowsHermesCliPath(root),
+            : runtime.mode === "darwin"
+              ? this.nativeHermesCliPath(root)
+              : this.windowsHermesCliPath(root),
           ...args,
         ],
         cwd: root,
@@ -1012,7 +1020,7 @@ export class HermesWebUiService {
       timeoutMs: options.timeoutMs ?? 30000,
       env: launch.env,
       commandId: "webui.hermes",
-      runtimeKind: runtime?.mode ?? "windows",
+      runtimeKind: runtime?.mode ?? this.nativeRuntimeMode(),
     });
     return {
       ok: result.exitCode === 0,
@@ -1036,9 +1044,9 @@ export class HermesWebUiService {
 
   private async legacyHermesLaunch(root: string, args: string[], hermesHome: string) {
     // Legacy fallback: kept for tests/standalone construction paths until all WebUI callers inject RuntimeAdapterFactory.
-    const cliPath = this.windowsHermesCliPath(root);
+    const cliPath = this.nativeHermesCliPath(root);
     return {
-      command: "python",
+      command: getDefaultPythonCommand(getPlatformKind()),
       args: [cliPath, ...args],
       cwd: root,
       env: { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", PYTHONPATH: root, HERMES_HOME: hermesHome },
@@ -1055,6 +1063,14 @@ export class HermesWebUiService {
 
   private windowsHermesCliPath(root: string) {
     return resolveWindowsHermesCliPathSync(root) ?? defaultWindowsHermesCliPath(root);
+  }
+
+  private nativeHermesCliPath(root: string) {
+    return resolveHermesCliPathSync(root) ?? defaultHermesCliPath(root);
+  }
+
+  private nativeRuntimeMode(): "windows" | "darwin" {
+    return process.platform === "win32" ? "windows" : "darwin";
   }
 
   private theme(value: unknown): ThemePreference["id"] {

@@ -27,6 +27,7 @@ vi.mock("../process/command-runner", () => ({
 let tempRoot = "";
 let config: RuntimeConfig;
 let healthCheckMock: ReturnType<typeof vi.fn>;
+const describeWindows = process.platform === "win32" ? describe : describe.skip;
 
 beforeEach(async () => {
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-setup-service-"));
@@ -78,7 +79,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-describe("SetupService installHermes", () => {
+describeWindows("SetupService installHermes Windows fallback", () => {
   it("reuses an already healthy Hermes install and saves its root path", async () => {
     const rootPath = path.join(tempRoot, "Hermes Agent");
     healthCheckMock.mockResolvedValueOnce({
