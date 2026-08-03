@@ -1,6 +1,6 @@
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getPythonCandidates, getWindowsPythonInstallCandidates } from "./platform-resolver";
+import { getHermesCliCandidates, getPythonCandidates, getWindowsPythonInstallCandidates, inferHermesRootFromCliPath } from "./platform-resolver";
 
 const originalEnv = { ...process.env };
 
@@ -34,5 +34,12 @@ describe("platform python candidates", () => {
       path.normalize("C:\\Users\\zheng\\AppData\\Local\\Programs\\Python\\Python312\\python.exe"),
       path.normalize("C:\\Program Files\\Python312\\python.exe"),
     ]));
+  });
+
+  it("uses target-platform separators for Hermes paths regardless of the test host", () => {
+    expect(getHermesCliCandidates("win32", "C:\\Hermes Agent")[0]).toBe("C:\\Hermes Agent\\venv\\Scripts\\hermes.exe");
+    expect(inferHermesRootFromCliPath("C:\\Hermes Agent\\.venv\\Scripts\\hermes.exe", "win32")).toBe("C:\\Hermes Agent");
+    expect(getHermesCliCandidates("darwin", "/Users/xia/Hermes Agent")[0]).toBe("/Users/xia/Hermes Agent/venv/bin/hermes");
+    expect(inferHermesRootFromCliPath("/Users/xia/Hermes Agent/.venv/bin/hermes", "darwin")).toBe("/Users/xia/Hermes Agent");
   });
 });

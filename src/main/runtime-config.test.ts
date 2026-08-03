@@ -12,6 +12,7 @@ import { __resetPreferredHermesRuntimeCacheForTests, RuntimeConfigStore } from "
 
 const runCommandMock = vi.mocked(runCommand);
 const tempDirs: string[] = [];
+const defaultRuntimeMode = process.platform === "win32" ? "windows" : "darwin";
 
 afterEach(async () => {
   __resetPreferredHermesRuntimeCacheForTests();
@@ -22,14 +23,14 @@ afterEach(async () => {
 });
 
 describe("RuntimeConfigStore preferred runtime", () => {
-  it("uses Windows as the startup-safe default without probing on first run", async () => {
+  it("uses the platform-native startup-safe default without probing on first run", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
 
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.mode).toBe(defaultRuntimeMode);
     expect(config.hermesRuntime?.cliPermissionMode).toBe("guarded");
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
@@ -39,7 +40,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     });
   });
 
-  it("keeps Windows first when startup detection is enabled without WSL preference", async () => {
+  it("keeps the platform-native runtime when startup detection is enabled without WSL preference", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
     process.env.HERMES_FORGE_DETECT_PREFERRED_RUNTIME_ON_STARTUP = "1";
@@ -50,7 +51,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.mode).toBe(defaultRuntimeMode);
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
@@ -59,7 +60,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     });
   });
 
-  it("keeps Windows even when legacy explicit WSL preference is enabled and WSL has distros", async () => {
+  it("keeps the platform-native runtime even when legacy WSL preference is enabled", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
     process.env.HERMES_FORGE_DETECT_PREFERRED_RUNTIME_ON_STARTUP = "1";
@@ -71,7 +72,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.mode).toBe(defaultRuntimeMode);
     expect(config.hermesRuntime?.distro).toBeUndefined();
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
@@ -134,7 +135,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     await expect(store.getEnginePath("hermes")).resolves.toBe(process.platform === "win32" ? agentRoot : hermesHome);
   });
 
-  it("keeps Windows default without startup probing when explicit detection is disabled", async () => {
+  it("keeps the platform-native default without probing when explicit detection is disabled", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
     runCommandMock
@@ -144,7 +145,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     const store = new RuntimeConfigStore(path.join(dir, "config.json"));
     const config = await store.read();
 
-    expect(config.hermesRuntime?.mode).toBe("windows");
+    expect(config.hermesRuntime?.mode).toBe(defaultRuntimeMode);
     expect(runCommandMock).not.toHaveBeenCalled();
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",

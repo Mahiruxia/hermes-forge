@@ -1,5 +1,5 @@
 const INLINE_LOCAL_FILE_PATH_PATTERN =
-  /(?:"([^"\r\n]+?\.[A-Za-z0-9]{1,12})"|'([^'\r\n]+?\.[A-Za-z0-9]{1,12})'|([a-zA-Z]:\\[^\r\n"'<>|]+?\.[A-Za-z0-9]{1,12})|(\\\\wsl\$\\[^\r\n"'<>|]+?\.[A-Za-z0-9]{1,12})|(\/mnt\/[a-zA-Z]\/[^\r\n"'<>|]+?\.[A-Za-z0-9]{1,12}))/g;
+  /(?:"([^"\r\n]+?\.[A-Za-z0-9]{1,12})"|'([^'\r\n]+?\.[A-Za-z0-9]{1,12})'|([a-zA-Z]:\\[^\r\n"'<>|]+?\.[A-Za-z0-9]{1,12})|(\\\\wsl\$\\[^\r\n"'<>|]+?\.[A-Za-z0-9]{1,12})|(?<!\S)(\/[^\r\n"'<>|]+?\.[A-Za-z0-9]{1,12}))/g;
 
 export function extractInlineLocalFilePaths(text: string): string[] {
   const paths: string[] = [];
@@ -20,11 +20,11 @@ export function hasInlineLocalFilePath(text: string) {
 }
 
 export function looksLikeAbsoluteLocalFilePath(value: string) {
-  return /^[a-zA-Z]:\\/.test(value) || /^\\\\wsl\\\$\\/.test(value) || /^\/mnt\/[a-zA-Z]\//.test(value);
+  return /^[a-zA-Z]:\\/.test(value) || /^\\\\wsl\$\\/.test(value) || value.startsWith("/");
 }
 
 export function normalizeLocalFilePathKey(value: string) {
-  return /^[a-zA-Z]:\\/.test(value) || /^\\\\wsl\\\$\\/.test(value)
+  return /^[a-zA-Z]:\\/.test(value) || /^\\\\wsl\$\\/.test(value)
     ? value.toLowerCase()
     : value;
 }

@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({
@@ -26,12 +28,12 @@ describe("ipc safety helpers", () => {
   it("rejects executable, UNC, and relative paths for generic openPath", () => {
     expect(testOnly.validateOpenablePath("\\\\evil\\share\\payload.exe").ok).toBe(false);
     expect(testOnly.validateOpenablePath("payload.txt").ok).toBe(false);
-    expect(testOnly.validateOpenablePath("C:\\Users\\xia\\Desktop\\payload.ps1").ok).toBe(false);
+    expect(testOnly.validateOpenablePath(path.join(os.tmpdir(), "payload.ps1")).ok).toBe(false);
   });
 
   it("allows safe local document paths for generic openPath", () => {
-    expect(testOnly.validateOpenablePath("C:\\Users\\xia\\Desktop\\notes.md")).toMatchObject({ ok: true });
-    expect(testOnly.validateOpenablePath("C:\\Users\\xia\\Desktop\\report.pdf")).toMatchObject({ ok: true });
+    expect(testOnly.validateOpenablePath(path.join(os.tmpdir(), "notes.md"))).toMatchObject({ ok: true });
+    expect(testOnly.validateOpenablePath(path.join(os.tmpdir(), "report.pdf"))).toMatchObject({ ok: true });
   });
 
   it("accepts IPC only from the active main frame", () => {
@@ -45,7 +47,7 @@ describe("ipc safety helpers", () => {
   });
 
   it("allows existing local directories after stat validation", () => {
-    expect(testOnly.validateOpenablePath("C:\\Users\\xia\\Hermes Agent", { isDirectory: true })).toMatchObject({ ok: true });
+    expect(testOnly.validateOpenablePath(path.join(os.tmpdir(), "Hermes Agent"), { isDirectory: true })).toMatchObject({ ok: true });
   });
 
   it("rejects private model endpoints unless explicitly allowed", () => {

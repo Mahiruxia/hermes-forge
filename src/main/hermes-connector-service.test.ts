@@ -223,6 +223,8 @@ describe("HermesConnectorService helpers", () => {
   });
 
   it("lets Hermes .env override stale parent model credentials for Gateway", () => {
+    const hermesRoot = path.join(os.tmpdir(), "Hermes Agent");
+    const hermesHome = path.join(os.tmpdir(), "Forge", ".hermes", "profiles", "wechat");
     const env = testOnly.buildGatewayEnv(
       {
         OPENAI_API_KEY: "lm-studio",
@@ -234,8 +236,8 @@ describe("HermesConnectorService helpers", () => {
         OPENAI_BASE_URL: "http://127.0.0.1:8080/v1",
         OPENAI_MODEL: "gpt-5.4",
       },
-      "D:\\Hermes Agent",
-      "D:\\Forge\\.hermes\\profiles\\wechat",
+      hermesRoot,
+      hermesHome,
       true,
     );
 
@@ -245,9 +247,9 @@ describe("HermesConnectorService helpers", () => {
     expect(env.PYTHONUTF8).toBe("1");
     expect(env.PYTHONIOENCODING).toBe("utf-8:replace");
     expect(env.PYTHONUNBUFFERED).toBe("1");
-    expect(env.HERMES_HOME).toBe("D:\\Forge\\.hermes\\profiles\\wechat");
+    expect(env.HERMES_HOME).toBe(hermesHome);
     expect(env.PYTHONPATH?.split(path.delimiter)).toEqual(expect.arrayContaining([
-      "D:\\Hermes Agent",
+      hermesRoot,
       "parent-pythonpath",
     ]));
     if (process.platform === "win32") {

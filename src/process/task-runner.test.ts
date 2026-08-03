@@ -64,7 +64,7 @@ describe("task-runner inline image paths", () => {
     expect(attachments[0]).toBe(existing[0]);
   });
 
-  it("promotes an accessible Windows image path into an image attachment", async () => {
+  it("promotes an accessible platform-native image path into an image attachment", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-forge-inline-image-"));
     tempDirs.push(dir);
     const imagePath = path.join(dir, "desktop-capture.jpg");
