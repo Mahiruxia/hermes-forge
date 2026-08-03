@@ -56,7 +56,9 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-describe("NativeInstallStrategy Windows installer", () => {
+const describeWindows = process.platform === "win32" ? describe : describe.skip;
+
+describeWindows("NativeInstallStrategy Windows installer", () => {
   it("omits removed official script flags when running the latest installer", async () => {
     const installerRuns: string[][] = [];
     mockOfficialInstaller({
