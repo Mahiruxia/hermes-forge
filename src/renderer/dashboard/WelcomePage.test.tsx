@@ -32,6 +32,18 @@ beforeEach(() => {
 });
 
 describe("WelcomePage Hermes installation", () => {
+  it("renders first setup without probing until the user starts detection", async () => {
+    getHermesProbe.mockResolvedValue({ probe: { status: "offline", message: "missing" } });
+    render(<WelcomePage onComplete={vi.fn()} />);
+    await Promise.resolve();
+    expect(screen.getByRole("button", { name: "检测环境" })).toBeInTheDocument();
+    expect(getHermesProbe).not.toHaveBeenCalled();
+    expect(getSetupSummary).not.toHaveBeenCalled();
+    expect(getRuntimeConfig).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "检测环境" }));
+    await waitFor(() => expect(getHermesProbe).toHaveBeenCalledTimes(1));
+    expect(getSetupSummary).toHaveBeenCalledTimes(1);
+  });
   it("lets the user confirm before routing first launch to model settings", async () => {
     const onComplete = vi.fn();
     getHermesProbe.mockResolvedValue({
@@ -57,6 +69,7 @@ describe("WelcomePage Hermes installation", () => {
     } satisfies SetupSummary);
 
     render(<WelcomePage onComplete={onComplete} />);
+    fireEvent.click(screen.getByRole("button", { name: "检测环境" }));
 
     const continueButton = await screen.findByRole("button", { name: "继续配置模型" });
     expect(onComplete).not.toHaveBeenCalled();
@@ -77,6 +90,7 @@ describe("WelcomePage Hermes installation", () => {
     });
 
     render(<WelcomePage onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "检测环境" }));
 
     expect(await screen.findByRole("button", { name: /选择安装方式/ })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -97,6 +111,7 @@ describe("WelcomePage Hermes installation", () => {
     installHermes.mockResolvedValue({ ok: false, message: "failed", rootPath: "C:/Hermes", log: [] });
 
     render(<WelcomePage onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "检测环境" }));
 
     fireEvent.click(await screen.findByRole("button", { name: /选择安装方式/ }));
     const mirrorButton = await screen.findByRole("button", { name: /国内社区镜像/ });
@@ -114,6 +129,7 @@ describe("WelcomePage Hermes installation", () => {
     });
 
     render(<WelcomePage onComplete={onComplete} />);
+    fireEvent.click(screen.getByRole("button", { name: "检测环境" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "手动配置路径" }));
     expect(onComplete).toHaveBeenCalledWith("hermes");

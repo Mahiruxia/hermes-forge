@@ -1,44 +1,22 @@
 # Hermes Forge Roadmap
 
-Hermes Forge 当前以 Hermes 单引擎为核心，目标是把已经可运行的本地桌面工作台继续收口成稳定、可审计、可维护的社区客户端。
-
 ## 当前基线
 
-- Hermes 是唯一执行引擎。
-- `task:event` 是唯一任务事件总线。
-- 高风险 Windows 动作已接入主进程审批。
-- 微信扫码、QQ Bot、飞书多机器人、Gateway runtime、模型定价和配置恢复入口已有可用闭环。
+Forge 0.2.31 保留 Electron 和 Hermes 单引擎，主导航为聊天、工作区、技能与记忆、设置。版本固定至官方 0.21.3；安装、聊天、Gateway、会话数据库和诊断共用受管 Python。
 
-详细现状见 [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md)。
+已完成导航精简、可选扩展、原地锁定升级、双向审批与澄清、失败/取消终态、配置写入队列、会话清空/导出修复以及离线安装包冒烟。事实状态见 [能力表](CAPABILITY_MATRIX.md) 和 [验收记录](VALIDATION_0.2.31.md)。
 
-## 近期重点
+## 后续验证
 
-- 打磨首启修复体验：让 Hermes 路径、CLI 健康、模型配置、Secret 缺失和 WSL/Windows bridge 异常都能在 UI 中自助恢复。
-- 扩展连接器 runtime：继续补齐飞书 / QQ Bot 多实例的 `start/stop/healthCheck` 生命周期与用户侧诊断。
-- 增加 Electron smoke 测试：覆盖启动应用、发起任务、收到 `task:event`、触发审批卡、轮询扫码状态。
-- 继续拆分高复杂度文件：`hermes-connector-service.ts`、`hermes-cli-adapter.ts`、`task-runner.ts`。
+- 在 macOS 真机运行构建、离线安装包冒烟和真实模型测试。
+- 在独立 Windows 机器验证首次安装、路径带空格、安装覆盖和卸载。
+- 为微信、QQ、飞书等已启用平台补充真实账号联调；本地状态机测试不能替代平台端连接验收。
+- 在发布新版本时单独验证 electron-updater 的实际下载与安装，不把本地打包视为更新链路验收。
+- 建立固定机器上的冷启动、空闲内存和流式界面性能基线，避免跨版本、跨机器比较误导。
 
-## Connector Runtime
+## 产品边界
 
-- 继续完善 Gateway 的崩溃诊断、退避、stdout/stderr 截断日志与恢复提示。
-- 为更多平台补充凭据校验、运行状态探测和健康检查。
-- 保持所有凭据和 token 严格停留在主进程，不把敏感值暴露到 Renderer。
-
-## Security and Consent
-
-- 补强审批测试与审计记录展示。
-- 继续完善路径校验、IPC schema、命令执行边界与日志脱敏。
-- 为触发审批的命令、文件路径和风险等级提供更清晰的 UI 文案。
-
-## Platform and Packaging
-
-- 在干净 Windows 机器验证 installer / portable 安装、升级和回滚。
-- 增加签名、release provenance 和安装包加固。
-- 补充 WSL 假设、常见错误和恢复路径文档。
-- macOS / Linux 继续保持延后，等维护者具备稳定验证条件后再推进。
-
-## Documentation
-
-- 增加架构图、故障排查与真实工作流示例。
-- 让 README、ROADMAP 与 capability matrix 始终跟随代码现状更新。
-- 逐步补齐中英文核心文档。
+- 延续聊天优先、扩展按需启用和 task:event 单总线。
+- 保留官方配置未知字段、会话和 Profile 数据。
+- WSL 用于迁移；新安装使用平台原生运行时。
+- 继续补自动化验收和拆分高复杂度服务，不增加第二套任务系统。

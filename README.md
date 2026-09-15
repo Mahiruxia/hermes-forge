@@ -11,15 +11,16 @@
 
 ## 定位
 
-Hermes Forge 为 Windows 与 macOS 提供统一的 Hermes Agent 桌面界面，覆盖安装部署、模型配置、任务执行、文件附件、权限审批与自动更新，无需手动维护 CLI 环境。
+Hermes Forge 是以聊天为中心的 Hermes Agent 桌面助手，保留 Electron 架构。Windows 原生是主要验收平台；macOS 使用原生安装和运行策略，实际平台验收状态见 [验收记录](VALIDATION_0.2.31.md)。
 
 核心能力：
 
 - **引导式首启** — 按“环境检测 → 安装 Hermes → 配置模型”推进；安装来源由用户确认，缺失依赖可就地修复。
 - **模型同步** — 桌面端模型配置实时同步至 Hermes CLI 与 Gateway 运行时，避免多端配置漂移。
-- **Windows 原生桥接** — 文件操作、PowerShell、剪贴板、截图、窗口管理与键鼠自动化，统一走主进程审批服务。
-- **Kanban 任务看板** — 完整任务生命周期管理，集成 Gateway 调度器，支持拖拽与实时诊断。
-- **连接器 Gateway** — 支持微信扫码、QQ Bot 与飞书多机器人配置；飞书 Bot 可绑定独立 Agent profile 与隔离运行目录。
+- **聊天与工作区** — 会话搜索、恢复、附件和真实消息导出；项目与空间合并为工作区与最近目录。
+- **官方交互回调** — 工具审批和澄清问题通过请求 ID 回到原任务，支持取消和明确的失败终态。
+- **技能与记忆** — 统一入口，打开时才加载；Profile 管理位于高级设置。
+- **按需扩展** — 消息连接器、定时任务和桌面自动化默认关闭；迁移保留已明确启用的设置。
 - **自动更新** — `electron-updater` + GitHub Releases，支持静默检查、后台下载与进度追踪。
 
 ## 下载
@@ -33,7 +34,7 @@ Hermes Forge 为 Windows 与 macOS 提供统一的 Hermes Agent 桌面界面，�
 
 ## 首次使用
 
-1. 启动后等待本机环境检测完成。
+1. 启动后点击“检测环境”，检查本机 Hermes 安装。
 2. 未发现 Hermes 时，点击“选择安装方式”，优先使用官方 GitHub；网络受限时可主动选择国内社区镜像。
 3. Hermes 就绪后继续配置模型来源和 API Key。密钥只保存到本机安全存储，不会在界面回显。
 4. 进入工作台并选择项目目录，然后描述希望完成的目标。
@@ -47,7 +48,7 @@ Hermes Forge 为 Windows 与 macOS 提供统一的 Hermes Agent 桌面界面，�
 
 ## 开发
 
-环境要求：Node.js 22.12+、npm 10+、Git、Python 3.10+
+环境要求：Node.js 22.12+、npm 10+、Git、uv。Hermes 支持 Python 3.11–3.13，新安装使用 uv 管理的 Python 3.11。
 
 ```bash
 git clone https://github.com/Mahiruxia/hermes-forge.git
@@ -65,6 +66,14 @@ npm test         # Vitest
 npm run build    # 生产构建
 ```
 
+## Hermes 版本与运行环境
+
+当前默认锁定官方 **0.21.3 / v2026.9.14**，提交 `345cd2b057a452236de401d3534b8502a7465e8d`，版本清单位于 `src/install/hermes-version-constants.ts`。
+
+升级在原目录进行，支持旧分支、标签与 detached HEAD。使用官方 `uv.lock` 同步核心依赖、MCP 和已启用扩展需要的 extras，不安装全部可选依赖。聊天、Gateway、会话数据库和诊断统一使用安装目录内的 `venv`，旧环境仅在没有 `venv` 时兼容 `.venv`。不会向系统 Python 安装包，也不自动 stash 或创建升级备份。
+
+升级前检查任务与 Gateway，下载和核实目标提交后再切换。失败报告保留具体阶段；重试沿用同一目录。除已确认可替换的 `uv.lock` 外，存在源码修改时停止升级并提示。
+
 ## 运行时路径解析
 
 Hermes 根目录按以下优先级解析：
@@ -72,8 +81,8 @@ Hermes 根目录按以下优先级解析：
 1. 应用设置中保存的路径
 2. `HERMES_HOME`
 3. `HERMES_AGENT_HOME`
-4. `~/Hermes Agent`
-5. `<project-root>/Hermes Agent`
+4. 平台默认安装目录（Windows 为 `%LOCALAPPDATA%/hermes/hermes-agent`）
+5. 旧版 `~/Hermes Agent` 或 `<project-root>/Hermes Agent`
 
 构建时可通过环境变量覆盖：
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AppPaths } from "./app-paths";
 import type { HermesCoreBridgeService } from "./hermes-core-bridge-service";
 import type { WorkSession } from "../shared/types";
+import { atomicWriteText } from "./hermes-config-files";
 
 const DEFAULT_SESSION_TITLE = "新的会话";
 const DEFAULT_SESSION_LIST_LIMIT = 80;
@@ -11,7 +12,7 @@ const DEFAULT_SESSION_LIST_LIMIT = 80;
 export class WorkSessionService {
   constructor(
     private readonly appPaths: AppPaths,
-    private readonly hermesCoreBridge?: Pick<HermesCoreBridgeService, "createSession" | "renameSession" | "deleteSession">,
+    private readonly hermesCoreBridge?: Pick<HermesCoreBridgeService, "createSession" | "renameSession" | "deleteSession"> & Partial<Pick<HermesCoreBridgeService, "readSession">>,
   ) {}
 
   async list(includeArchived = false, limit = DEFAULT_SESSION_LIST_LIMIT): Promise<WorkSession[]> {
@@ -41,22 +42,16 @@ export class WorkSessionService {
     const id = `session-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
     const at = new Date().toISOString();
     await this.ensureSessionLayout(id);
-    const hermesSession = await this.hermesCoreBridge?.createSession({
-      sessionId: id,
-      title: title.trim() || DEFAULT_SESSION_TITLE,
-      source: "zhenghebao-client",
-    }).catch(() => undefined);
+    // Reserve an ID locally. Hermes creates the database row on the first turn;
+    // starting an empty workspace must also work before Hermes is installed.
     const session: WorkSession = {
       id,
       title: title.trim() || DEFAULT_SESSION_TITLE,
       status: "idle",
       sessionFilesPath: this.appPaths.sessionFilesDir(id),
-      hermesSessionId: hermesSession?.id ?? id,
-      hermesSource: hermesSession?.source ?? "zhenghebao-client",
-      parentHermesSessionId: hermesSession?.parentSessionId,
-      messageCount: hermesSession?.messageCount ?? 0,
-      model: hermesSession?.model,
-      lastSyncedAt: at,
+      hermesSessionId: id,
+      hermesSource: "zhenghebao-client",
+      messageCount: 0,
       workspaceStatus: "unselected",
       createdAt: at,
       updatedAt: at,
@@ -78,10 +73,10 @@ export class WorkSessionService {
       tags: patch.tags ?? current.tags,
       updatedAt: new Date().toISOString(),
     };
-    await this.write(next);
-    if (patch.title && next.hermesSessionId) {
-      await this.hermesCoreBridge?.renameSession(next.hermesSessionId, next.title).catch(() => undefined);
+    if (patch.title && next.hermesSessionId && current.lastSyncedAt) {
+      await this.hermesCoreBridge?.renameSession(next.hermesSessionId, next.title);
     }
+    await this.write(next);
     return next;
   }
 
@@ -119,14 +114,17 @@ export class WorkSessionService {
 
   async export(id: string, format: "json" | "markdown" = "json"): Promise<{ ok: boolean; path: string; message: string }> {
     const current = await this.readOrThrow(id);
+    if (!this.hermesCoreBridge?.readSession) throw new Error("Hermes 会话读取服务不可用，无法导出完整记录。");
+    const transcript = await this.hermesCoreBridge.readSession(current.hermesSessionId ?? current.id);
+    const messages = transcript?.messages ?? [];
     const exportDir = path.join(this.appPaths.sessionDir(id), "exports");
     await fs.mkdir(exportDir, { recursive: true });
     const safeTitle = current.title.replace(/[<>:"/\\|?*\x00-\x1F]/g, "").replace(/\s+/g, " ").trim().slice(0, 80) || "session";
     const exportPath = path.join(exportDir, `${safeTitle}.${format === "markdown" ? "md" : "json"}`);
     if (format === "markdown") {
-      await fs.writeFile(exportPath, [`# ${current.title}`, "", `- ID: ${current.id}`, `- Workspace: ${current.workspacePath ?? "未选择"}`, `- Updated: ${current.updatedAt}`, "", current.lastMessagePreview ?? ""].join("\n"), "utf8");
+      await atomicWriteText(exportPath, [`# ${current.title}`, "", `- ID: ${current.id}`, `- Workspace: ${current.workspacePath ?? "未选择"}`, "", ...messages.flatMap((message) => [`## ${message.role === "user" ? "用户" : "助手"}`, "", message.content, ""])].join("\n"));
     } else {
-      await fs.writeFile(exportPath, JSON.stringify(current, null, 2), "utf8");
+      await atomicWriteText(exportPath, JSON.stringify({ schemaVersion: 1, ...current, messages: transcript?.rawMessages ?? messages }, null, 2));
     }
     return { ok: true, path: exportPath, message: `已导出会话：${exportPath}` };
   }
@@ -154,10 +152,10 @@ export class WorkSessionService {
 
   async delete(id: string): Promise<{ ok: boolean; message: string; deletedId: string }> {
     const current = await this.readOrThrow(id);
-    await this.cleanupWorkspaceArtifacts(current);
-    if (current.hermesSessionId) {
-      await this.hermesCoreBridge?.deleteSession(current.hermesSessionId).catch(() => undefined);
+    if (current.hermesSessionId && current.lastSyncedAt) {
+      await this.hermesCoreBridge?.deleteSession(current.hermesSessionId);
     }
+    await this.cleanupWorkspaceArtifacts(current);
     await fs.rm(this.appPaths.sessionAgentInsightPath(id), { force: true }).catch(() => undefined);
     await fs.rm(this.appPaths.sessionDir(id), { recursive: true, force: true });
     return {
@@ -169,6 +167,8 @@ export class WorkSessionService {
 
   async clearSessionFiles(id: string): Promise<{ ok: boolean; message: string; session: WorkSession }> {
     const current = await this.readOrThrow(id);
+    // IPC coordinates against live tasks. Persisted "running" metadata may be
+    // stale after a crash and must not make a stopped conversation uncleareable.
     const at = new Date().toISOString();
     const sessionFilesPath = this.appPaths.sessionFilesDir(id);
     await this.cleanupWorkspaceArtifacts(current);
@@ -177,8 +177,12 @@ export class WorkSessionService {
     await this.ensureSessionLayout(id);
     const next: WorkSession = {
       ...current,
+      hermesSessionId: `${current.id}-reset-${crypto.randomBytes(6).toString("hex")}`,
+      parentHermesSessionId: undefined,
+      messageCount: 0,
+      lastSyncedAt: undefined,
       lastMessagePreview: undefined,
-      status: current.status === "running" ? "idle" : current.status,
+      status: "idle",
       clearedAt: at,
       updatedAt: at,
     };
@@ -221,7 +225,7 @@ export class WorkSessionService {
 
   private async write(session: WorkSession) {
     await this.ensureSessionLayout(session.id);
-    await fs.writeFile(this.appPaths.sessionMetadataPath(session.id), JSON.stringify(session, null, 2), "utf8");
+    await atomicWriteText(this.appPaths.sessionMetadataPath(session.id), JSON.stringify(session, null, 2));
   }
 
   async syncHermesSession(id: string, patch: Partial<Pick<WorkSession, "hermesSessionId" | "parentHermesSessionId" | "title" | "messageCount" | "model" | "lastMessagePreview">>): Promise<WorkSession> {
@@ -290,24 +294,46 @@ export class WorkSessionService {
 
     for (const artifactRoot of [...new Set(artifactRoots)]) {
       const workspaceId = this.appPaths.workspaceId(artifactRoot);
-      const logFile = path.join(this.appPaths.workspaceSessionDir(workspaceId), `${session.id}.jsonl`);
-      await fs.rm(logFile, { force: true }).catch(() => undefined);
+      const logRoot = this.appPaths.workspaceSessionDir(workspaceId);
+      const taskRunIds = new Set<string>();
+      const logFiles = await fs.readdir(logRoot).catch(() => [] as string[]);
+      for (const file of logFiles.filter((name) => name.endsWith(".jsonl"))) {
+        const logPath = path.join(logRoot, file);
+        const lines = (await fs.readFile(logPath, "utf8")).split(/\r?\n/);
+        if (file === `${session.id}.jsonl`) {
+          await fs.rm(logPath, { force: true });
+          continue;
+        }
+        const retained = lines.filter((line) => {
+          try {
+            const envelope = JSON.parse(line) as { workSessionId?: string; sessionId?: string; taskRunId?: string };
+            if (envelope.workSessionId !== session.id) return true;
+            if (envelope.taskRunId || envelope.sessionId) taskRunIds.add(envelope.taskRunId || envelope.sessionId!);
+            return false;
+          } catch { return true; }
+        });
+        if (retained.length === lines.length) continue;
+        if (retained.some((line) => line.trim())) await atomicWriteText(logPath, retained.join("\n"));
+        else await fs.rm(logPath, { force: true });
+      }
 
       const snapshotRoot = this.appPaths.workspaceSnapshotDir(workspaceId);
       const snapshotEntries = await fs.readdir(snapshotRoot, { withFileTypes: true }).catch(() => []);
-      const sessionMarker = session.id.slice(0, 8);
-      await Promise.all(
-        snapshotEntries
-          .filter((entry) => entry.isDirectory())
-          .filter((entry) => entry.name.includes(sessionMarker))
-          .map((entry) => fs.rm(path.join(snapshotRoot, entry.name), { recursive: true, force: true }).catch(() => undefined)),
-      );
-
+      const removed = new Set<string>();
+      for (const entry of snapshotEntries.filter((item) => item.isDirectory())) {
+        const directory = path.join(snapshotRoot, entry.name);
+        const manifest = await fs.readFile(path.join(directory, "snapshot.manifest.json"), "utf8")
+          .then((raw) => JSON.parse(raw) as { workSessionId?: string; taskRunId?: string }).catch(() => undefined);
+        // Legacy snapshots without an owner must not be guessed from the common
+        // "session-" prefix: that could delete another conversation's snapshot.
+        if (manifest?.workSessionId === session.id || (manifest?.taskRunId && taskRunIds.has(manifest.taskRunId))) {
+          await fs.rm(directory, { recursive: true, force: true });
+          removed.add(entry.name);
+        }
+      }
       const latestPath = path.join(snapshotRoot, "latest.txt");
       const latestSnapshotId = (await fs.readFile(latestPath, "utf8").catch(() => "")).trim();
-      if (latestSnapshotId && latestSnapshotId.includes(sessionMarker)) {
-        await fs.rm(latestPath, { force: true }).catch(() => undefined);
-      }
+      if (removed.has(latestSnapshotId)) await fs.rm(latestPath, { force: true });
     }
   }
 }

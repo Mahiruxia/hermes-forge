@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { HermesCliAdapter, toWslPath } from "./hermes-cli-adapter";
+import { managedHermesEnvironmentAt } from "../../runtime/managed-hermes-environment";
 
 describe("toWslPath", () => {
   it("converts Windows drive paths", () => {
@@ -737,6 +738,11 @@ describe("HermesCliAdapter Windows launch", () => {
   });
 
   it("uses a hidden non-detached process for Windows CLI runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-launch-"));
+    const environment = managedHermesEnvironmentAt(root);
+    await fs.mkdir(path.dirname(environment.pythonPath), { recursive: true });
+    await fs.writeFile(environment.pythonPath, "fixture");
+    await fs.writeFile(environment.cliPath, "fixture");
     const adapter = new HermesCliAdapter(
       { hermesDir: () => "C:\\Users\\example\\AppData\\Roaming\\Hermes Forge\\hermes" } as never,
       {} as never,
@@ -761,9 +767,9 @@ describe("HermesCliAdapter Windows launch", () => {
       windowsPython?: Promise<{ command: string; argsPrefix: string[] }>;
     }).launchSpec(
       { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" },
-      "C:\\Users\\example\\Hermes Agent",
-      ["C:\\Users\\example\\Hermes Agent\\hermes", "--version"],
-      "C:\\Users\\example\\Hermes Agent",
+      root,
+      [environment.cliPath, "--version"],
+      root,
     );
 
     expect(launch.detached).toBe(false);
@@ -774,10 +780,15 @@ describe("HermesCliAdapter Windows launch", () => {
       PROMPT_TOOLKIT_COLOR_DEPTH: "DEPTH_1_BIT",
       TERM: "dumb",
     });
+    await fs.rm(root, { recursive: true, force: true });
   });
 
   it("uses the active Hermes profile for Windows HERMES_HOME and memory status", async () => {
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-adapter-"));
+    const environment = managedHermesEnvironmentAt(path.join(baseDir, "engine"));
+    await fs.mkdir(path.dirname(environment.pythonPath), { recursive: true });
+    await fs.writeFile(environment.pythonPath, "fixture");
+    await fs.writeFile(environment.cliPath, "fixture");
     await fs.mkdir(path.join(baseDir, "hermes-home", "profiles", "wechat", "memories"), { recursive: true });
     await fs.writeFile(path.join(baseDir, "hermes-home", "active_profile"), "wechat", "utf8");
     await fs.writeFile(path.join(baseDir, "hermes-home", "profiles", "wechat", "memories", "USER.md"), "偏好：叫我小夏", "utf8");
@@ -805,8 +816,8 @@ describe("HermesCliAdapter Windows launch", () => {
       ): Promise<{ env?: NodeJS.ProcessEnv }>;
     }).launchSpec(
       { mode: "windows", pythonCommand: "python3", windowsAgentMode: "hermes_native" },
-      "C:\\Hermes Agent",
-      ["C:\\Hermes Agent\\hermes", "--version"],
+      environment.rootPath,
+      [environment.cliPath, "--version"],
       "D:\\repo",
     );
     const status = await adapter.getMemoryStatus("workspace");
@@ -814,6 +825,7 @@ describe("HermesCliAdapter Windows launch", () => {
     expect(launch.env?.HERMES_HOME).toBe(path.join(baseDir, "hermes-home", "profiles", "wechat"));
     expect(status.filePath).toBe(path.join(baseDir, "hermes-home", "profiles", "wechat", "memories"));
     expect(status.entries).toBe(2);
+    await fs.rm(baseDir, { recursive: true, force: true });
   });
 });
 

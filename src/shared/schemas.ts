@@ -187,6 +187,11 @@ export const runtimeConfigSchema = z.object({
   enginePaths: z.record(z.string(), z.string().trim().min(1).max(1000)).optional(),
   startupWarmupMode: z.enum(["off", "cheap", "real_probe"]).default("off"),
   startupGatewayAutoStart: z.boolean().default(false),
+  extensionSettings: z.object({
+    connectorsEnabled: z.boolean().default(false),
+    cronEnabled: z.boolean().default(false),
+    desktopAutomationEnabled: z.boolean().default(false),
+  }).optional(),
   enginePermissions: z.record(z.string(), enginePermissionPolicySchema.partial()).optional(),
   hermesRuntime: hermesRuntimeSchema.default({ mode: "windows", pythonCommand: "python", windowsAgentMode: "hermes_native", cliPermissionMode: "guarded", permissionPolicy: "bridge_guarded", workerMode: "off" }),
 }).transform((config) => ({
@@ -227,3 +232,52 @@ function pickHermesRecord<T>(record: Record<string, T>) {
   if ("client" in record) next.client = record.client;
   return next;
 }
+
+const interactionIdentity = {
+  requestId: z.string().trim().min(1).max(160),
+  taskRunId: z.string().trim().min(1).max(120),
+};
+const interactionAnswer = z.union([z.string().max(20000), z.array(z.string().max(20000)).max(20)]);
+const interactionQuestion = z.object({
+  id: z.string().trim().min(1).max(160),
+  question: z.string().min(1).max(20000),
+  choices: z.array(z.string().max(2000)).max(20).optional(),
+  multiSelect: z.boolean().optional(),
+});
+
+export const engineInteractionRequestSchema = z.discriminatedUnion("kind", [
+  z.object({
+    ...interactionIdentity,
+    kind: z.literal("approval"),
+    timeoutMs: z.number().int().min(1).max(600000),
+    command: z.string().max(100000),
+    description: z.string().max(20000),
+    allowSession: z.boolean(),
+    allowPermanent: z.boolean(),
+    smartDenied: z.boolean(),
+  }),
+  z.object({
+    ...interactionIdentity,
+    kind: z.literal("clarify"),
+    timeoutMs: z.number().int().min(1).max(600000),
+    question: z.string().max(20000),
+    choices: z.array(z.string().max(2000)).max(20).optional(),
+    multiSelect: z.boolean().optional(),
+    questions: z.array(interactionQuestion).min(1).max(5).optional(),
+  }),
+]);
+
+export const engineInteractionResponseSchema = z.discriminatedUnion("kind", [
+  z.object({
+    ...interactionIdentity,
+    kind: z.literal("approval"),
+    choice: z.enum(["once", "session", "always", "deny", "timeout"]),
+  }),
+  z.object({
+    ...interactionIdentity,
+    kind: z.literal("clarify"),
+    answer: interactionAnswer.optional(),
+    answers: z.record(z.string().max(160), interactionAnswer).optional(),
+    timedOut: z.boolean().optional(),
+  }),
+]);

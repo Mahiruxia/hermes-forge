@@ -6,12 +6,14 @@ import { cn } from "../../DashboardPrimitives";
 import { ConfirmCard } from "../ConfirmCard";
 import { CronEditor } from "../CronEditor";
 import { NoticeCard } from "../NoticeCard";
+import { refreshOverviewSection } from "../../../overview-data";
+
+const EMPTY_JOBS: HermesCronJob[] = [];
 
 type JobAction = "delete" | "pause" | "resume" | "run";
 
 export function TasksPanel() {
-  const store = useAppStore();
-  const jobs = store.webUiOverview?.crons ?? [];
+  const jobs = useAppStore(state => state.webUiOverview?.crons ?? EMPTY_JOBS);
   const [editing, setEditing] = useState<Partial<HermesCronJob> | undefined>();
   const [confirmingDelete, setConfirmingDelete] = useState<HermesCronJob | undefined>();
   const [message, setMessage] = useState("");
@@ -33,7 +35,7 @@ export function TasksPanel() {
 
   async function refresh() {
     try {
-      store.setWebUiOverview(await window.workbenchClient.getWebUiOverview());
+      await refreshOverviewSection("crons");
     } catch {
       setMessage("刷新任务列表失败，请重试。");
     }

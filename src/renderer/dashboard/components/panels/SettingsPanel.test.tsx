@@ -150,6 +150,9 @@ describe("SettingsPanel Hermes installation", () => {
   });
 
   it("persists the Gateway startup preference", async () => {
+    const enabledConfig = { ...runtimeConfig, extensionSettings: { connectorsEnabled: true, cronEnabled: false, desktopAutomationEnabled: false } };
+    getRuntimeConfig.mockResolvedValue(enabledConfig);
+    getConfigOverview.mockResolvedValue({ runtimeConfig: enabledConfig, hermes: { runtime: enabledConfig.hermesRuntime, rootPath: "", bridge: { running: false, capabilities: [] } } });
     renderSettingsPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: /高级设置/ }));
@@ -157,7 +160,7 @@ describe("SettingsPanel Hermes installation", () => {
     fireEvent.click(screen.getByRole("option", { name: "开启" }));
 
     await waitFor(() => expect(saveRuntimeConfig).toHaveBeenCalledWith({
-      ...runtimeConfig,
+      ...enabledConfig,
       startupGatewayAutoStart: true,
     }));
   });

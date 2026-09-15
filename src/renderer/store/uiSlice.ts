@@ -13,7 +13,8 @@ export interface UiState {
   sessionSidebarOpen: boolean;
   sessionSidebarWidth: number;
   agentPanelWidth: number;
-  activePanel: "chat" | "tasks" | "kanban" | "skills" | "memory" | "connectors" | "files" | "profiles" | "settings" | "spaces" | "projects";
+  activePanel: "chat" | "workspace" | "knowledge" | "tasks" | "connectors" | "files" | "profiles" | "settings";
+  knowledgeTab: "skills" | "memory";
   activeProfile?: string;
   selectedProjectId?: string;
   sidebarGrouping: "smart" | "project" | "time";
@@ -35,6 +36,7 @@ export interface UiActions {
   setSessionSidebarWidth(width: number): void;
   setAgentPanelWidth(width: number): void;
   setActivePanel(panel: UiState["activePanel"]): void;
+  setKnowledgeTab(tab: UiState["knowledgeTab"]): void;
   setSelectedProject(projectId?: string): void;
   setSidebarGrouping(grouping: UiState["sidebarGrouping"]): void;
   setLastWebUiError(error?: string): void;
@@ -59,6 +61,7 @@ export const uiSlice = combine<UiState, UiActions>(
     sessionSidebarWidth: 228,
     agentPanelWidth: 360,
     activePanel: "chat",
+    knowledgeTab: "skills",
     activeProfile: undefined,
     selectedProjectId: undefined,
     sidebarGrouping: "smart",
@@ -79,6 +82,7 @@ export const uiSlice = combine<UiState, UiActions>(
     setSessionSidebarWidth: (width: number) => set({ sessionSidebarWidth: width }),
     setAgentPanelWidth: (width: number) => set({ agentPanelWidth: width }),
     setActivePanel: (panel: UiState["activePanel"]) => set({ activePanel: panel }),
+    setKnowledgeTab: (knowledgeTab: UiState["knowledgeTab"]) => set({ knowledgeTab }),
     setSelectedProject: (projectId?: string) => set({ selectedProjectId: projectId }),
     setSidebarGrouping: (grouping: UiState["sidebarGrouping"]) => set({ sidebarGrouping: grouping }),
     setLastWebUiError: (error?: string) => set({ lastWebUiError: error }),

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import type { ContextBundle, ContextSource } from "../shared/types";
@@ -7,12 +8,12 @@ let sqlPromise: Promise<SqlJsStatic> | undefined;
 
 function locateSqlWasm(file: string) {
   const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, file) : "",
     path.join(process.cwd(), "node_modules", "sql.js", "dist", file),
     path.join(__dirname, "..", "..", "..", "node_modules", "sql.js", "dist", file),
-    process.resourcesPath ? path.join(process.resourcesPath, file) : "",
   ].filter(Boolean);
 
-  return candidates[0];
+  return candidates.find(candidate => existsSync(candidate)) ?? candidates[0];
 }
 
 async function getSql() {

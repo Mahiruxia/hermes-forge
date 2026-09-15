@@ -51,6 +51,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
     error: state.error,
     info: state.info,
     setActivePanel: state.setActivePanel,
+    setKnowledgeTab: state.setKnowledgeTab,
     setRuntimeConfig: state.setRuntimeConfig,
     setWebUiOverview: state.setWebUiOverview,
     success: state.success,
@@ -273,7 +274,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
           <p className="mt-2 text-[12px] leading-5 text-slate-500">
             {store.contextBundle?.summary || insight?.memory?.summary || "当前会话主要讨论内容会在任务运行后生成摘要。"}
           </p>
-          <button className="mt-3 text-[12px] font-semibold text-[var(--hermes-primary)]" onClick={() => store.setActivePanel("memory")} type="button">
+          <button className="mt-3 text-[12px] font-semibold text-[var(--hermes-primary)]" onClick={() => { store.setKnowledgeTab("memory"); store.setActivePanel("knowledge"); }} type="button">
             管理记忆
           </button>
         </PanelCard>

@@ -6,6 +6,7 @@ import type { ApprovalRequest, ClarifyRequest, EngineEvent, TaskEventEnvelope, T
 import { StreamingMarkdown } from "../markdown/StreamingMarkdown";
 import { useAppStore } from "../store";
 import { ChatInput } from "./ChatInput";
+import { NativeApprovalCard, NativeClarifyCard } from "./components/NativeInteractionCards";
 import { cn, formatShortDate } from "./DashboardPrimitives";
 
 type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
@@ -178,10 +179,6 @@ function PendingNativeCards() {
     taskRunProjectionsById: state.taskRunProjectionsById,
     lastWebUiError: state.lastWebUiError,
     setLastWebUiError: state.setLastWebUiError,
-    resolveApprovalCard: state.resolveApprovalCard,
-    resolveClarifyCard: state.resolveClarifyCard,
-    setUserInput: state.setUserInput,
-    error: state.error,
   })));
   const approvals = useMemo(
     () => store.pendingApprovalCards
@@ -205,41 +202,8 @@ function PendingNativeCards() {
           <button className="ml-3 font-semibold" onClick={() => store.setLastWebUiError(undefined)} type="button">关闭</button>
         </div>
       ) : null}
-      {approvals.map((card) => (
-        <div key={card.id} className="rounded-2xl border border-slate-200/70 bg-white/80 px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
-          <p className="text-[13px] font-semibold text-slate-800">{card.title}</p>
-          {card.command ? <code className="mt-2 block rounded-xl bg-slate-50 p-2 text-[12px] text-slate-600">{card.command}</code> : null}
-          {card.details ? <p className="mt-2 text-[12px] text-slate-500">{card.details}</p> : null}
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button className="rounded-full bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "once", editedCommand: card.command }).then(() => store.resolveApprovalCard(card.id, "approved")).catch((err) => store.error("审批操作失败", err instanceof Error ? err.message : "未知错误"))} type="button">本次允许</button>
-            <button className="rounded-full border border-slate-200 px-3 py-1.5 text-[12px] font-semibold text-slate-600" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "session", editedCommand: card.command }).then(() => store.resolveApprovalCard(card.id, "approved")).catch((err) => store.error("审批操作失败", err instanceof Error ? err.message : "未知错误"))} type="button">本会话允许</button>
-            <button className="rounded-full border border-slate-200 px-3 py-1.5 text-[12px] font-semibold text-slate-600" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "always", editedCommand: card.command }).then(() => store.resolveApprovalCard(card.id, "approved")).catch((err) => store.error("审批操作失败", err instanceof Error ? err.message : "未知错误"))} type="button">始终允许</button>
-            <button className="rounded-full border border-slate-200 px-3 py-1.5 text-[12px] font-semibold text-slate-600" onClick={() => void window.workbenchClient.respondApproval({ id: card.id, choice: "deny" }).then(() => store.resolveApprovalCard(card.id, "denied")).catch((err) => store.error("审批操作失败", err instanceof Error ? err.message : "未知错误"))} type="button">拒绝</button>
-          </div>
-        </div>
-      ))}
-      {clarifies.map((card) => (
-        <div key={card.id} className="rounded-2xl border border-slate-200/70 bg-white/80 px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
-          <p className="text-[13px] font-semibold text-slate-800">{card.question}</p>
-          {card.options?.length ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {card.options.map((option) => (
-                <button
-                  key={option}
-                  className="rounded-full border border-slate-200 px-3 py-1.5 text-[12px] font-semibold text-slate-600"
-                  onClick={() => {
-                    store.setUserInput(option);
-                    store.resolveClarifyCard(card.id, "answered");
-                  }}
-                  type="button"
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ))}
+      {approvals.map(card => <NativeApprovalCard key={card.id} card={card} />)}
+      {clarifies.map(card => <NativeClarifyCard key={card.id} card={card} />)}
     </div>
   );
 }

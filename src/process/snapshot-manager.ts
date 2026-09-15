@@ -32,6 +32,7 @@ const snapshotManifestSchema = z.object({
   scopedPaths: z.array(z.string()).optional(),
 }).passthrough();
 type SnapshotOptions = {
+  workSessionId?: string;
   markLatest?: boolean;
   manifestOnly?: boolean;
   scopedPaths?: string[];
@@ -47,6 +48,8 @@ export class SnapshotManager {
     const snapshotDir = this.snapshotDir(workspaceId, snapshotId);
     const manifest: SnapshotManifest = {
       snapshotId,
+      taskRunId: sessionId,
+      workSessionId: options.workSessionId,
       workspaceId,
       workspacePath,
       createdAt: new Date().toISOString(),

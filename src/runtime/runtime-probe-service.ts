@@ -1,11 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runCommand } from "../process/command-runner";
-import { getWindowsPythonInstallCandidates } from "../platform";
 import type { HermesRuntimeConfig, WindowsBridgeStatus } from "../shared/types";
 import type { RuntimeConfigStore } from "../main/runtime-config";
-import type { RuntimeResolver, ParsedCommand } from "./runtime-resolver";
-import { parseCommandLine } from "./runtime-resolver";
+import type { RuntimeResolver } from "./runtime-resolver";
+import { managedHermesEnvironmentEnv, resolveManagedHermesEnvironment } from "./managed-hermes-environment";
 import { resolveHermesCliPath } from "./hermes-cli-paths";
 import type {
   RuntimeBridgeProbe,
@@ -48,9 +47,11 @@ export class RuntimeProbeService {
     const resolvedHermesCliPath = await resolveHermesCliPath(rootPath);
 
     const [powershell, python, git, winget, wsl] = await Promise.all([
-      this.probeCommand("powershell.exe", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], "PowerShell", "windows"),
+      process.platform === "win32"
+        ? this.probeCommand("powershell.exe", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], "PowerShell", "windows")
+        : Promise.resolve({ available: false, message: "macOS 使用原生运行环境。" } satisfies RuntimeCommandProbe),
       this.probeNativePython(runtime, rootPath),
-      this.probeCommand("git", ["--version"], "Git", "windows"),
+      this.probeCommand("git", ["--version"], "Git", runtime.mode),
       process.platform === "win32"
         ? this.probeCommand("winget", ["--version"], "winget", "windows")
         : Promise.resolve({ available: false, message: "非 Windows 平台跳过 winget 检测。" } satisfies RuntimeCommandProbe),
@@ -106,67 +107,19 @@ export class RuntimeProbeService {
   }
 
   private async probeNativePython(runtime: HermesRuntimeConfig, rootPath: string): Promise<RuntimeCommandProbe> {
-    const candidates = this.pythonCandidates(runtime, rootPath);
-    const failures: string[] = [];
-    const cwd = await exists(rootPath) ? rootPath : process.cwd();
-    for (const candidate of candidates) {
-      if (looksLikeFilePath(candidate.command) && !(await exists(candidate.command))) {
-        failures.push(`${candidate.label}: 文件不存在`);
-        continue;
-      }
-      const result = await runCommand(candidate.command, [...candidate.args, "--version"], {
-        cwd,
-        timeoutMs: COMMAND_TIMEOUT_MS,
-        commandId: "runtime.probe.python",
-        runtimeKind: "windows",
-      });
-      if (result.exitCode === 0) {
-        return {
-          available: true,
-          command: candidate.command,
-          args: candidate.args,
-          label: candidate.label,
-          version: (result.stdout || result.stderr).trim(),
-          message: `${candidate.label} 可用。`,
-        };
-      }
-      failures.push(`${candidate.label}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
-    }
+    const environment = await resolveManagedHermesEnvironment(rootPath);
+    if (!environment) return { available: false, message: "Hermes 受管 Python 环境缺失，请安装或修复 Hermes。" };
+    const result = await runCommand(environment.pythonPath, ["--version"], {
+      cwd: rootPath, timeoutMs: COMMAND_TIMEOUT_MS,
+      env: managedHermesEnvironmentEnv(environment),
+      commandId: "runtime.probe.python", runtimeKind: runtime.mode,
+    });
+    const version = (result.stdout || result.stderr).trim();
     return {
-      available: false,
-      message: failures.length ? failures.slice(0, 5).join("；") : "未找到可用 Python。",
+      available: result.exitCode === 0, command: environment.pythonPath, args: [], label: environment.pythonPath,
+      version: result.exitCode === 0 ? version : undefined,
+      message: result.exitCode === 0 ? version : `Hermes 受管 Python 无法启动：${version}`,
     };
-  }
-
-  private pythonCandidates(runtime: HermesRuntimeConfig, rootPath: string): ParsedCommand[] {
-    const candidates: ParsedCommand[] = [];
-    const add = (raw: string | undefined) => {
-      if (!raw?.trim()) return;
-      const parsed = path.isAbsolute(raw.trim())
-        ? { command: raw.trim(), args: [], label: raw.trim() }
-        : parseCommandLine(raw);
-      if (!parsed) return;
-      if (!candidates.some((item) => item.command === parsed.command && item.args.join("\0") === parsed.args.join("\0"))) {
-        candidates.push(parsed);
-      }
-    };
-    add(runtime.pythonCommand);
-    if (process.platform === "win32") {
-      add(path.join(rootPath, ".venv", "Scripts", "python.exe"));
-      add(path.join(rootPath, "venv", "Scripts", "python.exe"));
-      add("py -3");
-      add("python");
-      add("python3");
-      for (const candidate of getWindowsPythonInstallCandidates("win32")) {
-        add(candidate);
-      }
-    } else {
-      add(path.join(rootPath, ".venv", "bin", "python"));
-      add(path.join(rootPath, "venv", "bin", "python"));
-      add("python3");
-      add("python");
-    }
-    return candidates;
   }
 
   private async probeCommand(command: string, args: string[], label: string, runtimeKind: RuntimeKind): Promise<RuntimeCommandProbe> {
@@ -263,13 +216,10 @@ export class RuntimeProbeService {
     }
     if (!input.python.available) {
       const label = input.runtime.mode === "darwin" ? "macOS Python" : "Windows Python";
-      add("python_missing", input.runtime.mode === "windows" ? "error" : "warning", `${label} 不可用。`, input.python.message, "请安装 Python 或在设置中填写 Hermes Python 命令。");
+      add("python_missing", "error", `${label} 不可用。`, input.python.message, "请安装或修复 Hermes 受管虚拟环境。");
     }
     if (!input.git.available) {
       add("git_missing", "warning", "Git 不可用。", input.git.message, "Hermes Windows 安装脚本会优先使用系统 Git，缺失时会下载隔离的 PortableGit；若仍失败请按安装日志手动处理。");
-    }
-    if (process.platform === "win32" && !input.winget.available) {
-      add("winget_missing", "warning", "winget 不可用。", input.winget.message, "Hermes Windows 安装脚本仍会尝试 uv、PortableGit、Node 二进制等隔离安装路径；缺失系统包时请按诊断日志手动安装。");
     }
     if (!input.hermesRootExists) {
       add("hermes_root_missing", "error", "Hermes root 不存在。", undefined, "Hermes Agent 未安装或路径不存在，请重新安装 / 修复安装。");

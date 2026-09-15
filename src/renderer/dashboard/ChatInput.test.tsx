@@ -51,29 +51,29 @@ describe("ChatInput", () => {
     return onStartTask;
   }
 
-  it("passes /goal through to Hermes instead of treating it as an unknown local command", () => {
+  it("does not launch unsupported /goal commands", () => {
     const onStartTask = renderInput();
     const input = screen.getByLabelText("给 Hermes 发送消息");
 
     fireEvent.change(input, { target: { value: "/goal 做完这个功能" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(onStartTask).toHaveBeenCalledTimes(1);
+    expect(onStartTask).not.toHaveBeenCalled();
     expect(useAppStore.getState().pendingClarifyCards).toEqual([]);
-    expect(useAppStore.getState().userInput).toBe("/goal 做完这个功能");
+    expect(useAppStore.getState().userInput).toBe("");
   });
 
-  it("shows /goal in help text and slash completion", () => {
+  it("omits /goal from help and completion with old cached commands", () => {
     renderInput();
     const input = screen.getByLabelText("给 Hermes 发送消息");
 
     fireEvent.change(input, { target: { value: "/" } });
-    expect(screen.getByText("/goal")).toBeInTheDocument();
+    expect(screen.queryByText("/goal")).toBeNull();
 
     fireEvent.change(input, { target: { value: "/help" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(useAppStore.getState().pendingClarifyCards[0]?.question).toContain("/goal");
+    expect(useAppStore.getState().pendingClarifyCards[0]?.question).not.toContain("/goal");
   });
 
   it("updates a single /help card instead of stacking duplicates", () => {
@@ -198,7 +198,7 @@ describe("ChatInput", () => {
     expect(useAppStore.getState().runtimeConfig?.defaultModelProfileId).toBe("main");
   });
 
-  it("compacts the active session from task projections instead of legacy messages", () => {
+  it("does not synthesize a fake compacted conversation", () => {
     useAppStore.getState().beginTaskRun({
       workSessionId: "session-1",
       taskRunId: "task-1",
@@ -221,10 +221,9 @@ describe("ChatInput", () => {
     renderInput();
     fireEvent.keyDown(screen.getByLabelText("给 Hermes 发送消息"), { key: "Enter" });
 
-    const compactMessage = useAppStore.getState().conversationMessages[0];
-    expect(compactMessage?.content).toContain("第一轮需求");
-    expect(compactMessage?.content).toContain("第二轮回答");
-    expect(useAppStore.getState().userInput).toBe("请基于压缩后的上下文继续，重点关注：MiniMax");
+    expect(useAppStore.getState().conversationMessages).toEqual([]);
+    expect(useAppStore.getState().userInput).toBe("");
+    expect(useAppStore.getState().taskRunProjectionsById["task-2"].assistantMessage.content).toContain("第二轮回答");
   });
 
   it("shows actual context usage and remaining window when usage events are available", () => {

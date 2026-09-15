@@ -58,8 +58,10 @@ jobs:
         run: |
           $binary = Get-ChildItem -Path release -Recurse -File -Filter "Hermes Forge.exe" | Select-Object -First 1
           if (-not $binary) { throw "Packaged Windows executable not found." }
-          & $binary.FullName --system-audit
-          if ($LASTEXITCODE -ne 0) { throw "Packaged Windows smoke audit failed with exit code $LASTEXITCODE." }
+          $env:HERMES_FORGE_SMOKE_TEST_OUTPUT = Join-Path $env:RUNNER_TEMP "hermes-forge-smoke.json"
+          $process = Start-Process -FilePath $binary.FullName -ArgumentList '--smoke-test' -Wait -PassThru -WindowStyle Hidden
+          if (Test-Path -LiteralPath $env:HERMES_FORGE_SMOKE_TEST_OUTPUT) { Get-Content -LiteralPath $env:HERMES_FORGE_SMOKE_TEST_OUTPUT }
+          if ($process.ExitCode -ne 0) { throw "Packaged Windows smoke test failed with exit code $($process.ExitCode)." }
 
       - name: Smoke packaged macOS app
         if: runner.os == 'macOS'
@@ -67,7 +69,9 @@ jobs:
         run: |
           binary="$(find release -type f -path '*/Hermes Forge.app/Contents/MacOS/Hermes Forge' | head -n 1)"
           test -n "$binary"
-          "$binary" --system-audit
+          export HERMES_FORGE_SMOKE_TEST_OUTPUT="$RUNNER_TEMP/hermes-forge-smoke.json"
+          "$binary" --smoke-test
+          cat "$HERMES_FORGE_SMOKE_TEST_OUTPUT"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

@@ -11,7 +11,7 @@ export type WelcomeCompleteTarget = "workbench" | "model" | "hermes";
 
 export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget) => void }) {
   const store = useAppStore();
-  const [status, setStatus] = useState<"detecting" | "found" | "not-found" | "installing">("detecting");
+  const [status, setStatus] = useState<"idle" | "detecting" | "found" | "not-found" | "installing">("idle");
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("正在检测本地 Hermes...");
   const [detail, setDetail] = useState("");
@@ -35,42 +35,38 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
     return () => unsubscribe?.();
   }, []);
 
-  useEffect(() => {
-    async function detectHermes() {
-      setStatus("detecting");
-      setProgress(20);
-      void refreshSetupChecks();
+  async function detectHermes() {
+    setStatus("detecting");
+    setProgress(20);
+    void refreshSetupChecks();
 
-      try {
-        if (!window.workbenchClient || typeof window.workbenchClient.getHermesProbe !== "function") {
-          throw new Error("Hermes client not available");
-        }
-
-        const probe = await window.workbenchClient.getHermesProbe();
-        setProgress(68);
-
-        if (probe?.probe?.status === "healthy") {
-          setStatus("found");
-          setMessage("检测到本地 Hermes，正在载入工作台...");
-          setDetail(probe.probe.secondaryMetric);
-          setProgress(100);
-          return;
-        }
-
-        setStatus("not-found");
-        setMessage("未检测到可用 Hermes，请选择安装来源。");
-        setDetail(probe?.probe?.message ?? "你可以优先使用官方 GitHub；如果 GitHub/uv/Python 下载较慢，可主动选择国内社区镜像。");
-      } catch (error) {
-        console.error("Hermes detection failed:", error);
-        setStatus("not-found");
-        const manualMac = await shouldUseManualMacSetup();
-        setMessage(manualMac ? "检测失败，请手动选择 macOS Hermes 安装位置。" : "检测失败，请选择 Hermes 安装来源。");
-        setDetail(error instanceof Error ? error.message : "未知错误");
+    try {
+      if (!window.workbenchClient || typeof window.workbenchClient.getHermesProbe !== "function") {
+        throw new Error("Hermes client not available");
       }
-    }
 
-    void detectHermes();
-  }, []);
+      const probe = await window.workbenchClient.getHermesProbe();
+      setProgress(68);
+
+      if (probe?.probe?.status === "healthy") {
+        setStatus("found");
+        setMessage("检测到本地 Hermes，可以进入工作台。");
+        setDetail(probe.probe.secondaryMetric);
+        setProgress(100);
+        return;
+      }
+
+      setStatus("not-found");
+      setMessage("未检测到可用 Hermes，请选择安装来源。");
+      setDetail(probe?.probe?.message ?? "你可以优先使用官方 GitHub；如果 GitHub/uv/Python 下载较慢，可主动选择国内社区镜像。");
+    } catch (error) {
+      console.error("Hermes detection failed:", error);
+      setStatus("not-found");
+      const manualMac = await shouldUseManualMacSetup();
+      setMessage(manualMac ? "检测失败，请手动选择 macOS Hermes 安装位置。" : "检测失败，请选择 Hermes 安装来源。");
+      setDetail(error instanceof Error ? error.message : "未知错误");
+    }
+  }
 
   async function completeWelcome(target?: WelcomeCompleteTarget) {
     const nextTarget = target ?? await nextWelcomeTarget();
@@ -280,7 +276,7 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
             让 Hermes 在这台电脑上就绪
           </h1>
           <p className="mt-4 max-w-[62ch] text-pretty text-[15px] leading-7 text-slate-500">
-            Forge 会先检查本机环境，再由你确认安装来源。整个过程不会静默安装，也不会在完成后突然跳转。
+            点击检测环境后，Forge 会检查本机依赖，并引导你选择安装来源和配置模型。
           </p>
         </div>
 
@@ -288,6 +284,18 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
 
         <div className="mt-6 grid min-h-0 flex-1 items-start gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
           <section className="rounded-[26px] bg-white p-6 shadow-[0_24px_80px_rgba(30,41,59,0.08)] ring-1 ring-slate-200/65 sm:p-8" aria-live="polite">
+          {status === "idle" && (
+            <div className="flex min-h-[320px] flex-col justify-center">
+              <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-[18px] bg-slate-100 text-slate-700"><ScanLine size={25} /></div>
+              <p className="text-xs font-semibold tracking-[0.12em] text-slate-400">步骤 1 / 3</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em] text-slate-950">准备连接 Hermes</h2>
+              <p className="mt-3 max-w-[56ch] text-sm leading-6 text-slate-500">检测已安装的 Hermes、Python 和 Git，查看接下来需要完成哪些设置。</p>
+              <div className="mt-8 flex flex-wrap gap-3">
+                <button type="button" onClick={() => void detectHermes()} className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"><ScanLine size={16} />检测环境</button>
+                <button type="button" onClick={() => void completeWelcome("hermes")} className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">手动配置路径</button>
+              </div>
+            </div>
+          )}
           {status === "detecting" && (
             <div className="flex min-h-[320px] flex-col justify-center">
               <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-[18px] bg-slate-100 text-slate-700">
@@ -473,7 +481,7 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
                     <p className="mt-0.5 text-xs text-slate-500">检测完成后会列出可修复项。</p>
                   </div>
                 </div>
-                <div className="mt-5 space-y-2" aria-hidden="true">
+                <div className="mt-5 space-y-2" aria-hidden="true" hidden={status === "idle"}>
                   {[76, 92, 64].map((width) => <div key={width} className="h-10 animate-pulse rounded-xl bg-slate-100" style={{ width: `${width}%` }} />)}
                 </div>
               </div>
@@ -492,10 +500,10 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   );
 }
 
-function OnboardingSteps(props: { status: "detecting" | "found" | "not-found" | "installing"; nextTarget: WelcomeCompleteTarget }) {
+function OnboardingSteps(props: { status: "idle" | "detecting" | "found" | "not-found" | "installing"; nextTarget: WelcomeCompleteTarget }) {
   const steps = [
-    { label: "检查环境", state: props.status === "detecting" ? "active" : "done" },
-    { label: "安装 Hermes", state: props.status === "detecting" ? "upcoming" : props.status === "found" ? "done" : "active" },
+    { label: "检查环境", state: props.status === "idle" || props.status === "detecting" ? "active" : "done" },
+    { label: "安装 Hermes", state: props.status === "idle" || props.status === "detecting" ? "upcoming" : props.status === "found" ? "done" : "active" },
     { label: "配置模型", state: props.status === "found" ? (props.nextTarget === "model" ? "active" : "done") : "upcoming" },
   ] as const;
   return (

@@ -1,4 +1,5 @@
 import type { RuntimeConfig } from "../shared/types";
+import { AUDITED_HERMES_COMMIT, AUDITED_HERMES_RELEASE_TAG } from "./hermes-version-constants";
 
 export type InstallSourceLabel = "official" | "mirror" | "custom" | "fork" | "pinned";
 
@@ -13,61 +14,18 @@ export type InstallSourceOption =
   | { kind: "official" | "mirror"; repoUrl?: string; branch?: string; commit?: string }
   | { kind: "custom"; repoUrl?: string; branch?: string; commit?: string };
 
-export interface RepoSyncStep {
-  program: string;
-  args: string[];
-  cwd?: string;
-}
-
-/**
- * Build a sequence of git commands to sync the Hermes repo to the desired
- * commit/branch. Works for both Native (runCommand) and WSL (shell script).
- */
-export function buildRepoSyncSteps(options: {
-  root: string;
-  repoUrl: string;
-  branch?: string;
-  commit?: string;
-  existing: boolean;
-}): RepoSyncStep[] {
-  const { root, repoUrl, branch, commit, existing } = options;
-  if (commit) {
-    if (existing) {
-      return [
-        { program: "git", args: ["-C", root, "remote", "set-url", "origin", repoUrl] },
-        { program: "git", args: ["-C", root, "fetch", "--depth", "1", "origin", commit] },
-        { program: "git", args: ["-C", root, "checkout", "--detach", "FETCH_HEAD"] },
-      ];
-    }
-    return [
-      { program: "git", args: ["init", root] },
-      { program: "git", args: ["-C", root, "remote", "add", "origin", repoUrl] },
-      { program: "git", args: ["-C", root, "fetch", "--depth", "1", "origin", commit] },
-      { program: "git", args: ["-C", root, "checkout", "--detach", "FETCH_HEAD"] },
-    ];
-  }
-  const b = branch?.trim() || "main";
-  if (existing) {
-    return [
-      { program: "git", args: ["-C", root, "remote", "set-url", "origin", repoUrl] },
-      { program: "git", args: ["-C", root, "fetch", "--depth", "1", "origin", b] },
-      { program: "git", args: ["-C", root, "checkout", b] },
-      { program: "git", args: ["-C", root, "reset", "--hard", "FETCH_HEAD"] },
-    ];
-  }
-  return [{ program: "git", args: ["clone", "--branch", b, "--depth", "1", repoUrl, root] }];
-}
 
 /**
  * Official Hermes stable source audited by Forge.
  *
  * Forge aligns with the official Hermes Agent repository to ensure
  * compatibility with upstream releases. Stable installs are pinned to an
- * audited release tag; users can still opt into main in advanced settings.
+ * audited release tag; explicit advanced branch selections are recorded as custom.
  */
 export const DEFAULT_PINNED_HERMES_SOURCE: InstallSource = {
   repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-  branch: "v2026.7.30",
+  branch: AUDITED_HERMES_RELEASE_TAG,
+  commit: AUDITED_HERMES_COMMIT,
   sourceLabel: "official",
 };
 
@@ -78,11 +36,19 @@ export const DEFAULT_PINNED_HERMES_SOURCE: InstallSource = {
  *   1. `config.hermesRuntime.installSource` (UI / IPC override)
  *   2. `HERMES_INSTALL_REPO_URL` env var (legacy power-user override; only
  *      overrides repoUrl, drops branch/commit since they cannot be inferred)
- *   3. `DEFAULT_PINNED_HERMES_SOURCE` (the bundled pinned fork)
+ *   3. `DEFAULT_PINNED_HERMES_SOURCE` (the audited official release)
  */
 export function resolveInstallSource(config: RuntimeConfig): InstallSource {
   const configured = config.hermesRuntime?.installSource;
   if (configured?.repoUrl?.trim()) {
+    // Old bundled main/date-tag defaults advance with Forge. Explicit commits
+    // and custom development branches remain user-owned selections.
+    if ((configured.sourceLabel === "official" || configured.sourceLabel === "mirror")
+      && configured.repoUrl.trim() === DEFAULT_PINNED_HERMES_SOURCE.repoUrl
+      && !configured.commit?.trim()
+      && (!configured.branch?.trim() || configured.branch.trim() === "main" || /^v\d{4}\.\d{1,2}\.\d{1,2}$/.test(configured.branch.trim()))) {
+      return { ...DEFAULT_PINNED_HERMES_SOURCE, sourceLabel: configured.sourceLabel };
+    }
     return {
       repoUrl: configured.repoUrl.trim(),
       branch: configured.branch?.trim() || undefined,
@@ -103,11 +69,12 @@ export function resolveInstallSource(config: RuntimeConfig): InstallSource {
 export function resolveInstallSourceFromOption(config: RuntimeConfig, option?: InstallSourceOption): InstallSource {
   if (!option) return resolveInstallSource(config);
   if (option.kind === "official" || option.kind === "mirror") {
+    const branch = option.branch?.trim();
     return {
       ...DEFAULT_PINNED_HERMES_SOURCE,
-      branch: option.branch?.trim() || DEFAULT_PINNED_HERMES_SOURCE.branch,
-      commit: option.commit?.trim() || undefined,
-      sourceLabel: option.kind,
+      branch: branch || DEFAULT_PINNED_HERMES_SOURCE.branch,
+      commit: option.commit?.trim() || (branch ? undefined : DEFAULT_PINNED_HERMES_SOURCE.commit),
+      sourceLabel: branch && branch !== DEFAULT_PINNED_HERMES_SOURCE.branch ? "custom" : option.kind,
     };
   }
   const repoUrl = option.repoUrl?.trim();

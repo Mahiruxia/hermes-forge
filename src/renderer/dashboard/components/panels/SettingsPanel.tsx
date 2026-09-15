@@ -545,18 +545,6 @@ export function SettingsPanel(props: {
               />
 
               <AdvancedSelect
-                label="本机联动方式"
-                tooltip="控制 Hermes 是否可以调用本机能力，例如文件、剪贴板、窗口和命令行。推荐保持默认。"
-                value={runtime.windowsAgentMode ?? "hermes_native"}
-                onChange={(value) => setRuntime({ ...runtime, windowsAgentMode: value as WindowsAgentMode })}
-                options={[
-                  { value: "hermes_native", label: "Hermes 原生联动（推荐）" },
-                  { value: "host_tool_loop", label: "宿主 Tool Loop fallback" },
-                  { value: "disabled", label: "关闭 Windows 联动" },
-                ]}
-              />
-
-              <AdvancedSelect
                 label="文件访问保护"
                 tooltip="用于避免任务同时修改同一个工作区。推荐开启。"
                 value={runtime.permissionPolicy ?? "bridge_guarded"}
@@ -580,7 +568,7 @@ export function SettingsPanel(props: {
               <AdvancedSelect
                 label="启动前检查强度"
                 tooltip="检查越完整，启动前越能发现问题，但可能稍慢。推荐保持标准。"
-                value={store.runtimeConfig?.startupWarmupMode ?? "cheap"}
+                value={store.runtimeConfig?.startupWarmupMode ?? "off"}
                 onChange={async (value) => {
                   const config = await window.workbenchClient.getRuntimeConfig();
                   const next = await window.workbenchClient.saveRuntimeConfig({ ...config, startupWarmupMode: value as "off" | "cheap" | "real_probe" });
@@ -588,13 +576,13 @@ export function SettingsPanel(props: {
                   store.success("启动前检查已更新", "新的检查强度会在下次启动或检测时生效。");
                 }}
                 options={[
-                  { value: "cheap", label: "标准（推荐）" },
+                  { value: "cheap", label: "轻量检查" },
                   { value: "real_probe", label: "完整检查" },
-                  { value: "off", label: "关闭" },
+                  { value: "off", label: "关闭（推荐）" },
                 ]}
               />
 
-              <AdvancedSelect
+              {store.runtimeConfig?.extensionSettings?.connectorsEnabled || store.runtimeConfig?.extensionSettings?.cronEnabled ? <AdvancedSelect
                 label="启动时自动运行 Gateway"
                 tooltip="仅在已经配置并启用连接器时生效。关闭后仍可在连接器页面手动启动。"
                 value={store.runtimeConfig?.startupGatewayAutoStart ? "on" : "off"}
@@ -609,7 +597,7 @@ export function SettingsPanel(props: {
                   { value: "off", label: "关闭（推荐）" },
                   { value: "on", label: "开启" },
                 ]}
-              />
+              /> : null}
 
               <InstallSourceSettings
                 runtime={runtime}
@@ -621,11 +609,11 @@ export function SettingsPanel(props: {
 
               <div className="flex flex-wrap gap-2">
                 <SecondaryButton icon={RotateCcw} label="恢复推荐设置" onClick={restoreRecommendedSettings} />
-                <SecondaryButton icon={Network} label="测试本机联动" loading={testingBridge} onClick={testBridge} />
+                {store.runtimeConfig?.extensionSettings?.desktopAutomationEnabled ? <SecondaryButton icon={Network} label="测试本机联动" loading={testingBridge} onClick={testBridge} /> : null}
               </div>
-              {bridgeTest ? <BridgeTestResultView result={bridgeTest} /> : null}
+              {store.runtimeConfig?.extensionSettings?.desktopAutomationEnabled && bridgeTest ? <BridgeTestResultView result={bridgeTest} /> : null}
               <div className="grid gap-3 lg:grid-cols-2">
-                <BridgeCapabilityPanel capabilityRows={bridgeCapabilities} />
+                {store.runtimeConfig?.extensionSettings?.desktopAutomationEnabled ? <BridgeCapabilityPanel capabilityRows={bridgeCapabilities} /> : null}
                 <EnforcementMatrixView rows={matrix} />
               </div>
             </div>

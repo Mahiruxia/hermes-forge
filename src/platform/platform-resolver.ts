@@ -105,8 +105,8 @@ export function getPythonCandidates(platform: PlatformKind, rootPath: string): A
   };
 
   // venv Python first
-  addExecutable(pathApi.join(rootPath, ".venv", paths.venvBinDir, `python${ext(platform)}`), "venv Python");
   addExecutable(pathApi.join(rootPath, "venv", paths.venvBinDir, `python${ext(platform)}`), "venv Python");
+  addExecutable(pathApi.join(rootPath, ".venv", paths.venvBinDir, `python${ext(platform)}`), ".venv Python");
 
   // System Python
   for (const candidate of paths.pythonCandidates) {

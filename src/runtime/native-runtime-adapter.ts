@@ -1,21 +1,19 @@
-import path from "node:path";
 import fs from "node:fs/promises";
-import { runCommand } from "../process/command-runner";
 import type { HermesRuntimeConfig } from "../shared/types";
-import { getPlatformKind, getPythonCandidates, isHermesExecutable } from "../platform";
-import { parseCommandLine, RuntimeResolver } from "./runtime-resolver";
+import { getPlatformKind } from "../platform";
+import type { RuntimeResolver } from "./runtime-resolver";
 import type { RuntimeProbeService } from "./runtime-probe-service";
 import type { RuntimeAdapter } from "./runtime-adapter";
 import { preflightFromProbe } from "./runtime-adapter";
 import type { BuildHermesLaunchInput, RuntimeLaunchSpec, RuntimePreflightResult, RuntimeProbeResult } from "./runtime-types";
+import { requireManagedHermesEnvironment, managedHermesEnvironmentEnv } from "./managed-hermes-environment";
 
 export class NativeRuntimeAdapter implements RuntimeAdapter {
-  private pythonSpec?: Promise<{ command: string; args: string[]; label: string; lastError?: string }>;
   private readonly platform = getPlatformKind();
 
   constructor(
     private readonly runtime: HermesRuntimeConfig,
-    private readonly runtimeResolver: RuntimeResolver,
+    _runtimeResolver: RuntimeResolver,
     private readonly runtimeProbeService: RuntimeProbeService,
   ) {}
 
@@ -28,17 +26,20 @@ export class NativeRuntimeAdapter implements RuntimeAdapter {
   }
 
   async buildHermesLaunch(input: BuildHermesLaunchInput): Promise<RuntimeLaunchSpec> {
-    const cliPath = input.pythonArgs[0] ?? path.join(input.rootPath, "hermes");
-    if (isHermesExecutable(cliPath, this.platform)) {
-      return this.launchFromExecutable(input, cliPath, input.pythonArgs.slice(1));
-    }
-    const python = await this.resolvePython(input.rootPath, cliPath, input.env);
-    return this.launchFromPython(input, python, input.pythonArgs);
+    const environment = await requireManagedHermesEnvironment(input.rootPath);
+    const cliPath = environment.cliPath;
+    if (!(await exists(cliPath))) throw new Error("Hermes 虚拟环境中缺少 CLI，请修复 Hermes 依赖。");
+    input = { ...input, env: managedHermesEnvironmentEnv(environment, input.env) };
+    return this.launchFromExecutable(input, cliPath, input.pythonArgs.slice(1));
   }
 
   async buildPythonLaunch(input: BuildHermesLaunchInput): Promise<RuntimeLaunchSpec> {
-    const python = await this.resolvePython(input.rootPath, path.join(input.rootPath, "hermes"), input.env);
-    return this.launchFromPython(input, python, input.pythonArgs);
+    const environment = await requireManagedHermesEnvironment(input.rootPath);
+    return this.launchFromPython(
+      { ...input, env: managedHermesEnvironmentEnv(environment, input.env) },
+      { command: environment.pythonPath, args: [], label: environment.pythonPath },
+      input.pythonArgs,
+    );
   }
 
   private launchFromPython(
@@ -103,35 +104,6 @@ export class NativeRuntimeAdapter implements RuntimeAdapter {
     return;
   }
 
-  private async resolvePython(rootPath: string, cliPath: string | undefined, env: NodeJS.ProcessEnv) {
-    this.pythonSpec ??= this.detectPython(rootPath, cliPath ?? path.join(rootPath, "hermes"), env);
-    return await this.pythonSpec;
-  }
-
-  private async detectPython(rootPath: string, cliPath: string, env: NodeJS.ProcessEnv) {
-    const candidates = getPythonCandidates(this.platform, rootPath);
-    const cwd = await exists(rootPath) ? rootPath : process.cwd();
-    let lastError = "";
-    for (const candidate of candidates) {
-      if (path.isAbsolute(candidate.command) && !(await exists(candidate.command))) {
-        lastError = `${candidate.label}: file does not exist`;
-        continue;
-      }
-      const result = await runCommand(candidate.command, [...candidate.args, cliPath, "--version"], {
-        cwd,
-        timeoutMs: 20_000,
-        env,
-        commandId: "runtime.native.detect-python",
-        runtimeKind: this.getKind(),
-      });
-      const output = `${result.stdout}\n${result.stderr}`;
-      if (result.exitCode === 0 && /Hermes Agent/i.test(output)) {
-        return candidate;
-      }
-      lastError = `${candidate.label} ${cliPath} --version failed: ${output.trim() || `exit ${result.exitCode ?? "unknown"}`}`;
-    }
-    return { command: this.platform === "win32" ? "python" : "python3", args: [], label: this.platform === "win32" ? "python" : "python3", lastError };
-  }
 }
 
 async function exists(targetPath: string) {

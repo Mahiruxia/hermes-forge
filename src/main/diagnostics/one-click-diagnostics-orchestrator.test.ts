@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OneClickDiagnosticsOrchestrator } from "./one-click-diagnostics-orchestrator";
+import { managedHermesEnvironmentAt } from "../../runtime/managed-hermes-environment";
 
 const tempDirs: string[] = [];
 
@@ -12,6 +13,102 @@ afterEach(async () => {
 });
 
 describe("OneClickDiagnosticsOrchestrator", () => {
+  async function managedFixture() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "one-click-managed-"));
+    tempDirs.push(dir);
+    const root = path.join(dir, "hermes-agent");
+    const environment = managedHermesEnvironmentAt(root);
+    await fs.mkdir(path.dirname(environment.pythonPath), { recursive: true });
+    await fs.writeFile(environment.pythonPath, "fixture");
+    const oldEnvironment = managedHermesEnvironmentAt(root, ".venv");
+    await fs.mkdir(path.dirname(oldEnvironment.pythonPath), { recursive: true });
+    await fs.writeFile(oldEnvironment.pythonPath, "fixture");
+    return { dir, root, environment };
+  }
+
+  function dependencyOrchestrator(dir: string, root: string, repairDependency = vi.fn()) {
+    const config = { modelProfiles: [], extensionSettings: { connectorsEnabled: false, cronEnabled: false }, hermesRuntime: { mode: "windows", pythonCommand: "system-python" } };
+    const orchestrator = new OneClickDiagnosticsOrchestrator(
+      { getConfigPath: () => path.join(dir, "config.json"), getEnginePath: async () => root, read: async () => config } as any,
+      { repairDependency } as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+    );
+    return { orchestrator, context: { config, runtime: config.hermesRuntime }, repairDependency };
+  }
+
+  it("checks the selected managed venv and skips disabled extras without demanding pip", async () => {
+    const { dir, root, environment } = await managedFixture();
+    await fs.writeFile(path.join(dir, "connectors-config.json"), "invalid disabled connector settings");
+    const { orchestrator, context, repairDependency } = dependencyOrchestrator(dir, root);
+    const probe = vi.spyOn(orchestrator as any, "probeManagedPython").mockResolvedValue({ ok: true, missing: [] });
+    const items: any[] = [];
+    await (orchestrator as any).checkPythonDeps(items, context, undefined, { autoFix: true });
+    expect(probe).toHaveBeenCalledWith(environment, ["mcp"]);
+    expect(repairDependency).not.toHaveBeenCalled();
+    expect(items[0]).toMatchObject({ status: "pass", evidence: { pythonCommand: environment.pythonPath, extras: ["mcp"] } });
+  });
+
+  it("delegates missing dependencies to locked maintenance and verifies the repaired environment", async () => {
+    const { dir, root } = await managedFixture();
+    const repair = vi.fn().mockResolvedValue({ ok: true, message: "synchronized" });
+    const { orchestrator, context } = dependencyOrchestrator(dir, root, repair);
+    const probe = vi.spyOn(orchestrator as any, "probeManagedPython")
+      .mockResolvedValueOnce({ ok: false, missing: ["mcp"] }).mockResolvedValueOnce({ ok: true, missing: [] });
+    const items: any[] = [];
+    await (orchestrator as any).checkPythonDeps(items, context, undefined, { autoFix: true });
+    expect(repair).toHaveBeenCalledExactlyOnceWith("hermes_pyyaml");
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(items[0]).toMatchObject({ status: "fixed", fixed: true });
+  });
+
+  it("does not report a successful repair until dependency verification passes", async () => {
+    const { dir, root } = await managedFixture();
+    const { orchestrator, context } = dependencyOrchestrator(dir, root, vi.fn().mockResolvedValue({ ok: true }));
+    vi.spyOn(orchestrator as any, "probeManagedPython").mockResolvedValue({ ok: false, missing: ["mcp"] });
+    const items: any[] = [];
+    await (orchestrator as any).checkPythonDeps(items, context, undefined, { autoFix: true });
+    expect(items[0]).toMatchObject({ status: "fail", fixed: false, userActionRequired: true });
+  });
+
+  it("does not fall through to configured system Python when the managed environment is absent", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "one-click-missing-"));
+    tempDirs.push(dir);
+    const { orchestrator, context, repairDependency } = dependencyOrchestrator(dir, path.join(dir, "missing"));
+    const probe = vi.spyOn(orchestrator as any, "probeManagedPython");
+    const items: any[] = [];
+    await (orchestrator as any).checkPythonDeps(items, context, undefined, { autoFix: false });
+    expect(probe).not.toHaveBeenCalled();
+    expect(repairDependency).not.toHaveBeenCalled();
+    expect(items[0]).toMatchObject({ status: "fail", evidence: { missing: ["受管虚拟环境"] } });
+  });
+
+  it("does not query or start Gateway when connectors and Cron are disabled", async () => {
+    const status = vi.fn();
+    const checkPreflight = vi.fn();
+    const restart = vi.fn();
+    const orchestrator = new OneClickDiagnosticsOrchestrator(
+      { read: async () => ({ extensionSettings: { connectorsEnabled: false, cronEnabled: false } }) } as any,
+      {} as any, {} as any, { status, checkPreflight, restart } as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+    );
+    const items: any[] = [];
+    await (orchestrator as any).checkGateway(items, { autoFix: true });
+    expect(items[0]).toMatchObject({ status: "skipped", source: "extension-settings" });
+    expect(status).not.toHaveBeenCalled();
+    expect(checkPreflight).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("accepts the official task contract without probing fork capabilities or doctor", async () => {
+    const inspect = vi.fn().mockResolvedValue({ installed: true, version: "0.21.3", forgeTaskReady: true, blockingIssues: [], warnings: [] });
+    const orchestrator = new OneClickDiagnosticsOrchestrator(
+      {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, { inspect } as any,
+    );
+    const items: any[] = [];
+    await (orchestrator as any).checkHermesCli(items, {}, undefined, { autoFix: true });
+    expect(items.map((entry) => entry.id)).toEqual(["hermes.version", "hermes.compatibility"]);
+    expect(items.every((entry) => entry.status === "pass")).toBe(true);
+    expect(inspect).toHaveBeenCalledOnce();
+  });
+
   it("exports diagnostics without starting a one-click run when no cached report exists", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "one-click-export-"));
     tempDirs.push(dir);

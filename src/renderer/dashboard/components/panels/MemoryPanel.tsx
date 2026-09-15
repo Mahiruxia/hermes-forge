@@ -1,17 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Save, Upload, BookOpen, User } from "lucide-react";
 import type { HermesMemoryFile } from "../../../../shared/types";
 import { useAppStore } from "../../../store";
 import { NoticeCard } from "../NoticeCard";
+import { refreshOverviewSection } from "../../../overview-data";
+
+const EMPTY_MEMORY: HermesMemoryFile[] = [];
 
 export function MemoryPanel() {
-  const store = useAppStore();
   const [editing, setEditing] = useState<{ id: "USER.md" | "MEMORY.md"; content: string } | undefined>();
   const [message, setMessage] = useState("");
-  const files = store.webUiOverview?.memory ?? [];
+  const files = useAppStore(state => state.webUiOverview?.memory ?? EMPTY_MEMORY);
+
+  useEffect(() => { void refresh().catch(error => setMessage(error instanceof Error ? error.message : "记忆读取失败，请重试。")); }, []);
 
   async function refresh() {
-    store.setWebUiOverview(await window.workbenchClient.getWebUiOverview());
+    await refreshOverviewSection("memory");
   }
 
   async function importMemory(targetId: "USER.md" | "MEMORY.md") {
@@ -21,12 +25,9 @@ export function MemoryPanel() {
     input.style.display = "none";
     input.onchange = async () => {
       const file = input.files?.[0];
-      if (!file?.path) {
-        setMessage("导入失败：当前环境没有提供文件路径。");
-        return;
-      }
+      if (!file) return;
       try {
-        await window.workbenchClient.importMemoryFile({ sourcePath: file.path, targetId });
+        await window.workbenchClient.saveMemoryFile({ id: targetId, content: await file.text() });
         setMessage(`已从 ${file.name} 导入到 ${targetId}`);
         await refresh();
       } catch (error) {
@@ -42,7 +43,7 @@ export function MemoryPanel() {
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm text-slate-500">
         <BookOpen size={14} />
-        <span>管理长期记忆和用户偏好，数据存储在 ~/.hermes/memories 目录。</span>
+        <span>编辑当前 Agent 的长期记忆和用户偏好。</span>
       </div>
 
       {message ? <NoticeCard text={message} onClose={() => setMessage("")} /> : null}
@@ -114,12 +115,10 @@ export function MemoryPanel() {
             <button
               className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-indigo-700"
               onClick={() =>
-                window.workbenchClient.saveMemoryFile(editing).then(() =>
-                  window.workbenchClient.getWebUiOverview().then((overview) => {
-                    store.setWebUiOverview(overview);
-                    setEditing(undefined);
-                  })
-                )
+                window.workbenchClient.saveMemoryFile(editing).then(async () => {
+                  await refresh();
+                  setEditing(undefined);
+                }).catch(error => setMessage(error instanceof Error ? error.message : "记忆保存失败，请重试。"))
               }
               type="button"
             >

@@ -5,6 +5,9 @@ import { migrateRuntimeConfigModels } from "../shared/model-config";
 import { defaultEnginePermissions } from "../shared/types";
 import type { EngineId, RuntimeConfig } from "../shared/types";
 import { getDefaultHermesHome, getDefaultInstallRoot, getDefaultPythonCommand, getPlatformKind } from "../platform";
+import { DEFAULT_PINNED_HERMES_SOURCE } from "../install/install-source";
+import { atomicWriteText } from "./hermes-config-files";
+import { resolveActiveHermesHome } from "./hermes-home";
 
 export type RuntimeConfigRecovery = {
   configPath: string;
@@ -71,6 +74,7 @@ const defaultConfig: RuntimeConfig = {
   enginePaths: {},
   startupWarmupMode: "off",
   startupGatewayAutoStart: false,
+  extensionSettings: { connectorsEnabled: false, cronEnabled: false, desktopAutomationEnabled: false },
   enginePermissions: defaultEnginePermissions,
   hermesRuntime: {
     mode: platform === "win32" ? "windows" : "darwin",
@@ -80,11 +84,7 @@ const defaultConfig: RuntimeConfig = {
     cliPermissionMode: "guarded",
     permissionPolicy: "bridge_guarded",
     workerMode: "off",
-    installSource: {
-      repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "v2026.7.30",
-      sourceLabel: "official",
-    },
+    installSource: { ...DEFAULT_PINNED_HERMES_SOURCE },
   },
 };
 
@@ -107,6 +107,9 @@ export class RuntimeConfigStore {
       return await this.resetInvalidConfig("invalid_json", error);
     }
     const migratedJson = migrateRuntimeConfigModels(parsedJson);
+    if (!migratedJson.extensionSettings) {
+      migratedJson.extensionSettings = await this.migrateExtensionSettings(parsedJson);
+    }
     const parsed = runtimeConfigSchema.safeParse(migratedJson);
     if (!parsed.success) {
       console.error("[RuntimeConfigStore] Schema validation failed, resetting to default config:", parsed.error);
@@ -128,12 +131,36 @@ export class RuntimeConfigStore {
   async write(config: RuntimeConfig) {
     const parsed = runtimeConfigSchema.parse(migrateRuntimeConfigModels(normalizeRuntimeConfig(config)));
     await fs.mkdir(path.dirname(this.configPath), { recursive: true });
-    await fs.writeFile(this.configPath, JSON.stringify(parsed, null, 2), "utf8");
+    await atomicWriteText(this.configPath, JSON.stringify(parsed, null, 2));
     return parsed as RuntimeConfig;
   }
 
   getConfigPath() {
     return this.configPath;
+  }
+
+  private async migrateExtensionSettings(config: RuntimeConfig) {
+    const dataRoot = path.dirname(this.configPath);
+    const home = await resolveActiveHermesHome(path.join(dataRoot, "profiles", "default", "hermes"));
+    const readJson = async (filePath: string): Promise<Record<string, unknown>> => {
+      try { return JSON.parse(await fs.readFile(filePath, "utf8")); } catch { return {}; }
+    };
+    const [connectors, cron] = await Promise.all([
+      readJson(path.join(dataRoot, "connectors-config.json")),
+      readJson(path.join(home, "cron", "jobs.json")),
+    ]);
+    const enabled = (value: unknown): boolean => {
+      if (!value || typeof value !== "object") return false;
+      const entry = value as { enabled?: boolean; instances?: Record<string, unknown> };
+      if (entry.enabled === false) return false;
+      return entry.instances ? Object.values(entry.instances).some(enabled) : entry.enabled === true;
+    };
+    const jobs = Array.isArray(cron) ? cron : Array.isArray(cron.jobs) ? cron.jobs : Object.values(cron);
+    return {
+      connectorsEnabled: config.startupGatewayAutoStart === true || Object.values((connectors.platforms ?? {}) as Record<string, unknown>).some(enabled),
+      cronEnabled: jobs.some((value) => value && typeof value === "object" && (value as { enabled?: boolean }).enabled !== false),
+      desktopAutomationEnabled: config.hermesRuntime?.windowsAgentMode === "host_tool_loop",
+    };
   }
 
   getLastRecovery() {

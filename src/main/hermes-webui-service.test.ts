@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppPaths } from "./app-paths";
 import { runCommand } from "../process/command-runner";
-import { defaultHermesCliPath } from "../runtime/hermes-cli-paths";
 import { HermesWebUiService } from "./hermes-webui-service";
 
 vi.mock("../process/command-runner", () => ({
@@ -12,15 +11,14 @@ vi.mock("../process/command-runner", () => ({
 }));
 
 let tempRoot = "";
-const nativePythonCommand = process.platform === "win32" ? "python" : "python3";
-
-function nativeHermesCliPath() {
-  return defaultHermesCliPath(path.join(tempRoot, "Hermes Agent"));
-}
+let nativePythonCommand = "";
 
 describe("HermesWebUiService", () => {
   beforeEach(async () => {
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-webui-service-"));
+    nativePythonCommand = path.join(tempRoot, "Hermes Agent", "venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python");
+    await fs.mkdir(path.dirname(nativePythonCommand), { recursive: true });
+    await fs.writeFile(nativePythonCommand, "fixture");
     vi.mocked(runCommand).mockReset();
   });
 
@@ -121,61 +119,9 @@ describe("HermesWebUiService", () => {
 
     expect(runCommand).toHaveBeenCalledWith(
       nativePythonCommand,
-      [nativeHermesCliPath(), "cron", "create", "--name", "Morning check", "every 1h", "Summarize project status"],
+      ["-m", "hermes_cli.main", "cron", "create", "--name", "Morning check", "every 1h", "Summarize project status"],
       expect.objectContaining({ commandId: "webui.hermes" }),
     );
-  });
-
-  it("parses Kanban board/task/diagnostic JSON from Hermes CLI", async () => {
-    const appPaths = new AppPaths(tempRoot);
-    await appPaths.ensureBaseLayout();
-    vi.mocked(runCommand)
-      .mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: JSON.stringify([{ slug: "forge", name: "Forge", is_current: true, counts: { todo: 1 } }]),
-        stderr: "",
-        diagnostics: { exitCode: 0 } as any,
-      })
-      .mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: JSON.stringify([{ id: "task-1", title: "Wire UI", status: "todo" }]),
-        stderr: "",
-        diagnostics: { exitCode: 0 } as any,
-      })
-      .mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: JSON.stringify([{ task_id: "task-1", title: "Wire UI", diagnostics: [] }]),
-        stderr: "",
-        diagnostics: { exitCode: 0 } as any,
-      });
-    const service = new HermesWebUiService(appPaths, async () => path.join(tempRoot, "Hermes Agent"));
-
-    await expect(service.listKanbanBoards()).resolves.toMatchObject([{ slug: "forge", name: "Forge", counts: { todo: 1 } }]);
-    await expect(service.listKanbanTasks({ board: "forge" })).resolves.toMatchObject([{ id: "task-1", title: "Wire UI", status: "todo" }]);
-    await expect(service.listKanbanDiagnostics({ board: "forge" })).resolves.toMatchObject([{ task_id: "task-1" }]);
-  });
-
-  it("surfaces Kanban CLI failures and bad JSON with stdout and stderr", async () => {
-    const appPaths = new AppPaths(tempRoot);
-    await appPaths.ensureBaseLayout();
-    const service = new HermesWebUiService(appPaths, async () => path.join(tempRoot, "Hermes Agent"));
-    vi.mocked(runCommand).mockResolvedValueOnce({
-      exitCode: 2,
-      stdout: "",
-      stderr: "kanban failed",
-      diagnostics: { exitCode: 2 } as any,
-    });
-
-    await expect(service.listKanbanBoards()).rejects.toThrow("kanban failed");
-
-    vi.mocked(runCommand).mockResolvedValueOnce({
-      exitCode: 0,
-      stdout: "not-json",
-      stderr: "warning",
-      diagnostics: { exitCode: 0 } as any,
-    });
-
-    await expect(service.listKanbanBoards()).rejects.toThrow("stdout: not-json");
   });
 
   it("creates no_agent cron jobs with safe script files", async () => {
@@ -201,7 +147,7 @@ describe("HermesWebUiService", () => {
     expect(runCommand).toHaveBeenCalledWith(
       nativePythonCommand,
       [
-        nativeHermesCliPath(),
+        "-m", "hermes_cli.main",
         "cron", "create", "--name", "Watchdog", "--script", "watchdog.py", "--no-agent", "every 1h",
       ],
       expect.objectContaining({ commandId: "webui.hermes" }),
@@ -264,7 +210,7 @@ describe("HermesWebUiService", () => {
 
     expect(runCommand).toHaveBeenCalledWith(
       nativePythonCommand,
-      [nativeHermesCliPath(), "cron", "edit", "abc123", "--name", "Updated", "--schedule", "0 9 * * *", "--prompt", "New prompt"],
+      ["-m", "hermes_cli.main", "cron", "edit", "abc123", "--name", "Updated", "--schedule", "0 9 * * *", "--prompt", "New prompt"],
       expect.objectContaining({ commandId: "webui.hermes" }),
     );
   });
@@ -293,13 +239,13 @@ describe("HermesWebUiService", () => {
     expect(runCommand).toHaveBeenNthCalledWith(
       1,
       nativePythonCommand,
-      [nativeHermesCliPath(), "cron", "run", "abc123"],
+      ["-m", "hermes_cli.main", "cron", "run", "abc123"],
       expect.objectContaining({ timeoutMs: 30000 }),
     );
     expect(runCommand).toHaveBeenNthCalledWith(
       2,
       nativePythonCommand,
-      [nativeHermesCliPath(), "cron", "tick"],
+      ["-m", "hermes_cli.main", "cron", "tick"],
       expect.objectContaining({ timeoutMs: 10 * 60 * 1000 }),
     );
   });

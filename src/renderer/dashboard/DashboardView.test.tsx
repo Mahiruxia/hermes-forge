@@ -137,7 +137,7 @@ describe("DashboardView", () => {
     expect(screen.queryByRole("button", { name: "显示历史会话栏" })).toBeNull();
   });
 
-  it("adapts the right control panel as a collapsible layout column", () => {
+  it("adapts the right control panel as a collapsible layout column", async () => {
     const onOpenFix = vi.fn();
     renderView({ onOpenFix });
 
@@ -154,7 +154,7 @@ describe("DashboardView", () => {
     expect(shell).toHaveClass("opacity-100");
     expect(screen.queryByRole("button", { name: "显示右侧控制面板" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /更换模型/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /更换模型/ }));
     expect(onOpenFix).toHaveBeenCalledWith("model");
 
     fireEvent.click(screen.getByRole("button", { name: "关闭 Agent 面板" }));
@@ -210,7 +210,7 @@ describe("DashboardView", () => {
     expect(screen.getAllByText("我可以帮你分析项目。").length).toBeGreaterThan(0);
     const agentShell = screen.getByTestId("agent-panel-shell");
     const agentDrawer = document.querySelector('aside[aria-label="Agent 面板"]');
-    expect(agentDrawer).not.toBeNull();
+    expect(agentDrawer).toBeNull();
     expect(agentShell).toHaveClass("w-0");
 
     fireEvent.click(screen.getByRole("button", { name: "Agent 面板" }));
@@ -246,7 +246,7 @@ describe("DashboardView", () => {
     expect(input).toHaveFocus();
   });
 
-  it("opens and closes workspace files from the user-visible controls", () => {
+  it("opens and closes workspace files from the user-visible controls", async () => {
     renderView();
 
     expect(useAppStore.getState().workspaceDrawerOpen).toBe(false);
@@ -254,12 +254,13 @@ describe("DashboardView", () => {
     fireEvent.click(screen.getByRole("button", { name: "工作区文件" }));
     expect(useAppStore.getState().workspaceDrawerOpen).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "收起工作区文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "收起工作区文件" }));
     expect(useAppStore.getState().workspaceDrawerOpen).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "打开工作区文件" }));
     expect(useAppStore.getState().workspaceDrawerOpen).toBe(true);
 
+    await screen.findByRole("button", { name: "收起工作区文件" });
     fireEvent.keyDown(window, { key: "Escape" });
     expect(useAppStore.getState().workspaceDrawerOpen).toBe(false);
   });

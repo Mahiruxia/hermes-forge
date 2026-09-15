@@ -127,7 +127,9 @@ export type HermesSystemAuditStepId =
   | "read-nasty-path"
   | "write-outside-workspace"
   | "read-large-file"
-  | "host-command";
+  | "host-command"
+  | "session-restart-resume"
+  | "model-profile-switch";
 
 export type HermesSystemAuditStep = {
   id: HermesSystemAuditStepId;
@@ -447,151 +449,6 @@ export type HermesCronJob = {
   workdir?: string;
 };
 
-export type HermesKanbanTaskStatus = "todo" | "ready" | "running" | "blocked" | "done" | "archived" | string;
-
-export type HermesKanbanBoard = {
-  slug: string;
-  name?: string;
-  description?: string;
-  icon?: string;
-  color?: string;
-  is_current?: boolean;
-  counts?: Record<string, number>;
-  total?: number;
-  path?: string;
-  created_at?: string | number;
-  updated_at?: string | number;
-};
-
-export type HermesKanbanRun = {
-  id?: string | number;
-  task_id?: string;
-  profile?: string;
-  step_key?: string;
-  status?: string;
-  outcome?: string;
-  assignee?: string;
-  summary?: string;
-  error?: string;
-  metadata?: Record<string, unknown>;
-  worker_pid?: number;
-  started_at?: string | number;
-  finished_at?: string | number;
-  ended_at?: string | number;
-  output?: string;
-  [key: string]: unknown;
-};
-
-export type HermesKanbanDiagnostic = {
-  task_id?: string;
-  title?: string;
-  status?: string;
-  assignee?: string;
-  severity?: string;
-  message?: string;
-  diagnostics?: Array<{
-    id?: string;
-    severity?: string;
-    title?: string;
-    message?: string;
-    suggested_actions?: string[];
-    [key: string]: unknown;
-  }>;
-  [key: string]: unknown;
-};
-
-export type HermesKanbanTask = {
-  id: string;
-  title: string;
-  body?: string;
-  status: HermesKanbanTaskStatus;
-  assignee?: string;
-  priority?: string | number;
-  tenant?: string;
-  workspace_kind?: string;
-  workspace_path?: string;
-  skills?: string[];
-  result?: string;
-  created_by?: string;
-  created_at?: string | number;
-  updated_at?: string | number;
-  started_at?: string | number;
-  completed_at?: string | number;
-  max_retries?: number;
-  parents?: string[];
-  children?: string[];
-  runs?: HermesKanbanRun[];
-  diagnostics?: HermesKanbanDiagnostic[];
-  latest_summary?: string;
-  comments?: Array<{ id?: string | number; author?: string; body?: string; created_at?: string | number }>;
-  events?: Array<{ id?: string | number; kind?: string; type?: string; payload?: unknown; created_at?: string | number; run_id?: string | number }>;
-  [key: string]: unknown;
-};
-
-export type HermesKanbanAssignee = {
-  id?: string;
-  name: string;
-  label?: string;
-  running?: number;
-  ready?: number;
-  blocked?: number;
-  done?: number;
-  [key: string]: unknown;
-};
-
-export type HermesKanbanActionResult = {
-  ok: boolean;
-  message: string;
-  exitCode: number | null;
-  stdout?: string;
-  stderr?: string;
-};
-
-export type HermesKanbanCreateBoardInput = {
-  slug: string;
-  name?: string;
-  description?: string;
-  icon?: string;
-  color?: string;
-  switchTo?: boolean;
-};
-
-export type HermesKanbanTaskListOptions = {
-  board?: string;
-  status?: string;
-  assignee?: string;
-  archived?: boolean;
-  mine?: boolean;
-  tenant?: string;
-};
-
-export type HermesKanbanCreateTaskInput = {
-  board?: string;
-  title: string;
-  body?: string;
-  assignee?: string;
-  priority?: string;
-  tenant?: string;
-  workspaceKind?: "scratch" | "worktree" | "dir";
-  workspacePath?: string;
-  skills?: string[];
-  maxRetries?: number;
-  triage?: boolean;
-};
-
-export type HermesKanbanTaskAction = "assign" | "reassign" | "reclaim" | "complete" | "block" | "unblock" | "archive" | "edit" | "specify";
-
-export type HermesKanbanTaskActionInput = {
-  board?: string;
-  taskId: string;
-  action: HermesKanbanTaskAction;
-  assignee?: string;
-  reason?: string;
-  result?: string;
-  summary?: string;
-  reclaim?: boolean;
-};
-
 export type HermesConnectorPlatformId =
   | "telegram"
   | "discord"
@@ -800,6 +657,8 @@ export type ApprovalRequest = {
   status: "pending" | "approved" | "denied" | "expired";
   createdAt: string;
   expiresAt?: string;
+  allowedChoices?: ApprovalChoice[];
+  allowEdit?: boolean;
 };
 
 export type ClarifyRequest = {
@@ -808,6 +667,8 @@ export type ClarifyRequest = {
   taskRunId?: string;
   question: string;
   options?: string[];
+  multiSelect?: boolean;
+  questions?: EngineInteractionQuestion[];
   status: "pending" | "answered" | "dismissed";
   createdAt: string;
 };
@@ -1116,6 +977,30 @@ export type ContextRequest = {
   memoryPolicy: MemoryPolicy;
 };
 
+export type EngineInteractionQuestion = {
+  id: string;
+  question: string;
+  choices?: string[];
+  multiSelect?: boolean;
+};
+
+export type EngineInteractionRequest = {
+  requestId: string;
+  taskRunId: string;
+  timeoutMs: number;
+} & (
+  | { kind: "approval"; command: string; description: string; allowSession: boolean; allowPermanent: boolean; smartDenied: boolean }
+  | { kind: "clarify"; question: string; choices?: string[]; multiSelect?: boolean; questions?: EngineInteractionQuestion[] }
+);
+
+export type EngineInteractionResponse = {
+  requestId: string;
+  taskRunId: string;
+} & (
+  | { kind: "approval"; choice: ApprovalChoice | "timeout" }
+  | { kind: "clarify"; answer?: string | string[]; answers?: Record<string, string | string[]>; timedOut?: boolean }
+);
+
 export type EngineRunRequest = {
   sessionId: string;
   conversationId?: string;
@@ -1131,6 +1016,8 @@ export type EngineRunRequest = {
   runtimeEnv?: EngineRuntimeEnv;
   contextBundle?: ContextBundle;
   permissions?: EnginePermissionPolicy;
+  /** Main-process callback only. Never sent to the renderer or persisted. */
+  onInteraction?: (request: EngineInteractionRequest, signal: AbortSignal) => Promise<EngineInteractionResponse>;
 };
 
 export type ConversationHistoryEntry = {
@@ -1179,7 +1066,7 @@ export type EngineEvent =
   | { type: "lifecycle"; stage: TaskLifecycleStage; message: string; at: string }
   | { type: "message_chunk"; content: string; at: string }
   | { type: "reasoning"; content: string; at: string }
-  | { type: "clarify"; question: string; choices?: string[]; at: string }
+  | { type: "clarify"; question: string; choices?: string[]; requestId?: string; taskRunId?: string; multiSelect?: boolean; questions?: EngineInteractionQuestion[]; status?: "pending" | "answered" | "dismissed"; at: string }
   | { type: "session_update"; hermesSessionId: string; previousHermesSessionId?: string; title?: string; messageCount?: number; model?: string; at: string }
   | { type: "progress"; step: string; done: boolean; message: string; at: string }
   | { type: "diagnostic"; category: string; message: string; provider?: string; model?: string; authMode?: string; durationMs?: number; at: string }
@@ -1191,7 +1078,7 @@ export type EngineEvent =
   | { type: "file_change"; path: string; changeType: "create" | "update" | "delete"; at: string }
   | { type: "approval"; request: ApprovalRequest; outcome: "requested" | "approved" | "denied" | "expired" | "auto_approved"; choice?: ApprovalChoice; message: string; at: string }
   | { type: "memory_access"; engineId: EngineId; action: "read" | "write" | "summarize"; source: string; at: string }
-  | { type: "result"; success: boolean; title: string; detail: string; at: string };
+  | { type: "result"; success: boolean; title: string; detail: string; outcome?: "completed" | "failed" | "cancelled"; at: string };
 
 export type AppErrorCode = "ENGINE_NOT_READY" | "MODEL_NOT_CONFIGURED" | "SECRET_MISSING" | "WORKSPACE_LOCKED" | "SNAPSHOT_FAILED" | "INSTALL_REQUIRED" | "CLI_FAILED";
 
@@ -1258,6 +1145,8 @@ export type SnapshotRestoreResult = {
 
 export type SnapshotRecord = {
   snapshotId: string;
+  taskRunId?: string;
+  workSessionId?: string;
   workspaceId: string;
   workspacePath: string;
   createdAt: string;
@@ -1317,6 +1206,12 @@ export type HermesStatusSummary = {
   memory: MemoryStatus;
 };
 
+export type ExtensionSettings = {
+  connectorsEnabled: boolean;
+  cronEnabled: boolean;
+  desktopAutomationEnabled: boolean;
+};
+
 export type RuntimeConfig = {
   defaultModelProfileId?: string;
   modelRoleAssignments?: Partial<Record<ModelRole, string>>;
@@ -1326,6 +1221,7 @@ export type RuntimeConfig = {
   enginePaths?: Partial<Record<EngineId | "client", string>>;
   startupWarmupMode?: StartupWarmupMode;
   startupGatewayAutoStart?: boolean;
+  extensionSettings?: ExtensionSettings;
   enginePermissions?: Partial<Record<EngineId | "client", Partial<EnginePermissionPolicy>>>;
   hermesRuntime?: HermesRuntimeConfig;
 };

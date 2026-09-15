@@ -1,19 +1,20 @@
 import { PanelLeftOpen } from "lucide-react";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { SessionMetaPatch, WorkSession } from "../../shared/types";
 import { useAppStore } from "../store";
-import { ContextInspector } from "./ContextInspector";
 import { PureChatContainer } from "./PureChatContainer";
 import { IconRail } from "./components/IconRail";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { HermesHeader } from "./components/HermesHeader";
-import { WorkspaceDrawer } from "./components/WorkspaceDrawer";
 import { ControlCenter } from "./components/ControlCenter";
-import { AgentRunPanel } from "./components/AgentRunPanel";
 import { hasInlineLocalFilePath } from "../../shared/local-file-paths";
 import { resolveRunningTaskState, runningSessionLabel } from "../sessionRunState";
+
+const ContextInspector = lazy(() => import("./ContextInspector").then(module => ({ default: module.ContextInspector })));
+const WorkspaceDrawer = lazy(() => import("./components/WorkspaceDrawer").then(module => ({ default: module.WorkspaceDrawer })));
+const AgentRunPanel = lazy(() => import("./components/AgentRunPanel").then(module => ({ default: module.AgentRunPanel })));
 
 type PanelId = ReturnType<typeof useAppStore.getState>["activePanel"];
 type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
@@ -34,9 +35,7 @@ export function DashboardView(props: {
   onCreateSession: () => void;
   onSelectSession: (session: WorkSession | string) => void;
   onDeleteSession: (session: WorkSession) => void;
-  onDuplicateSession?: (session: WorkSession) => void;
   onExportSession?: (session: WorkSession, format: "json" | "markdown") => void;
-  onImportSession?: () => void;
   onRenameSession: (title: string) => void;
   onUpdateActiveSessionMeta?: (patch: SessionMetaPatch) => void;
   onUpdateSessionMeta?: (sessionId: string, patch: SessionMetaPatch) => void;
@@ -226,9 +225,7 @@ export function DashboardView(props: {
               onCreateSession={props.onCreateSession}
               onSelectSession={props.onSelectSession}
               onDeleteSession={props.onDeleteSession}
-              onDuplicateSession={props.onDuplicateSession ?? (() => undefined)}
               onExportSession={props.onExportSession ?? (() => undefined)}
-              onImportSession={props.onImportSession ?? (() => undefined)}
               onUpdateSessionMeta={props.onUpdateSessionMeta ?? ((_sessionId, _patch) => undefined)}
               onCollapse={() => store.setSessionSidebarOpen(false)}
             />
@@ -285,6 +282,11 @@ export function DashboardView(props: {
                 onOpenSettings={() => store.setView("settings")}
                 onClearSession={props.onClearSession}
                 onOpenSessionFolder={props.onOpenSessionFolder}
+                onPickWorkspace={props.onPickWorkspace}
+                onSelectWorkspace={(workspacePath) => {
+                  props.onSelectWorkspace(workspacePath);
+                  store.setActivePanel("chat");
+                }}
               />
             </div>
           )}
@@ -311,13 +313,13 @@ export function DashboardView(props: {
                 onDoubleClick={() => resizePanel("agent", DEFAULT_AGENT_PANEL_WIDTH)}
               />
             ) : null}
-            <AgentRunPanel open={store.agentPanelOpen} onClose={() => store.setAgentPanelOpen(false)} onOpenFix={props.onOpenFix} />
+            {store.agentPanelOpen ? <Suspense fallback={null}><AgentRunPanel open onClose={() => store.setAgentPanelOpen(false)} onOpenFix={props.onOpenFix} /></Suspense> : null}
           </div>
 
         </div>
       </div>
 
-      <WorkspaceDrawer
+      {store.workspaceDrawerOpen ? <Suspense fallback={null}><WorkspaceDrawer
         onClose={() => store.setWorkspaceDrawerOpen(false)}
         onPickWorkspace={props.onPickWorkspace}
         onSelectWorkspace={(workspacePath) => {
@@ -325,15 +327,15 @@ export function DashboardView(props: {
           store.setWorkspaceDrawerOpen(false);
         }}
         onRefreshFileTree={props.onRefreshFileTree}
-      />
+      /></Suspense> : null}
 
-      <ContextInspector
+      {store.inspectorOpen ? <Suspense fallback={null}><ContextInspector
         open={store.inspectorOpen}
         onClose={() => store.setInspectorOpen(false)}
         onRefreshFileTree={props.onRefreshFileTree}
         onRestoreSnapshot={props.onRestoreSnapshot}
         onOpenSessionFolder={props.onOpenSessionFolder}
-      />
+      /></Suspense> : null}
     </section>
   );
 }

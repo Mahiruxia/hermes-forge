@@ -8,38 +8,9 @@ export default defineConfig({
   build: {
     outDir: "dist/renderer",
     emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes("node_modules")) {
-            return undefined;
-          }
-          if (id.includes("react-dom") || id.includes("\\react\\") || id.includes("/react/")) {
-            return "react-vendor";
-          }
-          if (id.includes("lucide-react")) {
-            return "icons-vendor";
-          }
-          if (
-            id.includes("react-markdown")
-            || id.includes("remark-gfm")
-            || id.includes("rehype-raw")
-            || id.includes("rehype-sanitize")
-            || id.includes("unified")
-            || id.includes("remark-")
-            || id.includes("rehype-")
-            || id.includes("mdast-util")
-            || id.includes("micromark")
-          ) {
-            return "markdown-vendor";
-          }
-          if (id.includes("zustand")) {
-            return "state-vendor";
-          }
-          return "vendor";
-        },
-      },
-    },
+    // Keep shared React/JSX code in the entry graph. Forcing whole dependency
+    // groups into manual chunks pulled the Markdown parser into every screen.
+    // Route and panel imports provide the lazy-loading boundaries instead.
   },
   server: {
     host: "127.0.0.1",

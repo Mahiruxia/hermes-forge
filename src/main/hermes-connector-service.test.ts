@@ -210,7 +210,7 @@ describe("HermesConnectorService helpers", () => {
     const decorated = testOnly.decorateWeixinFailure("missing_aiohttp", "缺少 aiohttp", "py -3");
     expect(decorated.failureKind).toBe("recoverable");
     expect(decorated.recoveryAction).toBe("install_aiohttp");
-    expect(decorated.recoveryCommand).toContain("pip install aiohttp");
+    expect(decorated.recoveryCommand).toBeUndefined();
   });
 
   it("classifies pip/network install failures for Weixin dependency repair", () => {
@@ -460,8 +460,8 @@ describe("HermesConnectorService helpers", () => {
     await expect(fs.lstat(path.join(alphaHome, "config.yaml"))).resolves.toBeTruthy();
     await expect(fs.lstat(path.join(alphaHome, "auth.json"))).resolves.toBeTruthy();
     await expect(fs.lstat(path.join(betaHome, "skills"))).resolves.toBeTruthy();
-    await expect(fs.stat(staleDefaultHome)).rejects.toThrow();
-    await expect(fs.stat(staleProfileHome)).rejects.toThrow();
+    await expect(fs.stat(staleDefaultHome)).resolves.toBeTruthy();
+    await expect(fs.stat(staleProfileHome)).resolves.toBeTruthy();
   });
 
   it("saves multiple Feishu bot instances without overwriting config, secrets, or env files", async () => {
@@ -722,20 +722,22 @@ describe("HermesConnectorService helpers", () => {
     expect(stateful.gatewayLastExitCode).toBeUndefined();
   });
 
-  it("clears the tracked Gateway process when the current process exits", () => {
+  it("treats an unsolicited zero exit as a failure and schedules recovery", () => {
     const service = new HermesConnectorService({} as never, {} as never, async () => "D:\\Hermes Agent");
     const stateful = service as any;
     const child = { pid: 333, killed: false };
     stateful.gatewayProcess = child;
     stateful.gatewayStartedAt = "2026-04-23T00:00:00.000Z";
     stateful.gatewayAutoStartState = "running";
+    const restart = vi.spyOn(stateful, "scheduleAutoRestart").mockImplementation(() => undefined);
 
     stateful.handleGatewayProcessClose(child, 0);
 
     expect(stateful.gatewayProcess).toBeUndefined();
     expect(stateful.gatewayStartedAt).toBeUndefined();
     expect(stateful.gatewayLastExitCode).toBe(0);
-    expect(stateful.gatewayAutoStartState).toBe("idle");
+    expect(stateful.gatewayAutoStartState).toBe("failed");
+    expect(restart).toHaveBeenCalledOnce();
   });
 
   it("does not mark QQ Bot as configured when no values or secrets exist", async () => {
@@ -836,21 +838,5 @@ describe("HermesConnectorService helpers", () => {
     expect(result.status.failureKind).toBe("manual_fix");
   });
 
-  it("returns a structured Weixin install failure when Hermes root cannot be resolved", async () => {
-    const service = new HermesConnectorService(
-      {} as never,
-      {} as never,
-      async () => {
-        throw new Error("Hermes Agent 路径未配置。");
-      },
-    );
 
-    const result = await service.installWeixinDependency();
-
-    expect(result.ok).toBe(false);
-    expect(result.status?.phase).toBe("failed");
-    expect(result.status?.failureCode).toBe("hermes_root_unavailable");
-    expect(result.message).toContain("Hermes Agent");
-    expect(result.recommendedFix).toBeDefined();
-  });
 });

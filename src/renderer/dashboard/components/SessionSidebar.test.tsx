@@ -48,9 +48,7 @@ describe("SessionSidebar", () => {
       onCreateSession: vi.fn(),
       onSelectSession: vi.fn(),
       onDeleteSession: vi.fn(),
-      onDuplicateSession: vi.fn(),
       onExportSession: vi.fn(),
-      onImportSession: vi.fn(),
       onUpdateSessionMeta: vi.fn(),
       onCollapse: vi.fn(),
     };
@@ -79,6 +77,18 @@ describe("SessionSidebar", () => {
     expect(todayItem).toHaveClass("bg-[var(--hermes-primary-soft)]");
     expect(todayItem?.querySelector('[title="删除"]')?.parentElement).toHaveClass("opacity-0");
     expect(screen.getByTestId("session-sidebar-footer")).toHaveClass("mt-auto");
+    expect(screen.queryByRole("button", { name: /导入会话|复制会话/ })).toBeNull();
+  });
+
+  it("finds sessions by an existing project without changing their metadata", () => {
+    const sessions = useAppStore.getState().sessions.map(session => session.id === "session-today" ? { ...session, projectId: "legacy-project" } : session);
+    useAppStore.setState({ sessions, selectedProjectId: "legacy-project" });
+    renderSidebar();
+    expect(screen.getByText("今天会话")).toBeInTheDocument();
+    expect(screen.queryByText("收藏会话")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "清除项目筛选" }));
+    expect(screen.getByText("收藏会话")).toBeInTheDocument();
+    expect(useAppStore.getState().sessions).toEqual(sessions);
   });
 
   it("calls onCollapse from the header collapse button", () => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StatusBar } from "./StatusBar";
 import { useAppStore } from "../../store";
@@ -6,6 +6,22 @@ import { useAppStore } from "../../store";
 describe("StatusBar", () => {
   beforeEach(() => {
     useAppStore.getState().resetStore();
+  });
+
+  it("makes no Gateway or probe requests during five idle minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      const getGatewayStatus = vi.fn();
+      const getHermesProbe = vi.fn();
+      window.workbenchClient = { ...window.workbenchClient, getGatewayStatus, getHermesProbe, onClientUpdateEvent: vi.fn().mockReturnValue(() => undefined) };
+      const view = render(<StatusBar />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000); });
+      expect(getGatewayStatus).not.toHaveBeenCalled();
+      expect(getHermesProbe).not.toHaveBeenCalled();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("summarizes healthy status into one quiet entry and expands details on demand", () => {
@@ -68,7 +84,7 @@ describe("StatusBar", () => {
     expect(screen.getByTestId("status-light-api")).toHaveClass("hermes-status-light--ok");
     expect(screen.getByTestId("status-light-hermes")).toHaveClass("hermes-status-light--ok");
     expect(screen.getByTestId("status-light-gateway")).toHaveClass("hermes-status-light--idle");
-    expect(getGatewayStatus).toHaveBeenCalledTimes(1);
+    expect(getGatewayStatus).not.toHaveBeenCalled();
     expect(getHermesProbe).not.toHaveBeenCalled();
   });
 
@@ -104,7 +120,7 @@ describe("StatusBar", () => {
     expect(screen.getByTestId("status-light-api")).toHaveClass("hermes-status-light--warn");
     expect(screen.getByTestId("status-light-hermes")).toHaveClass("hermes-status-light--warn");
     expect(screen.getByTestId("status-light-gateway")).toHaveClass("hermes-status-light--idle");
-    expect(getGatewayStatus).toHaveBeenCalledTimes(1);
+    expect(getGatewayStatus).not.toHaveBeenCalled();
     expect(getHermesProbe).not.toHaveBeenCalled();
   });
 
@@ -222,6 +238,7 @@ describe("StatusBar", () => {
   it("prioritizes gateway errors in the summary", async () => {
     const onOpenHealth = vi.fn();
     useAppStore.setState({
+      runtimeConfig: { modelProfiles: [], updateSources: {}, extensionSettings: { connectorsEnabled: true, cronEnabled: false, desktopAutomationEnabled: false } } as any,
       clientInfo: {
         appVersion: "0.1.2",
         userDataPath: "D:/temp",
@@ -266,8 +283,9 @@ describe("StatusBar", () => {
 
     render(<StatusBar onOpenHealth={onOpenHealth} />);
 
+    expect(window.workbenchClient.getGatewayStatus).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /环境就绪/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: /环境需处理/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /环境需处理/ }));
     expect(screen.getAllByText("Gateway exited with code 1.").length).toBeGreaterThan(0);
     expect(screen.getByTestId("status-light-gateway")).toHaveClass("hermes-status-light--error");
     fireEvent.click(screen.getByRole("button", { name: /打开健康检查/ }));

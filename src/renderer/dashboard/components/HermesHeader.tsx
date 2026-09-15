@@ -21,7 +21,7 @@ export function HermesHeader(props: {
   workspaceDrawerOpen?: boolean;
   agentPanelOpen?: boolean;
 }) {
-  const store = useAppStore();
+  const activeSession = useAppStore(state => state.sessions.find(session => session.id === state.activeSessionId));
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState("");
   const [showMenu, setShowMenu] = useState(false);
@@ -33,7 +33,6 @@ export function HermesHeader(props: {
   const [updateDialogPhase, setUpdateDialogPhase] = useState<"available" | "downloaded">("available");
   const [dialogEvent, setDialogEvent] = useState<ClientUpdateEvent | undefined>();
   const menuRef = useRef<HTMLDivElement>(null);
-  const activeSession = store.sessions.find((session) => session.id === store.activeSessionId);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {

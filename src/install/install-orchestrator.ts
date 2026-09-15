@@ -11,17 +11,20 @@ import type {
 } from "./install-types";
 
 export class InstallOrchestrator {
+  private maintenanceInFlight = false;
   constructor(
     private readonly configStore: RuntimeConfigStore,
     private readonly nativeStrategy: InstallStrategy,
   ) {}
 
+  isBusy() { return this.maintenanceInFlight; }
+
   async plan(options: InstallOptions = {}): Promise<InstallPlan> {
-    return this.nativeStrategy.plan({ ...options, mode: "windows" });
+    return this.nativeStrategy.plan(options);
   }
 
   async install(publish?: InstallPublisher, options: InstallOptions = {}): Promise<InstallStrategyResult> {
-    return this.nativeStrategy.install(publish, { ...options, mode: "windows" });
+    return this.maintain(() => this.nativeStrategy.install(publish, options));
   }
 
   async cancelInstall(): Promise<{ ok: boolean; message: string }> {
@@ -32,10 +35,17 @@ export class InstallOrchestrator {
   }
 
   async update(options: InstallOptions = {}): Promise<InstallStrategyUpdateResult> {
-    return this.nativeStrategy.update();
+    return this.maintain(() => this.nativeStrategy.update());
   }
 
   async repairDependency(id: SetupDependencyRepairId, options: InstallOptions = {}): Promise<InstallStrategyRepairResult> {
-    return this.nativeStrategy.repairDependency(id);
+    return this.maintain(() => this.nativeStrategy.repairDependency(id));
+  }
+
+  private async maintain<T>(action: () => Promise<T>): Promise<T> {
+    if (this.maintenanceInFlight) throw new Error("Hermes 安装、升级或修复正在进行，请等待完成后重试。");
+    this.maintenanceInFlight = true;
+    try { return await action(); }
+    finally { this.maintenanceInFlight = false; }
   }
 }

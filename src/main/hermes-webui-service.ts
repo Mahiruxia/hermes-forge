@@ -5,26 +5,11 @@ import type { AppPaths } from "./app-paths";
 import { ensureHermesHomeLayout, resolveActiveHermesHome } from "./hermes-home";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
-import {
-  defaultHermesCliPath,
-  defaultWindowsHermesCliPath,
-  resolveHermesCliPathSync,
-  resolveWindowsHermesCliPathSync,
-} from "../runtime/hermes-cli-paths";
-import { getDefaultPythonCommand, getPlatformKind } from "../platform";
+import { requireManagedHermesEnvironment, managedHermesEnvironmentEnv } from "../runtime/managed-hermes-environment";
 import { validateSkillId, validateProfileName, validateCronSchedule, validateSkillDirectoryName, validateSkillUploadPath } from "../security";
 import type {
   FilePreviewResult,
   FileBreadcrumbItem,
-  HermesKanbanActionResult,
-  HermesKanbanAssignee,
-  HermesKanbanBoard,
-  HermesKanbanCreateBoardInput,
-  HermesKanbanCreateTaskInput,
-  HermesKanbanDiagnostic,
-  HermesKanbanTask,
-  HermesKanbanTaskActionInput,
-  HermesKanbanTaskListOptions,
   HermesCronJob,
   HermesMemoryFile,
   HermesProfile,
@@ -50,13 +35,11 @@ const DEFAULT_SETTINGS: HermesWebUiSettings = {
 const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/help", description: "显示可用命令", usage: "/help" },
   { name: "/clear", description: "清空当前会话", usage: "/clear" },
-  { name: "/compact", description: "压缩当前上下文", usage: "/compact [重点]" },
   { name: "/model", description: "切换或查看模型", usage: "/model <模型名>" },
   { name: "/workspace", description: "切换工作区", usage: "/workspace <名称或路径>" },
   { name: "/new", description: "新建会话", usage: "/new" },
   { name: "/usage", description: "显示/隐藏用量", usage: "/usage" },
   { name: "/theme", description: "切换主题", usage: "/theme <green-light|light|slate|oled>" },
-  { name: "/goal", description: "设置或查看 Hermes 持久目标", usage: "/goal [text | pause | resume | clear | status]" },
 ];
 
 export class HermesWebUiService {
@@ -68,16 +51,12 @@ export class HermesWebUiService {
   ) {}
 
   async overview(): Promise<HermesWebUiOverview> {
-    const [settings, projects, spaces, skills, memory, crons, profiles] = await Promise.all([
+    const [settings, projects, spaces] = await Promise.all([
       this.getSettings(),
       this.listProjects(),
       this.listSpaces(),
-      this.listSkills(),
-      this.listMemoryFiles(),
-      this.listCronJobs(),
-      this.listProfiles(),
     ]);
-    return { settings, projects, spaces, skills, memory, crons, profiles, slashCommands: SLASH_COMMANDS };
+    return { settings, projects, spaces, skills: [], memory: [], crons: [], profiles: [], slashCommands: SLASH_COMMANDS };
   }
 
   async getSettings(): Promise<HermesWebUiSettings> {
@@ -573,141 +552,6 @@ export class HermesWebUiService {
     };
   }
 
-  async listKanbanBoards(): Promise<HermesKanbanBoard[]> {
-    return this.normalizeKanbanBoards(await this.runHermesJson<unknown>(["kanban", "boards", "list", "--json"]));
-  }
-
-  async createKanbanBoard(input: HermesKanbanCreateBoardInput): Promise<HermesKanbanActionResult> {
-    const slug = this.requireSlug(input.slug, "看板 slug");
-    const args = ["kanban", "boards", "create", slug];
-    this.pushOptional(args, "--name", input.name);
-    this.pushOptional(args, "--description", input.description);
-    this.pushOptional(args, "--icon", input.icon);
-    this.pushOptional(args, "--color", input.color);
-    if (input.switchTo !== false) args.push("--switch");
-    return this.runKanbanAction(args);
-  }
-
-  async switchKanbanBoard(slug: string): Promise<HermesKanbanActionResult> {
-    return this.runKanbanAction(["kanban", "boards", "switch", this.requireSlug(slug, "看板 slug")]);
-  }
-
-  async deleteKanbanBoard(slug: string): Promise<HermesKanbanActionResult> {
-    return this.runKanbanAction(["kanban", "boards", "rm", this.requireSlug(slug, "看板 slug"), "--delete"]);
-  }
-
-  async renameKanbanBoard(slug: string, name: string): Promise<HermesKanbanActionResult> {
-    return this.runKanbanAction(["kanban", "boards", "rename", this.requireSlug(slug, "看板 slug"), name.trim()]);
-  }
-
-  async dispatchKanban(board?: string): Promise<HermesKanbanActionResult> {
-    return this.runKanbanAction([...this.kanbanBaseArgs(board), "dispatch"]);
-  }
-
-  async listKanbanTasks(options: HermesKanbanTaskListOptions = {}): Promise<HermesKanbanTask[]> {
-    const args = [...this.kanbanBaseArgs(options.board), "list", "--json"];
-    this.pushOptional(args, "--status", options.status);
-    this.pushOptional(args, "--assignee", options.assignee);
-    this.pushOptional(args, "--tenant", options.tenant);
-    if (options.archived) args.push("--archived");
-    if (options.mine) args.push("--mine");
-    return this.normalizeKanbanTasks(await this.runHermesJson<unknown>(args));
-  }
-
-  async createKanbanTask(input: HermesKanbanCreateTaskInput): Promise<HermesKanbanTask> {
-    const title = input.title?.trim();
-    if (!title) throw new Error("任务标题不能为空。");
-    const args = [...this.kanbanBaseArgs(input.board), "create", title, "--json"];
-    this.pushOptional(args, "--body", input.body);
-    this.pushOptional(args, "--assignee", input.assignee);
-    this.pushOptional(args, "--priority", input.priority);
-    this.pushOptional(args, "--tenant", input.tenant);
-    if (input.triage) args.push("--triage");
-    if (input.workspaceKind) args.push("--workspace", input.workspaceKind === "dir" && input.workspacePath ? `dir:${input.workspacePath}` : input.workspaceKind);
-    for (const skill of input.skills ?? []) this.pushOptional(args, "--skill", skill);
-    if (typeof input.maxRetries === "number") args.push("--max-retries", String(input.maxRetries));
-    return this.normalizeKanbanTask(await this.runHermesJson<unknown>(args));
-  }
-
-  async getKanbanTask(input: { board?: string; taskId: string }): Promise<HermesKanbanTask> {
-    const args = [...this.kanbanBaseArgs(input.board), "show", this.requireId(input.taskId, "任务 ID"), "--json"];
-    return this.normalizeKanbanTask(await this.runHermesJson<unknown>(args));
-  }
-
-  async runKanbanTaskAction(input: HermesKanbanTaskActionInput): Promise<HermesKanbanActionResult> {
-    const taskId = this.requireId(input.taskId, "任务 ID");
-    const args = [...this.kanbanBaseArgs(input.board)];
-    if (input.action === "assign") {
-      const assignee = input.assignee?.trim();
-      if (!assignee) throw new Error("assign 操作需要指定 assignee。");
-      args.push("assign", taskId, assignee);
-    } else if (input.action === "reassign") {
-      const assignee = input.assignee?.trim();
-      if (!assignee) throw new Error("reassign 操作需要指定 assignee。");
-      args.push("reassign", taskId, assignee);
-      if (input.reclaim) args.push("--reclaim");
-      this.pushOptional(args, "--reason", input.reason);
-    } else if (input.action === "reclaim") {
-      args.push("reclaim", taskId);
-      this.pushOptional(args, "--reason", input.reason);
-    } else if (input.action === "complete") {
-      args.push("complete", taskId);
-      this.pushOptional(args, "--result", input.result);
-    } else if (input.action === "edit") {
-      args.push("edit", taskId);
-      if (!input.result?.trim()) throw new Error("edit 操作需要指定 result。");
-      args.push("--result", input.result.trim());
-      this.pushOptional(args, "--summary", input.summary);
-    } else if (input.action === "specify") {
-      args.push("specify", taskId);
-    } else if (input.action === "block") {
-      const reason = input.reason?.trim();
-      if (!reason) throw new Error("block 操作需要填写原因。");
-      args.push("block", taskId, reason);
-    } else if (input.action === "unblock") {
-      args.push("unblock", taskId);
-    } else if (input.action === "archive") {
-      args.push("archive", taskId);
-    } else {
-      throw new Error(`不支持的 Kanban 操作：${input.action}`);
-    }
-    return this.runKanbanAction(args);
-  }
-
-  async listKanbanDiagnostics(input: { board?: string; taskId?: string; severity?: string } = {}): Promise<HermesKanbanDiagnostic[]> {
-    const args = [...this.kanbanBaseArgs(input.board), "diagnostics", "--json"];
-    this.pushOptional(args, "--task", input.taskId);
-    this.pushOptional(args, "--severity", input.severity);
-    const parsed = await this.runHermesJson<unknown>(args);
-    return Array.isArray(parsed) ? parsed.map((item) => item as HermesKanbanDiagnostic) : [];
-  }
-
-  async listKanbanAssignees(board?: string): Promise<HermesKanbanAssignee[]> {
-    const parsed = await this.runHermesJson<unknown>([...this.kanbanBaseArgs(board), "assignees", "--json"]);
-    if (Array.isArray(parsed)) return parsed.map((item) => this.normalizeKanbanAssignee(item));
-    if (parsed && typeof parsed === "object") {
-      return Object.entries(parsed as Record<string, unknown>).map(([name, value]) => ({
-        name,
-        ...(value && typeof value === "object" ? value as Record<string, unknown> : {}),
-      }));
-    }
-    return [];
-  }
-
-  async readKanbanTaskLog(input: { board?: string; taskId: string; tail?: number }): Promise<HermesKanbanActionResult> {
-    const tail = Math.max(1, Math.min(5000, Math.floor(input.tail ?? 400)));
-    return this.runKanbanAction([...this.kanbanBaseArgs(input.board), "log", this.requireId(input.taskId, "任务 ID"), "--tail", String(tail)], { timeoutMs: 30000 });
-  }
-
-  async commentKanbanTask(input: { board?: string; taskId: string; text: string; author?: string }): Promise<HermesKanbanActionResult> {
-    const taskId = this.requireId(input.taskId, "任务 ID");
-    const text = input.text?.trim();
-    if (!text) throw new Error("评论内容不能为空。");
-    const args = [...this.kanbanBaseArgs(input.board), "comment", taskId, text];
-    this.pushOptional(args, "--author", input.author);
-    return this.runKanbanAction(args);
-  }
-
   async runCronJob(id: string) {
     const trigger = await this.runHermes(["cron", "run", id]);
     if (!trigger.ok) return trigger;
@@ -846,82 +690,10 @@ export class HermesWebUiService {
     return name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || `watchdog-${Date.now().toString(36)}`;
   }
 
-  private kanbanBaseArgs(board?: string) {
-    const args = ["kanban"];
-    const slug = board?.trim();
-    if (slug) args.push("--board", this.requireSlug(slug, "看板 slug"));
-    return args;
-  }
-
-  private async runKanbanAction(args: string[], options: { timeoutMs?: number } = {}): Promise<HermesKanbanActionResult> {
-    const result = await this.runHermes(args, options);
-    if (!result.ok) {
-      throw new Error(`Hermes Kanban 命令失败：${result.stderr || result.stdout || result.message || `exit ${result.exitCode}`}`);
-    }
-    return result;
-  }
-
-  private normalizeKanbanBoards(raw: unknown): HermesKanbanBoard[] {
-    if (!Array.isArray(raw)) return [];
-    return raw.map((item, index) => {
-      const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
-      return {
-        ...record,
-        slug: String(record.slug ?? record.id ?? record.name ?? `board-${index}`),
-        name: typeof record.name === "string" ? record.name : undefined,
-        counts: record.counts && typeof record.counts === "object" ? this.numberRecord(record.counts as Record<string, unknown>) : undefined,
-      } as HermesKanbanBoard;
-    });
-  }
-
-  private normalizeKanbanTasks(raw: unknown): HermesKanbanTask[] {
-    return Array.isArray(raw) ? raw.map((item) => this.normalizeKanbanTask(item)) : [];
-  }
-
-  private normalizeKanbanTask(raw: unknown): HermesKanbanTask {
-    const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-    const task = record.task && typeof record.task === "object" ? record.task as Record<string, unknown> : record;
-    return {
-      ...record,
-      ...task,
-      id: String(task.id ?? record.id ?? ""),
-      title: String(task.title ?? record.title ?? "Untitled task"),
-      status: String(task.status ?? record.status ?? "todo"),
-      runs: Array.isArray(record.runs) ? record.runs as HermesKanbanTask["runs"] : Array.isArray(task.runs) ? task.runs as HermesKanbanTask["runs"] : undefined,
-      diagnostics: Array.isArray(record.diagnostics) ? record.diagnostics as HermesKanbanDiagnostic[] : Array.isArray(task.diagnostics) ? task.diagnostics as HermesKanbanDiagnostic[] : undefined,
-    };
-  }
-
-  private normalizeKanbanAssignee(raw: unknown): HermesKanbanAssignee {
-    const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-    return {
-      ...record,
-      name: String(record.name ?? record.id ?? record.assignee ?? "unknown"),
-    };
-  }
-
-  private numberRecord(record: Record<string, unknown>) {
-    return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, typeof value === "number" ? value : Number(value) || 0]));
-  }
-
   private pushOptional(args: string[], flag: string, value: unknown) {
     if (typeof value !== "string") return;
     const trimmed = value.trim();
     if (trimmed) args.push(flag, trimmed);
-  }
-
-  private requireSlug(value: string, label: string) {
-    const trimmed = value.trim();
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(trimmed)) {
-      throw new Error(`${label} 只能包含字母、数字、下划线和短横线，且不能以符号开头。`);
-    }
-    return trimmed;
-  }
-
-  private requireId(value: string, label: string) {
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.length > 160) throw new Error(`${label} 无效。`);
-    return trimmed;
   }
 
   async previewFile(filePath: string): Promise<FilePreviewResult> {
@@ -971,23 +743,6 @@ export class HermesWebUiService {
     return { ok: !error, message: error || `已打开：${targetPath}` };
   }
 
-  private async runHermesJson<T>(args: string[], options: { timeoutMs?: number } = {}): Promise<T> {
-    const result = await this.runHermes(args, options);
-    if (!result.ok) {
-      throw new Error(`Hermes CLI 调用失败：${result.stderr || result.stdout || result.message || `exit ${result.exitCode}`}`);
-    }
-    const stdout = result.stdout.trim();
-    try {
-      return JSON.parse(stdout) as T;
-    } catch (error) {
-      const detail = [
-        `stdout: ${stdout || "(empty)"}`,
-        `stderr: ${result.stderr.trim() || "(empty)"}`,
-      ].join("\n");
-      throw new Error(`Hermes CLI 没有返回有效 JSON。\n${detail}`);
-    }
-  }
-
   private async runHermes(args: string[], options: { timeoutMs?: number } = {}) {
     const root = await this.resolveHermesRoot();
     const currentHermesHome = await this.currentHermesHome();
@@ -998,14 +753,7 @@ export class HermesWebUiService {
       ? await adapter.buildHermesLaunch({
         runtime,
         rootPath: runtimeRoot,
-        pythonArgs: [
-          runtime.mode === "wsl"
-            ? `${runtimeRoot.replace(/\/+$/, "")}/hermes`
-            : runtime.mode === "darwin"
-              ? this.nativeHermesCliPath(root)
-              : this.windowsHermesCliPath(root),
-          ...args,
-        ],
+        pythonArgs: ["-m", "hermes_cli.main", ...args],
         cwd: root,
         env: {
           PYTHONUTF8: "1",
@@ -1043,13 +791,12 @@ export class HermesWebUiService {
   }
 
   private async legacyHermesLaunch(root: string, args: string[], hermesHome: string) {
-    // Legacy fallback: kept for tests/standalone construction paths until all WebUI callers inject RuntimeAdapterFactory.
-    const cliPath = this.nativeHermesCliPath(root);
+    const environment = await requireManagedHermesEnvironment(root);
     return {
-      command: getDefaultPythonCommand(getPlatformKind()),
-      args: [cliPath, ...args],
+      command: environment.pythonPath,
+      args: ["-m", "hermes_cli.main", ...args],
       cwd: root,
-      env: { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", PYTHONPATH: root, HERMES_HOME: hermesHome },
+      env: managedHermesEnvironmentEnv(environment, { HERMES_HOME: hermesHome }),
     };
   }
 
@@ -1059,14 +806,6 @@ export class HermesWebUiService {
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : "Hermes CLI 调用失败。", exitCode: null };
     }
-  }
-
-  private windowsHermesCliPath(root: string) {
-    return resolveWindowsHermesCliPathSync(root) ?? defaultWindowsHermesCliPath(root);
-  }
-
-  private nativeHermesCliPath(root: string) {
-    return resolveHermesCliPathSync(root) ?? defaultHermesCliPath(root);
   }
 
   private nativeRuntimeMode(): "windows" | "darwin" {

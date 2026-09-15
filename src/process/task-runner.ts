@@ -22,6 +22,8 @@ import type {
   ContextBundle,
   ContextRequest,
   EngineEvent,
+  EngineInteractionRequest,
+  EngineInteractionResponse,
   EngineRuntimeEnv,
   EngineRunRequest,
   RuntimeConfig,
@@ -51,6 +53,7 @@ export function resolveHermesConversationIdForRuntime(input: {
   const previousModel = normalizeModelName(input.workSession?.model);
   if (currentModel && previousModel && currentModel !== previousModel) {
     const identity = [
+      input.workSession?.hermesSessionId || input.workSessionId,
       input.runtimeEnv.profileId,
       input.runtimeEnv.provider,
       input.runtimeEnv.model,
@@ -67,8 +70,19 @@ function normalizeModelName(model: string | undefined) {
   return model?.trim().toLowerCase() ?? "";
 }
 
+export type TaskInteractionHandler = (
+  request: EngineInteractionRequest,
+  context: {
+    signal: AbortSignal;
+    workSessionId?: string;
+    workspaceId: string;
+    publish: (event: EngineEvent) => Promise<void>;
+  },
+) => Promise<EngineInteractionResponse>;
+
 export class TaskRunner {
   private readonly running = new Map<string, AbortController>();
+  private readonly runSessions = new Map<string, string>();
   private readonly usage = new Map<string, TaskUsageState>();
   private readonly metrics = new Map<string, { startedAt: number; preflightMs?: number; contextMs?: number; firstOutputMs?: number }>();
   private readonly lastUsagePublishAt = new Map<string, number>();
@@ -87,6 +101,7 @@ export class TaskRunner {
     private readonly sessionAgentInsightService: SessionAgentInsightService,
     private readonly getMainWindow: () => BrowserWindow | undefined,
     private readonly workSessionService?: WorkSessionService,
+    private readonly interactionHandler?: TaskInteractionHandler,
   ) {}
 
   private cliOwnedContextBundle(workspaceId: string): ContextBundle {
@@ -105,13 +120,31 @@ export class TaskRunner {
   }
 
   async start(input: StartTaskInput): Promise<TaskStartResult> {
+    const taskRunId = input.clientTaskId?.trim() || crypto.randomUUID();
+    if (this.runSessions.has(taskRunId)) throw new Error("任务已在启动或运行中。");
+    this.runSessions.set(taskRunId, input.sessionId?.trim() || input.sessionFilesPath);
+    const controller = new AbortController();
+    this.running.set(taskRunId, controller);
+    try {
+      return await this.startInternal({ ...input, clientTaskId: taskRunId }, controller);
+    } catch (error) {
+      this.runSessions.delete(taskRunId);
+      this.running.delete(taskRunId);
+      this.metrics.delete(taskRunId);
+      throw error;
+    }
+  }
+
+  private async startInternal(input: StartTaskInput, controller: AbortController): Promise<TaskStartResult> {
     const startAt = Date.now();
     const targetPath = input.workspacePath?.trim() || input.sessionFilesPath;
     const workspaceId = await this.appPaths.ensureWorkspaceLayout(targetPath);
+    controller.signal.throwIfAborted();
     const workSessionId = input.sessionId?.trim() || input.sessionFilesPath;
     const taskRunId = input.clientTaskId?.trim() || crypto.randomUUID();
     const actualEngine = "hermes" as const;
     const attachments = await resolveInlineFileAttachments(input.userInput, input.attachments ?? []);
+    controller.signal.throwIfAborted();
     this.metrics.set(taskRunId, { startedAt: startAt });
 
     await this.publishStage(workspaceId, workSessionId, taskRunId, actualEngine, "preflight", "正在执行 Hermes 运行前检查。");
@@ -119,6 +152,7 @@ export class TaskRunner {
 
     const preflightAt = Date.now();
     await this.preflightService.assertCanStart(input, actualEngine, workspaceId);
+    controller.signal.throwIfAborted();
     await this.publishStep(workspaceId, workSessionId, taskRunId, actualEngine, "preflight-complete", true, `Hermes 运行前检查通过，耗时 ${Date.now() - preflightAt}ms。`);
     this.metrics.get(taskRunId)!.preflightMs = Date.now() - preflightAt;
 
@@ -135,6 +169,7 @@ export class TaskRunner {
       this.runtimeEnvResolver.resolve(input.modelProfileId),
       this.runtimeEnvResolver.readConfig(),
     ]);
+    controller.signal.throwIfAborted();
     const runtimeMode = runtimeConfig.hermesRuntime?.mode ?? "windows";
     // Windows / WSL 统一让 Hermes 自己管理上下文与记忆，Forge 不再注入。
     const contextBundle = this.cliOwnedContextBundle(workspaceId);
@@ -151,6 +186,7 @@ export class TaskRunner {
 
     const permissions = resolveEnginePermissions(runtimeConfig, actualEngine);
     const workSession = await this.workSessionService?.read(workSessionId).catch(() => undefined);
+    controller.signal.throwIfAborted();
     const hermesSessionId = resolveHermesConversationIdForRuntime({ workSessionId, workSession, runtimeEnv });
     void this.sessionAgentInsightService.recordTaskStart({
       sessionId: workSessionId,
@@ -190,6 +226,7 @@ export class TaskRunner {
       await this.publishStep(workspaceId, workSessionId, sessionId, actualEngine, "stage-snapshot-entered", false, "已进入 Hermes 快照建立阶段。");
       const snapshotAt = Date.now();
       snapshot = await this.snapshotManager.createSnapshot(workspaceId, targetPath, sessionId, {
+        workSessionId,
         markLatest: snapshotMode !== "manifest",
         manifestOnly: snapshotMode === "manifest",
         scopedPaths: input.selectedFiles,
@@ -198,6 +235,7 @@ export class TaskRunner {
           maxBytes: FULL_SNAPSHOT_MAX_BYTES,
         } : {}),
       });
+      controller.signal.throwIfAborted();
       await this.publishStep(
         workspaceId,
         workSessionId,
@@ -209,13 +247,12 @@ export class TaskRunner {
           ? `已记录 Hermes 快照清单，未复制工作区文件，耗时 ${Date.now() - snapshotAt}ms。`
           : `${this.snapshotCompleteMessage(snapshot)}，耗时 ${Date.now() - snapshotAt}ms。`,
       );
+      controller.signal.throwIfAborted();
     } catch (error) {
       this.workspaceLock.release(workspaceId, sessionId);
       throw new Error(`建立 Hermes 写前快照失败：${error instanceof Error ? error.message : "未知错误"}`);
     }
 
-    const controller = new AbortController();
-    this.running.set(sessionId, controller);
     this.usage.set(
       sessionId,
       createTaskUsageState(
@@ -240,6 +277,17 @@ export class TaskRunner {
       runtimeEnv: { ...runtimeEnv, executionMode: "local_fast" },
       contextBundle,
       permissions,
+      onInteraction: this.interactionHandler ? (interaction, signal) => {
+        if (interaction.taskRunId !== taskRunId || this.running.get(taskRunId) !== controller || signal.aborted) {
+          throw new Error("交互请求不属于当前运行任务。");
+        }
+        return this.interactionHandler!(interaction, {
+          signal,
+          workSessionId,
+          workspaceId,
+          publish: (event) => this.publish(workspaceId, workSessionId, taskRunId, actualEngine, event),
+        });
+      } : undefined,
     };
 
     void this.consumeRun(runRequest, controller, workSessionId);
@@ -264,7 +312,6 @@ export class TaskRunner {
     const controller = this.running.get(sessionId);
     if (controller) {
       controller.abort();
-      this.running.delete(sessionId);
       return true;
     }
     return false;
@@ -274,8 +321,12 @@ export class TaskRunner {
     return this.running.has(sessionId);
   }
 
+  isWorkSessionRunning(workSessionId: string) {
+    return [...this.runSessions.values()].includes(workSessionId);
+  }
+
   listRunningSessionIds() {
-    return [...this.running.keys()];
+    return [...new Set([...this.runSessions.keys(), ...this.running.keys()])];
   }
 
   async shutdown(reason = "shutdown", timeoutMs = 5000) {
@@ -289,7 +340,6 @@ export class TaskRunner {
     }
     if (this.running.size > 0) {
       const residual = [...this.running.keys()];
-      this.running.clear();
       throw new Error(`TaskRunner shutdown timed out; residual tasks: ${residual.join(", ")}`);
     }
   }
@@ -325,6 +375,7 @@ export class TaskRunner {
     let bufferedMessageChunk = "";
     let bufferedMessageAt = "";
     let lastMessageFlushAt = 0;
+    let terminalResult: Extract<EngineEvent, { type: "result" }> | undefined;
     const flushMessageChunk = async () => {
       if (!bufferedMessageChunk) return;
       const event: EngineEvent = {
@@ -351,6 +402,12 @@ export class TaskRunner {
 
       for await (const event of this.hermesAdapter.run(request, controller.signal)) {
         this.captureFirstOutputMetric(request.sessionId, event);
+        if (event.type === "result") {
+          if (!terminalResult || terminalResult.success) terminalResult = event;
+          continue;
+        }
+        // The runner owns terminal state; an adapter lifecycle frame is not process completion.
+        if (event.type === "lifecycle" && ["completed", "failed", "cancelled"].includes(event.stage)) continue;
         if (event.type === "message_chunk") {
           if (!this.streamingLifecyclePublished.has(request.sessionId)) {
             this.streamingLifecyclePublished.add(request.sessionId);
@@ -382,23 +439,31 @@ export class TaskRunner {
         await this.publish(request.workspaceId, workSessionId, request.sessionId, actualEngine, event);
       }
       await flushMessageChunk();
+      if (!terminalResult && !controller.signal.aborted) throw new Error("Hermes 未返回完整执行结果。");
+      const outcome = controller.signal.aborted || terminalResult?.outcome === "cancelled"
+        ? "cancelled" : terminalResult?.success ? "completed" : "failed";
+      const finalResult: Extract<EngineEvent, { type: "result" }> = outcome === "cancelled"
+        ? { type: "result", success: false, outcome, title: "任务已取消", detail: "任务已取消。", at: now() }
+        : { ...terminalResult!, outcome };
+      await this.publish(request.workspaceId, workSessionId, request.sessionId, actualEngine, finalResult);
       await this.publishStep(request.workspaceId, workSessionId, request.sessionId, actualEngine, "adapter-complete", true, `Hermes 适配器完成，耗时 ${Date.now() - adapterStartedAt}ms。`);
       await this.publishTaskMetrics(request.workspaceId, workSessionId, request.sessionId, actualEngine, {
         adapterMs: Date.now() - adapterStartedAt,
-        outcome: "completed",
+        outcome,
       });
       if (workSessionId) {
         await this.sessionAgentInsightService.recordTaskTerminal({
           sessionId: workSessionId,
           taskRunId: request.sessionId,
-          status: "complete",
+          status: outcome === "completed" ? "complete" : outcome,
           updatedAt: now(),
         }).catch((error) => {
           console.warn("[Hermes Forge] Failed to record session insight terminal state:", error);
         });
       }
       await this.publishUsage(request.workspaceId, workSessionId, request.sessionId, actualEngine, true);
-      await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, "completed", "Hermes 任务生命周期已完成。");
+      await this.publishStage(request.workspaceId, workSessionId, request.sessionId, actualEngine, outcome,
+        outcome === "completed" ? "Hermes 任务已完成。" : outcome === "cancelled" ? "Hermes 任务已取消。" : "Hermes 任务执行失败。");
     } catch (error) {
       await flushMessageChunk();
       const failure = this.classifyFailure(error, controller.signal.aborted);
@@ -423,6 +488,7 @@ export class TaskRunner {
       await this.publish(request.workspaceId, workSessionId, request.sessionId, actualEngine, {
         type: "result",
         success: false,
+        outcome: controller.signal.aborted ? "cancelled" : "failed",
         title: controller.signal.aborted ? "任务已取消" : failure.title,
         detail: failure.message,
         at: now(),
@@ -440,6 +506,7 @@ export class TaskRunner {
     } finally {
       this.stopWaitNotices(request.sessionId);
       this.running.delete(request.sessionId);
+      this.runSessions.delete(request.sessionId);
       this.usage.delete(request.sessionId);
       this.lastUsagePublishAt.delete(request.sessionId);
       this.metrics.delete(request.sessionId);

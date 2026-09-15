@@ -1,8 +1,8 @@
 import type { LucideIcon } from "lucide-react";
-import { ArrowLeft, Bot, KeyRound, MonitorCog, PlugZap, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Bot, KeyRound, MonitorCog, PlugZap, ShieldCheck, Settings2 } from "lucide-react";
 import { cn } from "../../DashboardPrimitives";
 
-export type ConfigSectionId = "general" | "providers" | "integrations" | "secrets" | "health";
+export type ConfigSectionId = "general" | "providers" | "integrations" | "secrets" | "health" | "advanced";
 
 type ConfigSection = {
   id: ConfigSectionId;
@@ -28,7 +28,7 @@ const SECTIONS: ConfigSection[] = [
     id: "integrations",
     icon: PlugZap,
     label: "扩展",
-    description: "技能与连接器入口",
+    description: "按需启用额外功能",
   },
   {
     id: "secrets",
@@ -41,6 +41,12 @@ const SECTIONS: ConfigSection[] = [
     icon: ShieldCheck,
     label: "诊断",
     description: "阻塞项与修复",
+  },
+  {
+    id: "advanced",
+    icon: Settings2,
+    label: "高级",
+    description: "多个 Agent 配置",
   },
 ];
 
@@ -77,7 +83,7 @@ export function ConfigCenterLayout(props: {
             </button>
           </div>
 
-          <nav className="mt-1 grid grid-cols-2 gap-1 sm:grid-cols-5 lg:block lg:space-y-1" aria-label="设置分区">
+          <nav className="mt-1 grid grid-cols-2 gap-1 sm:grid-cols-3 lg:block lg:space-y-1" aria-label="设置分区">
             {SECTIONS.map((section) => {
               const active = props.activeSection === section.id;
               const Icon = section.icon;

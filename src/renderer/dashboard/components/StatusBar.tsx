@@ -15,6 +15,7 @@ export function StatusBar(props: { onOpenHealth?: () => void } = {}) {
     hermesProbe: state.hermesProbe,
     hermesStatus: state.hermesStatus,
     hermesRuntimeMode: state.runtimeConfig?.hermesRuntime?.mode,
+    gatewayEnabled: Boolean(state.runtimeConfig?.extensionSettings?.connectorsEnabled || state.runtimeConfig?.extensionSettings?.cronEnabled),
   })));
   const [apiStatus, setApiStatus] = useState<ConnectionState>(statusSource.clientInfo ? "connected" : "checking");
   const [hermesStatus, setHermesStatus] = useState<ConnectionState>(resolveHermesConnection(statusSource.hermesProbe, statusSource.hermesStatus));
@@ -38,6 +39,7 @@ export function StatusBar(props: { onOpenHealth?: () => void } = {}) {
   useEffect(() => window.workbenchClient?.onClientUpdateEvent?.((event) => setClientUpdate(event)), []);
 
   useEffect(() => {
+    if (!open || !statusSource.gatewayEnabled) return;
     let cancelled = false;
     async function refresh() {
       try {
@@ -48,12 +50,10 @@ export function StatusBar(props: { onOpenHealth?: () => void } = {}) {
       }
     }
     void refresh();
-    const timer = window.setInterval(refresh, 15000);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
-  }, []);
+  }, [open, statusSource.gatewayEnabled]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -100,7 +100,7 @@ export function StatusBar(props: { onOpenHealth?: () => void } = {}) {
     makeStatusItem({
       key: "gateway",
       shortLabel: "Gateway",
-      detail: gatewayTooltip(gatewayStatus),
+      detail: statusSource.gatewayEnabled ? gatewayTooltip(gatewayStatus) : "消息连接器和定时任务尚未启用",
       tone: gatewayTone(gatewayStatus),
       level: gatewayStatus?.autoStartState === "starting" ? "checking" : gatewayTone(gatewayStatus),
       icon: gatewayIcon(gatewayStatus),
@@ -119,7 +119,7 @@ export function StatusBar(props: { onOpenHealth?: () => void } = {}) {
       lastChecked,
       glowing: updateTone(clientUpdate) === "ok" || updateTone(clientUpdate) === "warn",
     }),
-  ], [apiStatus, clientUpdate, gatewayStatus, hermesStatus, hermesUpdate, lastChecked, statusSource.hermesProbe, statusSource.hermesRuntimeMode, statusSource.hermesStatus]);
+  ], [apiStatus, clientUpdate, gatewayStatus, hermesStatus, hermesUpdate, lastChecked, statusSource.gatewayEnabled, statusSource.hermesProbe, statusSource.hermesRuntimeMode, statusSource.hermesStatus]);
   const overall = summarizeStatus(statusItems);
   const OverallIcon = overall.icon;
   const needsHealthAction = statusItems.some((item) =>

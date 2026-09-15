@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { resolveActiveHermesHome } from "./hermes-home";
+import { atomicWriteText, readTextIfExists, withHermesHomeLock } from "./hermes-config-files";
 import type { RuntimeEnvResolver } from "./runtime-env-resolver";
 import { normalizeSourceTypeForProfile, resolveHermesProvider } from "../shared/model-config";
 import type { EngineRuntimeEnv, ModelProfile, ModelRole, RuntimeConfig } from "../shared/types";
@@ -112,21 +113,22 @@ export class HermesModelSyncService {
     }
     const modelEnv = Object.assign({}, ...envBlocks);
 
-    await fs.mkdir(hermesHome, { recursive: true });
-    const existingConfig = await fs.readFile(configPath, "utf8").catch(() => "");
-    const nextConfig = upsertModelBlock(existingConfig, modelConfig);
-    if (nextConfig !== existingConfig) {
-      await atomicWriteFile(configPath, nextConfig);
-    }
-
-    const existingEnv = await fs.readFile(envPath, "utf8").catch(() => "");
-    const nextEnv = upsertManagedEnvBlock(existingEnv, modelEnv);
-    if (nextEnv !== existingEnv) {
-      await atomicWriteFile(envPath, nextEnv, 0o600);
-      await fs.chmod(envPath, 0o600).catch((error) => {
-        console.warn("[Hermes Forge] Failed to apply strict permissions to Hermes .env:", error);
-      });
-    }
+    await withHermesHomeLock(hermesHome, async () => {
+      await fs.mkdir(hermesHome, { recursive: true });
+      const existingConfig = await readTextIfExists(configPath);
+      const existingEnv = await readTextIfExists(envPath);
+      const nextConfig = upsertModelBlock(existingConfig, modelConfig);
+      const nextEnv = upsertManagedEnvBlock(existingEnv, modelEnv);
+      // Validate both inputs before replacing either file. Retain rollback data
+      // in memory only; an unsuccessful second write must not report success.
+      if (nextConfig !== existingConfig) await atomicWriteText(configPath, nextConfig);
+      try {
+        if (nextEnv !== existingEnv) await atomicWriteText(envPath, nextEnv, 0o600);
+      } catch (error) {
+        if (nextConfig !== existingConfig) await atomicWriteText(configPath, existingConfig);
+        throw error;
+      }
+    });
 
     return {
       ok: true,
@@ -338,17 +340,6 @@ function trimBlankLines(lines: string[]) {
   while (start < end && !lines[start].trim()) start += 1;
   while (end > start && !lines[end - 1].trim()) end -= 1;
   return lines.slice(start, end);
-}
-
-async function atomicWriteFile(targetPath: string, content: string, mode?: number) {
-  const temporaryPath = `${targetPath}.forge-${process.pid}-${Date.now()}.tmp`;
-  try {
-    await fs.writeFile(temporaryPath, content, { encoding: "utf8", ...(mode ? { mode } : {}) });
-    await fs.rename(temporaryPath, targetPath);
-  } catch (error) {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
-    throw error;
-  }
 }
 
 function upsertManagedEnvBlock(content: string, env: Record<string, string>) {

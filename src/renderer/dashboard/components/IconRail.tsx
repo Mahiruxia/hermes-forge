@@ -1,20 +1,23 @@
-import { MessageSquare, CalendarClock, Sparkles, BookOpen, UserCircle, Settings, Link2, Moon, Sun, Columns3 } from "lucide-react";
+import { MessageSquare, FolderOpen, BookOpen, Settings, Moon, Sun } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
 
 type PanelId = ReturnType<typeof useAppStore.getState>["activePanel"];
 
 export function IconRail() {
-  const store = useAppStore();
+  const store = useAppStore(useShallow((state) => ({
+    activePanel: state.activePanel,
+    webUiOverview: state.webUiOverview,
+    setActivePanel: state.setActivePanel,
+    setView: state.setView,
+    setWebUiOverview: state.setWebUiOverview,
+  })));
   const dark = store.webUiOverview?.settings.theme === "slate" || store.webUiOverview?.settings.theme === "oled";
   const items: Array<{ id: PanelId; label: string; icon: typeof MessageSquare }> = [
     { id: "chat", label: "聊天", icon: MessageSquare },
-    { id: "tasks", label: "任务", icon: CalendarClock },
-    { id: "kanban", label: "看板", icon: Columns3 },
-    { id: "skills", label: "工具", icon: Sparkles },
-    { id: "memory", label: "知识库", icon: BookOpen },
-    { id: "connectors", label: "链接", icon: Link2 },
-    { id: "profiles", label: "个人", icon: UserCircle },
+    { id: "workspace", label: "工作区", icon: FolderOpen },
+    { id: "knowledge", label: "技能与记忆", icon: BookOpen },
   ];
 
   async function toggleTheme() {

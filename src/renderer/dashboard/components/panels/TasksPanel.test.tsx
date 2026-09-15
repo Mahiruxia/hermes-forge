@@ -7,25 +7,18 @@ describe("TasksPanel", () => {
   beforeEach(() => {
     useAppStore.getState().resetStore();
     window.workbenchClient = {
-      getWebUiOverview: vi.fn(async () => ({
-        settings: { theme: "green-light", language: "zh", sendKey: "enter", sendKeyHintDismissed: true, showUsage: false, showCliSessions: true },
-        projects: [],
-        spaces: [],
-        skills: [],
-        memory: [],
-        crons: [],
-        profiles: [],
-        slashCommands: [],
-      })),
+      listCronJobs: vi.fn(async () => []),
+      getWebUiOverview: vi.fn(),
       getGatewayStatus: vi.fn(async () => ({ running: false, healthStatus: "stopped", autoStartState: "idle", autoStartMessage: "idle", message: "stopped" })),
     } as unknown as Window["workbenchClient"];
   });
 
-  it("refreshes the WebUI overview when the panel mounts", async () => {
+  it("loads cron jobs without scanning unrelated overview data", async () => {
     render(<TasksPanel />);
 
     await waitFor(() => {
-      expect(window.workbenchClient.getWebUiOverview).toHaveBeenCalledTimes(1);
+      expect(window.workbenchClient.listCronJobs).toHaveBeenCalledTimes(1);
+      expect(window.workbenchClient.getWebUiOverview).not.toHaveBeenCalled();
     });
     expect(useAppStore.getState().webUiOverview?.crons).toEqual([]);
   });

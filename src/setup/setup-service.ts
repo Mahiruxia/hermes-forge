@@ -1,12 +1,11 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { resolveActiveHermesHome } from "../main/hermes-home";
 import type { AppPaths } from "../main/app-paths";
 import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { EngineAdapter } from "../adapters/engine-adapter";
 import type { SecretVault } from "../auth/secret-vault";
-import { runCommand, streamCommand } from "../process/command-runner";
+import { runCommand } from "../process/command-runner";
 import type {
   EngineMaintenanceResult,
   HermesCompatibilityReport,
@@ -22,15 +21,12 @@ import { missingSecretMessage, normalizeOpenAiCompatibleBaseUrl, requiresStoredS
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type { RuntimeProbeResult } from "../runtime/runtime-types";
-import type { InstallOrchestrator } from "../install/install-orchestrator";
-import type { HermesCompatibilityService } from "./hermes-compatibility-service";
-import { getWindowsPythonInstallCandidates } from "../platform";
-
-const DEFAULT_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git";
-const DEFAULT_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+import { InstallOrchestrator } from "../install/install-orchestrator";
+import { NativeInstallStrategy } from "../install/native-install-strategy";
+import { HermesCompatibilityService } from "./hermes-compatibility-service";
+import { managedHermesEnvironmentEnv, resolveManagedHermesEnvironment } from "../runtime/managed-hermes-environment";
 
 type InstallPublisher = (event: HermesInstallEvent) => void;
-type PythonLauncher = { command: string; argsPrefix: string[]; label: string };
 export type HermesInstallOptions = {
   rootPath?: string;
   source?: {
@@ -42,8 +38,6 @@ export type HermesInstallOptions = {
 };
 
 export class SetupService {
-  private installInFlight?: Promise<HermesInstallResult>;
-
   constructor(
     private readonly appPaths: AppPaths,
     private readonly hermes: EngineAdapter,
@@ -68,62 +62,25 @@ export class SetupService {
         autoFixId: "git",
         blocking: false,
       }),
-      await this.checkCommand("node", ["--version"], "node", "Node.js"),
-      runtimeProbe ? this.pythonCheckFromProbe(runtimeProbe) : await this.checkCommand("python", ["--version"], "python", "Python", {
-        statusOnFailure: "missing",
-        description: "Hermes CLI、微信连接器和部分本地桥接能力依赖 Python 运行环境。",
-        recommendedAction: "点击一键安装 Python 3.12，或手动安装后确保 python 命令在 PATH 中可用。",
-        fixAction: "install_python",
-        autoFixId: "python",
-        blocking: false,
-      }),
-      runtimeProbe ? this.wingetCheckFromProbe(runtimeProbe) : await this.checkWinget(),
+      runtimeProbe ? this.pythonCheckFromProbe(runtimeProbe) : await this.checkManagedPython(),
       ...(runtimeProbe?.runtimeMode === "wsl" ? [this.wslCheckFromProbe(runtimeProbe)] : []),
       runtimeProbe ? this.hermesCheckFromProbe(runtimeProbe) : await this.checkHermes(),
       await this.checkHermesAgentCompatibility(hermesCompatibility),
       await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "hermes-pyyaml", "Hermes 配置依赖", "yaml", "PyYAML", {
         description: "Hermes CLI 读取 config.yaml 时需要 PyYAML；缺失时会出现 No module named 'yaml'。",
-        recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade PyYAML。",
+        recommendedAction: "点击修复 Hermes 依赖，按当前锁文件同步受管环境。",
         fixAction: "install_hermes_dependency",
         autoFixId: "hermes_pyyaml",
         blocking: true,
       }),
       await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "hermes-dotenv", "Hermes 环境变量依赖", "dotenv", "python-dotenv", {
         description: "Hermes CLI 读取 .env 时需要 python-dotenv；缺失时会出现 No module named 'dotenv'。",
-        recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade python-dotenv。",
+        recommendedAction: "点击修复 Hermes 依赖，按当前锁文件同步受管环境。",
         fixAction: "install_hermes_dependency",
         autoFixId: "hermes_python_dotenv",
         blocking: true,
       }),
-      await this.checkPythonPackageWithRuntime(runtimeProbe, "weixin-aiohttp", "微信连接依赖", "aiohttp", "aiohttp"),
-      await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "feishu-lark-oapi", "飞书连接依赖", "lark_oapi", "lark-oapi", {
-        description: "飞书 Gateway 适配器需要 lark-oapi；缺失时即使配置已填写，飞书实例也无法启动。",
-        recommendedAction: "点击修复飞书依赖，或在 Hermes venv 中执行 python -m pip install --upgrade lark-oapi。",
-        fixAction: "install_hermes_dependency",
-        autoFixId: "feishu_lark_oapi",
-        blocking: false,
-      }),
-      await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "telegram-bot", "Telegram 连接依赖", "telegram", "python-telegram-bot[webhooks]", {
-        description: "Telegram Gateway 适配器需要 python-telegram-bot；缺失时 Telegram Bot 无法启动。",
-        recommendedAction: "点击修复 Telegram 依赖，或在 Hermes venv 中执行 python -m pip install --upgrade python-telegram-bot[webhooks]。",
-        fixAction: "install_hermes_dependency",
-        autoFixId: "telegram_bot",
-        blocking: false,
-      }),
-      await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "discord-py", "Discord 连接依赖", "discord", "discord.py[voice]", {
-        description: "Discord Gateway 适配器需要 discord.py；缺失时 Discord Bot 无法启动。",
-        recommendedAction: "点击修复 Discord 依赖，或在 Hermes venv 中执行 python -m pip install --upgrade discord.py[voice]。",
-        fixAction: "install_hermes_dependency",
-        autoFixId: "discord_py",
-        blocking: false,
-      }),
-      await this.checkHermesPythonPackageWithRuntime(runtimeProbe, "slack-bolt", "Slack 连接依赖", "slack_bolt", "slack-bolt", {
-        description: "Slack Gateway 适配器需要 slack-bolt；缺失时 Slack Socket Mode 无法启动。",
-        recommendedAction: "点击修复 Slack 依赖，或在 Hermes venv 中执行 python -m pip install --upgrade slack-bolt。",
-        fixAction: "install_hermes_dependency",
-        autoFixId: "slack_bolt",
-        blocking: false,
-      }),
+      ...await this.checkEnabledConnectorDependencies(config, runtimeProbe),
       await this.checkModelConfig(config),
       await this.checkWritable("user-data", "用户数据目录", this.appPaths.baseDir()),
     ];
@@ -170,7 +127,7 @@ export class SetupService {
       status: available ? "ok" : "missing",
       message: probe.runtimeMode === "wsl" ? probe.commands.wsl.message : probe.commands.python.message,
       description: "Hermes CLI、微信连接器和部分本地桥接能力依赖 Python；该结果来自统一 RuntimeProbe。",
-      recommendedAction: available ? undefined : "请安装 Python，或在设置中填写当前 runtime 可用的 Hermes Python 命令。",
+      recommendedAction: available ? undefined : "请修复 Hermes 受管环境；安装流程会准备独立的 Python。",
       fixAction: available ? undefined : "install_python",
       canAutoFix: available || probe.runtimeMode === "wsl" ? undefined : true,
       autoFixId: available || probe.runtimeMode === "wsl" ? undefined : "python",
@@ -178,15 +135,18 @@ export class SetupService {
     };
   }
 
-  private wingetCheckFromProbe(probe: RuntimeProbeResult): SetupCheck {
+  private async checkManagedPython(): Promise<SetupCheck> {
+    const environment = await resolveManagedHermesEnvironment(await this.configStore.getEnginePath("hermes"));
+    const result = environment ? await runCommand(environment.pythonPath, ["--version"], {
+      cwd: environment.rootPath, env: managedHermesEnvironmentEnv(environment), timeoutMs: 8000,
+    }) : undefined;
+    const ok = result?.exitCode === 0;
     return {
-      id: "winget",
-      label: "Windows 包管理器",
-      status: probe.wingetAvailable || process.platform !== "win32" ? "ok" : "warning",
-      message: probe.commands.winget.message,
-      description: "Git/Python 的一键修复依赖 winget；该结果来自统一 RuntimeProbe。",
-      recommendedAction: probe.wingetAvailable ? undefined : "请在 Microsoft Store 更新“应用安装程序”，或手动安装 Git/Python。",
-      blocking: false,
+      id: "python", label: "Hermes Python", status: ok ? "ok" : "missing",
+      message: ok ? (result?.stdout || result?.stderr || "Hermes Python 可用。").trim() : "Hermes 受管 Python 不可用，请修复安装。",
+      description: "与聊天和升级使用同一个 Hermes 虚拟环境。",
+      recommendedAction: ok ? undefined : "点击修复 Hermes 环境。", fixAction: ok ? undefined : "install_python",
+      autoFixId: ok ? undefined : "python", canAutoFix: !ok, blocking: false,
     };
   }
 
@@ -244,7 +204,7 @@ export class SetupService {
     if (hermes?.status !== "ok") {
       suggestions.push("建议先完成 Hermes 路径和 CLI 自检，再进行真实任务执行。");
     }
-    if (weixin?.status !== "ok") {
+    if (weixin && weixin.status !== "ok") {
       suggestions.push("微信端需要 Python aiohttp 依赖；未安装时桌面聊天仍可用，但微信扫码/网关可能失败。");
     }
     if (model?.status !== "ok") {
@@ -253,552 +213,32 @@ export class SetupService {
     return suggestions;
   }
 
-  async updateHermes(publish?: InstallPublisher): Promise<EngineMaintenanceResult> {
-    const emit = (stage: HermesInstallEvent["stage"], progress: number, message: string, detail?: string) => {
-      publish?.({
-        stage,
-        message,
-        detail,
-        progress,
-        startedAt: new Date().toISOString(),
-        at: new Date().toISOString(),
-      });
-    };
+  private fallbackOrchestrator?: InstallOrchestrator;
 
-    if (this.installOrchestrator) {
-      emit("preflight", 10, "正在准备 Hermes 更新。", "调用安装编排器...");
-      const result = await this.installOrchestrator.update();
-      if (result.ok) {
-        emit("completed", 100, result.message, "更新完成。");
-      } else {
-        emit("failed", 100, result.message, "更新失败。");
-      }
-      return { ...result, engineId: "hermes" };
-    }
-
-    const log: string[] = [];
-    const startedAt = new Date().toISOString();
-    const hermesRoot = await this.configStore.getEnginePath("hermes");
-    const launch = await this.hermesMaintenanceLaunch(hermesRoot, ["update"]);
-    log.push(`$ ${launch.command} ${JSON.stringify(launch.args)}`);
-
-    emit("preflight", 10, "正在准备 Hermes 更新。", `安装目录：${hermesRoot}`);
-
-    let progress = 15;
-    const progressTimer = setInterval(() => {
-      progress = Math.min(progress + 8, 85);
-      emit("installing_dependencies", progress, "正在执行更新命令...", "请保持网络连接");
-    }, 2500);
-
-    const result = await runCommand(launch.command, launch.args, {
-      cwd: launch.cwd,
-      timeoutMs: DEFAULT_INSTALL_TIMEOUT_MS,
-      env: launch.env,
-      commandId: "setup.hermes.update",
-      runtimeKind: launch.runtimeKind,
-    });
-
-    clearInterval(progressTimer);
-
-    if (result.stdout.trim()) log.push(result.stdout.trim());
-    if (result.stderr.trim()) log.push(result.stderr.trim());
-    let ok = result.exitCode === 0;
-    let message = ok ? "Hermes 更新完成。" : `Hermes 更新失败：exit ${result.exitCode}`;
-
-    if (ok) {
-      emit("installing_dependencies", 70, "正在同步 Git 代码...", "确保本地仓库与远程一致");
-      const branchResult = await runCommand("git", ["branch", "--show-current"], {
-        cwd: hermesRoot,
-        timeoutMs: 5000,
-      }).catch(() => undefined);
-      const branch = branchResult?.exitCode === 0 ? branchResult.stdout.trim() : "main";
-
-      const pullResult = await runCommand("git", ["pull", "--ff-only", "origin", branch || "main"], {
-        cwd: hermesRoot,
-        timeoutMs: 180_000,
-      }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) } as Awaited<ReturnType<typeof runCommand>>));
-      log.push(`git pull --ff-only origin ${branch || "main"}: exit ${pullResult.exitCode}`);
-      if (pullResult.stdout.trim()) log.push(pullResult.stdout.trim());
-      if (pullResult.stderr.trim()) log.push(pullResult.stderr.trim());
-
-      if (pullResult.exitCode !== 0) {
-        emit("installing_dependencies", 75, "Git pull 失败，尝试强制同步...", pullResult.stderr.trim() || "未知错误");
-        const fetchResult = await runCommand("git", ["fetch", "origin", branch || "main"], {
-          cwd: hermesRoot,
-          timeoutMs: 180_000,
-        }).catch(() => undefined);
-        if (fetchResult?.exitCode === 0) {
-          const hardReset = await runCommand("git", ["reset", "--hard", `origin/${branch || "main"}`], {
-            cwd: hermesRoot,
-            timeoutMs: 30_000,
-          }).catch(() => undefined);
-          if (hardReset?.exitCode === 0) {
-            log.push("git reset --hard origin/" + (branch || "main") + " succeeded");
-          } else {
-            log.push("git reset --hard failed: " + (hardReset?.stderr ?? "unknown"));
-            ok = false;
-            message = "Hermes 更新失败：Git 代码同步失败。常见原因：① 网络超时（已延长至 180 秒）② 本地有未提交修改。建议：打开 Hermes Agent 目录执行 git status 查看状态，或尝试一键修复。";
-          }
-        } else {
-          const isReset = fetchResult?.stderr?.includes("Connection was reset") || fetchResult?.stderr?.includes("ECONNRESET");
-          ok = false;
-          message = isReset
-            ? "Hermes 更新失败：Git 连接被重置（Connection was reset）。在中国大陆这是常见问题。解决方案：① 开启代理软件后执行 git config --global http.proxy http://127.0.0.1:7890 ② 或手动下载 zip 覆盖安装目录。"
-            : "Hermes 更新失败：无法从远程获取最新代码（fetch 超时 180 秒）。如果在中国大陆，建议开启代理或切换网络后重试。";
-        }
-      }
-
-      if (ok) {
-        const verifyResult = await runCommand("git", ["rev-list", `HEAD..origin/${branch || "main"}`, "--count"], {
-          cwd: hermesRoot,
-          timeoutMs: 5000,
-        }).catch(() => undefined);
-        const behindCount = verifyResult?.exitCode === 0 ? parseInt(verifyResult.stdout.trim(), 10) : NaN;
-        if (!isNaN(behindCount) && behindCount > 0) {
-          log.push(`Warning: still ${behindCount} commits behind after update attempt`);
-          ok = false;
-          message = `Hermes 更新后仍有 ${behindCount} 个提交未同步，可能远程分支有变或本地有冲突。请尝试一键修复。`;
-        }
-      }
-
-      if (ok && await this.exists(path.join(hermesRoot, "pyproject.toml"))) {
-        // Pre-clean quarantined packages before installing
-        for (const pkg of ["mistralai"]) {
-          try {
-            const show = await runCommand("python", ["-m", "pip", "show", pkg], { cwd: hermesRoot, timeoutMs: 10_000 });
-            if (show.exitCode === 0) {
-              log.push(`Quarantined package ${pkg} detected; uninstalling before update...`);
-              const un = await runCommand("python", ["-m", "pip", "uninstall", pkg, "-y"], { cwd: hermesRoot, timeoutMs: 30_000 });
-              log.push(un.exitCode === 0 ? `Uninstalled ${pkg}.` : `Failed to uninstall ${pkg}.`);
-            }
-          } catch { /* ignore */ }
-        }
-
-        // Prefer uv sync if available
-        const uvVersion = await runCommand("uv", ["--version"], { cwd: hermesRoot, timeoutMs: 10_000 }).catch(() => undefined);
-        if (uvVersion?.exitCode === 0) {
-          emit("installing_dependencies", 85, "正在使用 uv 同步依赖（比 pip 更快更稳定）...", `uv ${uvVersion.stdout.trim()}`);
-          const uvResult = await runCommand("uv", ["sync"], { cwd: hermesRoot, timeoutMs: 300_000 }).catch(() => undefined);
-          if (uvResult) {
-            log.push(`uv sync: exit ${uvResult.exitCode}`);
-            if (uvResult.stdout.trim()) log.push(uvResult.stdout.trim());
-            if (uvResult.stderr.trim()) log.push(uvResult.stderr.trim());
-          }
-        } else {
-          emit("installing_dependencies", 85, "正在更新 Python 依赖...", "pip install -e .");
-          const pipEnv: Record<string, string> = {
-            PYTHONUTF8: "1",
-            PYTHONIOENCODING: "utf-8",
-            PYTHONPATH: `${hermesRoot}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-            NO_COLOR: "1",
-          };
-          // Auto-detect China mainland and use Tsinghua mirror
-          try {
-            const test = await runCommand("powershell.exe", ["-NoProfile", "-Command", "Invoke-WebRequest -Uri 'https://pypi.org/simple/' -UseBasicParsing -TimeoutSec 5 -MaximumRedirection 0; exit $LASTEXITCODE"], { cwd: process.cwd(), timeoutMs: 8_000 });
-            if (test.exitCode !== 0) {
-              pipEnv.PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple";
-              pipEnv.PIP_TRUSTED_HOST = "pypi.tuna.tsinghua.edu.cn";
-              log.push("PyPI appears slow/unreachable; using Tsinghua mirror for pip install.");
-            }
-          } catch {
-            pipEnv.PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple";
-            pipEnv.PIP_TRUSTED_HOST = "pypi.tuna.tsinghua.edu.cn";
-            log.push("PyPI connectivity check failed; using Tsinghua mirror for pip install.");
-          }
-          const pipResult = await runCommand("python", ["-m", "pip", "install", "-e", "."], {
-            cwd: hermesRoot,
-            timeoutMs: 300_000,
-            env: pipEnv,
-          }).catch(() => undefined);
-          if (pipResult) {
-            log.push(`pip install -e .: exit ${pipResult.exitCode}`);
-            if (pipResult.stdout.trim()) log.push(pipResult.stdout.trim());
-            if (pipResult.stderr.trim()) log.push(pipResult.stderr.trim());
-          }
-        }
-      }
-    }
-
-    const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
-    await fs.mkdir(logDir, { recursive: true });
-    const logPath = path.join(logDir, `hermes-update-${startedAt.replace(/[:.]/g, "-")}.log`);
-    await fs.writeFile(logPath, [message, "", ...log].join("\n"), "utf8");
-
-    if (ok) {
-      emit("completed", 100, message, "更新日志已保存。");
-    } else {
-      emit("failed", 100, message, `详情见日志：${logPath}`);
-    }
-
-    return { ok, engineId: "hermes", message, log, logPath };
+  private maintenanceOrchestrator() {
+    this.fallbackOrchestrator ??= this.installOrchestrator
+      ?? new InstallOrchestrator(this.configStore, new NativeInstallStrategy(this.appPaths, this.hermes, this.configStore, this.runtimeProbeService, this.runtimeAdapterFactory));
+    return this.fallbackOrchestrator;
   }
 
-  private async hermesMaintenanceLaunch(hermesRoot: string, args: string[]) {
-    if (this.runtimeAdapterFactory) {
-      const config = await this.configStore.read();
-      const runtime = {
-        mode: config.hermesRuntime?.mode ?? "windows",
-        distro: config.hermesRuntime?.distro?.trim() || undefined,
-        pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python",
-        windowsAgentMode: config.hermesRuntime?.windowsAgentMode ?? "hermes_native",
-      } satisfies NonNullable<RuntimeConfig["hermesRuntime"]>;
-      const adapter = this.runtimeAdapterFactory(runtime);
-      const runtimeRoot = adapter.toRuntimePath(hermesRoot);
-      return await adapter.buildHermesLaunch({
-        runtime,
-        rootPath: runtimeRoot,
-        pythonArgs: [runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : path.join(hermesRoot, "hermes"), ...args],
-        cwd: hermesRoot,
-        env: {
-          PYTHONUTF8: "1",
-          PYTHONIOENCODING: "utf-8",
-          PYTHONPATH: runtimeRoot,
-          NO_COLOR: "1",
-        },
-      });
-    }
-    // Legacy fallback: retained for standalone tests and until the full installer is moved behind runtime services.
-    const hermesCli = path.join(hermesRoot, "hermes");
-    return {
-      command: "python",
-      args: [hermesCli, ...args],
-      cwd: hermesRoot,
-      env: {
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        PYTHONPATH: `${hermesRoot}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-        NO_COLOR: "1",
-      },
-      runtimeKind: "windows" as const,
-    };
+  async updateHermes(publish?: InstallPublisher): Promise<EngineMaintenanceResult> {
+    const startedAt = new Date().toISOString();
+    publish?.({ stage: "preflight", progress: 10, message: "正在准备 Hermes 更新。", startedAt, at: startedAt });
+    const result = await this.maintenanceOrchestrator().update();
+    publish?.({ stage: result.ok ? "completed" : "failed", progress: 100, message: result.message, startedAt, at: new Date().toISOString() });
+    return { ...result, engineId: "hermes" };
   }
 
   async installHermes(publish?: InstallPublisher, options: HermesInstallOptions = {}): Promise<HermesInstallResult> {
-    if (this.installOrchestrator) {
-      return this.installOrchestrator.install(publish, options);
-    }
-    if (!this.installInFlight) {
-      this.installInFlight = this.performInstallHermes(publish, options).finally(() => {
-        this.installInFlight = undefined;
-      });
-    }
-    return await this.installInFlight;
+    return this.maintenanceOrchestrator().install(publish, options);
   }
 
   async cancelInstallHermes(): Promise<{ ok: boolean; message: string }> {
-    if (this.installOrchestrator) {
-      return this.installOrchestrator.cancelInstall();
-    }
-    return { ok: false, message: "当前安装流程暂不支持取消，请等待当前命令结束。" };
+    return this.maintenanceOrchestrator().cancelInstall();
   }
 
   async repairDependency(id: SetupDependencyRepairId): Promise<SetupDependencyRepairResult> {
-    if (this.installOrchestrator) {
-      return this.installOrchestrator.repairDependency(id);
-    }
-    switch (id) {
-      case "git":
-        return await this.repairWithWinget(id, "Git", "Git.Git");
-      case "python":
-        return await this.repairWithWinget(id, "Python", "Python.Python.3.12");
-      case "hermes_pyyaml":
-        return await this.repairPythonPackage(id, "PyYAML", "PyYAML", "请重新检查 Hermes 状态，确认 yaml 模块已可导入。");
-      case "hermes_python_dotenv":
-        return await this.repairPythonPackage(id, "python-dotenv", "python-dotenv", "请重新检查 Hermes 状态，确认 dotenv 模块已可导入。");
-      case "weixin_aiohttp":
-        return await this.repairPythonPackage(id, "aiohttp", "aiohttp");
-      case "feishu_lark_oapi":
-        return await this.repairPythonPackage(id, "lark-oapi", "lark-oapi", "请重新检查系统状态，确认飞书连接依赖已就绪。");
-      case "telegram_bot":
-        return await this.repairPythonPackage(id, "python-telegram-bot", "python-telegram-bot[webhooks]", "请重新检查系统状态，确认 Telegram 连接依赖已就绪。");
-      case "discord_py":
-        return await this.repairPythonPackage(id, "discord.py", "discord.py[voice]", "请重新检查系统状态，确认 Discord 连接依赖已就绪。");
-      case "slack_bolt":
-        return await this.repairPythonPackage(id, "slack-bolt", "slack-bolt", "请重新检查系统状态，确认 Slack 连接依赖已就绪。");
-      default:
-        return {
-          ok: false,
-          id,
-          message: "未知依赖修复项。",
-          recommendedFix: "请刷新系统状态后重试。",
-        };
-    }
-  }
-
-  private async performInstallHermes(publish?: InstallPublisher, options: HermesInstallOptions = {}): Promise<HermesInstallResult> {
-    const log: string[] = [];
-    const startedAt = new Date().toISOString();
-    const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
-    const logPath = path.join(logDir, `hermes-install-${startedAt.replace(/[:.]/g, "-")}.log`);
-
-    const emit = (stage: HermesInstallEvent["stage"], progress: number, message: string, detail?: string, extra?: Partial<HermesInstallEvent>) => {
-      const line = `[${stage}] ${message}${detail ? ` | ${detail}` : ""}`;
-      log.push(line);
-      publish?.({
-        stage,
-        message,
-        detail,
-        progress,
-        startedAt,
-        at: new Date().toISOString(),
-        ...extra,
-      });
-    };
-
-    const finish = async (
-      result: Omit<HermesInstallResult, "engineId" | "log" | "logPath">,
-      stage: HermesInstallEvent["stage"],
-    ) => {
-      if (stage === "completed" || stage === "failed") {
-        emit(stage, stage === "completed" ? 100 : 100, result.message, result.rootPath);
-      }
-      await this.writeInstallLog(logDir, logPath, result.message, log);
-      return { ...result, engineId: "hermes" as const, log, logPath };
-    };
-
-    let stagingPath: string | undefined;
-    let quarantinedPath: string | undefined;
-
-    try {
-      emit("preflight", 5, "正在检测本机环境。");
-      const currentHealth = await this.hermes.healthCheck().catch((error) => {
-        log.push(`Current Hermes check failed: ${error instanceof Error ? error.message : String(error)}`);
-        return undefined;
-      });
-      if (currentHealth?.available) {
-        const rootPath = currentHealth.path ?? await this.configStore.getEnginePath("hermes");
-        await this.saveHermesRoot(rootPath);
-        log.push(`Hermes is already available at ${rootPath}.`);
-        return await finish({ ok: true, rootPath, message: `已检测到可用 Hermes。` }, "completed");
-      }
-
-      const repoUrl = process.env.HERMES_INSTALL_REPO_URL?.trim() || DEFAULT_HERMES_REPO_URL;
-      const rootPath = options.rootPath?.trim() || process.env.HERMES_INSTALL_DIR?.trim() || this.defaultInstallRoot();
-      const parentDir = path.dirname(rootPath);
-      const managedDefaultPath = this.samePath(rootPath, this.defaultInstallRoot());
-      log.push(`Install target: ${rootPath}`);
-      log.push(`Repository: ${repoUrl}`);
-
-      await this.assertWritableDirectory(logDir, "安装日志目录", log);
-      await this.assertWritableDirectory(parentDir, "Hermes 安装父目录", log);
-
-      const gitReady = await this.ensureGitAvailable(log, emit);
-      if (!gitReady.ok) {
-        return await finish({
-          ok: false,
-          rootPath,
-          message: gitReady.message,
-        }, "failed");
-      }
-
-      const pythonReady = await this.ensurePythonAvailable(log, emit);
-      if (!pythonReady.ok) {
-        return await finish({
-          ok: false,
-          rootPath,
-          message: pythonReady.message,
-        }, "failed");
-      }
-      const python = pythonReady.python;
-
-      const targetState = await this.inspectTargetDirectory(rootPath, log);
-      if (targetState.exists && targetState.hasHermesCli) {
-        log.push("Target directory already contains Hermes CLI; skipping clone.");
-      } else {
-        if (targetState.exists && !targetState.isEmpty) {
-          if (!managedDefaultPath || !targetState.recoverable) {
-            return await finish({
-              ok: false,
-              rootPath,
-              message: `目标目录已存在但看起来不是可自动恢复的 Hermes 安装。请在设置里改用空目录，或手动清理后重试。`,
-            }, "failed");
-          }
-          emit("recovering", 18, "检测到上次残留的 Hermes 安装目录，正在自动迁移旧残留。", rootPath);
-          quarantinedPath = `${rootPath}.stale-${Date.now()}`;
-          await fs.rename(rootPath, quarantinedPath);
-          log.push(`Quarantined stale install to ${quarantinedPath}`);
-        } else if (targetState.exists && targetState.isEmpty) {
-          await fs.rm(rootPath, { recursive: true, force: true });
-          log.push(`Removed empty target directory ${rootPath} before staging install.`);
-        }
-
-        emit("cloning", 32, "正在下载 Hermes 核心文件。", repoUrl);
-        stagingPath = path.join(parentDir, `.hermes-install-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-        const clone = await this.runLogged("git", ["clone", "--depth", "1", repoUrl, stagingPath], parentDir, log, DEFAULT_INSTALL_TIMEOUT_MS, {
-          heartbeatMs: 15_000,
-          onHeartbeat: (elapsedSeconds) => emit("cloning", 34, "仍在下载 Hermes 核心文件，请保持网络连接。", `已等待 ${elapsedSeconds} 秒，源：${repoUrl}`),
-          onLine: (line) => emit("cloning", 34, "正在下载...", line, { logLine: line }),
-        });
-        if (clone.exitCode !== 0) {
-          await this.cleanupDirectory(stagingPath, log);
-          return await finish({ ok: false, rootPath, message: `Hermes 下载失败，详情见安装日志。` }, "failed");
-        }
-
-        await fs.rename(stagingPath, rootPath);
-        log.push(`Promoted staged install from ${stagingPath} to ${rootPath}`);
-        stagingPath = undefined;
-      }
-
-      emit("installing_dependencies", 62, "正在安装 Hermes 运行依赖。", rootPath);
-      await this.installPythonDependencies(rootPath, log, python, emit);
-
-      emit("health_check", 82, "正在校验 Hermes 是否可启动。", rootPath);
-      const localHealth = await this.checkInstalledHermes(rootPath, log, python);
-      if (!localHealth.available) {
-        return await finish({
-          ok: false,
-          rootPath,
-          message: `Hermes 文件已落地，但本地自检未通过：${localHealth.message}。详情见安装日志。`,
-        }, "failed");
-      }
-
-      await this.writeManagedMarker(rootPath, repoUrl);
-      const previousHermesRoot = (await this.configStore.read()).enginePaths?.hermes;
-      await this.saveHermesRoot(rootPath);
-
-      const adapterHealth = await this.hermes.healthCheck().catch((error) => {
-        log.push(`Post-install adapter health check threw: ${error instanceof Error ? error.message : String(error)}`);
-        return undefined;
-      });
-      if (!adapterHealth?.available) {
-        await this.restoreHermesRoot(previousHermesRoot);
-        return await finish({
-          ok: false,
-          rootPath,
-          message: `Hermes 已安装，但客户端复检仍未通过：${adapterHealth?.message ?? "未知错误"}。详情见安装日志。`,
-        }, "failed");
-      }
-
-      return await finish({ ok: true, rootPath, message: `Hermes 已自动安装完成并通过检查。` }, "completed");
-    } catch (error) {
-      if (stagingPath) {
-        await this.cleanupDirectory(stagingPath, log);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      log.push(`Install crashed: ${message}`);
-      return await finish({
-        ok: false,
-        message: `Hermes 自动安装失败，请查看安装日志或导出诊断报告。`,
-        rootPath: quarantinedPath ? path.dirname(quarantinedPath) : undefined,
-      }, "failed");
-    }
-  }
-
-  private async repairWithWinget(
-    id: SetupDependencyRepairId,
-    label: string,
-    packageId: string,
-  ): Promise<SetupDependencyRepairResult> {
-    const log: string[] = [];
-    const startedAt = new Date().toISOString();
-    const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
-    const logPath = path.join(logDir, `dependency-${id}-${startedAt.replace(/[:.]/g, "-")}.log`);
-
-    try {
-      const winget = await this.runLogged("winget", ["--version"], process.cwd(), log, 15_000);
-      if (winget.exitCode !== 0) {
-        const message = "未检测到 Windows 包管理器 winget，无法自动安装系统依赖。";
-        await this.writeInstallLog(logDir, logPath, message, log);
-        return {
-          ok: false,
-          id,
-          message,
-          stdout: winget.stdout,
-          stderr: winget.stderr,
-          logPath,
-          recommendedFix: `请手动安装 ${label}，安装后重启 Hermes Forge。`,
-        };
-      }
-
-      const args = [
-        "install",
-        "--id",
-        packageId,
-        "-e",
-        "--source",
-        "winget",
-        "--accept-source-agreements",
-        "--accept-package-agreements",
-      ];
-      const result = await this.runLogged("winget", args, process.cwd(), log, DEFAULT_INSTALL_TIMEOUT_MS);
-      const ok = result.exitCode === 0;
-      const message = ok
-        ? `${label} 安装命令已执行完成，请重启 Hermes Forge 后重新检测。`
-        : `${label} 自动安装失败，详情见修复日志：${logPath}`;
-      await this.writeInstallLog(logDir, logPath, message, log);
-      return {
-        ok,
-        id,
-        message,
-        command: `winget ${args.join(" ")}`,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        logPath,
-        recommendedFix: ok ? "重启客户端并重新打开系统状态页确认依赖是否就绪。" : `请手动安装 ${label} 后重试。`,
-      };
-    } catch (error) {
-      const message = `${label} 自动修复流程异常，请查看修复日志或导出诊断报告。`;
-      log.push(message);
-      await this.writeInstallLog(logDir, logPath, message, log);
-      return {
-        ok: false,
-        id,
-        message,
-        logPath,
-        recommendedFix: `请手动安装 ${label} 后重启客户端。`,
-      };
-    }
-  }
-
-  private async repairPythonPackage(
-    id: SetupDependencyRepairId,
-    label: string,
-    packageName: string,
-    successRecommendedFix = "请重新尝试微信扫码或刷新系统状态确认依赖已就绪。",
-  ): Promise<SetupDependencyRepairResult> {
-    const log: string[] = [];
-    const startedAt = new Date().toISOString();
-    const logDir = path.join(this.appPaths.baseDir(), "diagnostics", "install-logs");
-    const logPath = path.join(logDir, `dependency-${id}-${startedAt.replace(/[:.]/g, "-")}.log`);
-    const candidates: Array<{ command: string; args: string[] }> = [
-      { command: "python", args: ["-m", "pip", "install", "--upgrade", packageName] },
-      { command: "py", args: ["-3", "-m", "pip", "install", "--upgrade", packageName] },
-    ];
-
-    let lastResult: Awaited<ReturnType<typeof runCommand>> | undefined;
-    let lastCommand = "";
-    for (const candidate of candidates) {
-      lastCommand = `${candidate.command} ${candidate.args.join(" ")}`;
-      const result = await this.runLogged(candidate.command, candidate.args, process.cwd(), log, DEFAULT_INSTALL_TIMEOUT_MS);
-      lastResult = result;
-      if (result.exitCode === 0) {
-        const message = `${label} 已安装或更新完成。`;
-        await this.writeInstallLog(logDir, logPath, message, log);
-        return {
-          ok: true,
-          id,
-          message,
-          command: lastCommand,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          logPath,
-          recommendedFix: successRecommendedFix,
-        };
-      }
-    }
-
-    const message = `${label} 自动安装失败，详情见修复日志：${logPath}`;
-    await this.writeInstallLog(logDir, logPath, message, log);
-    return {
-      ok: false,
-      id,
-      message,
-      command: lastCommand,
-      stdout: lastResult?.stdout ?? "",
-      stderr: lastResult?.stderr ?? "",
-      logPath,
-      recommendedFix: `请在终端手动执行 python -m pip install ${packageName}，或先修复 Python/pip 环境。`,
-    };
+    return this.maintenanceOrchestrator().repairDependency(id);
   }
 
   private async checkHermes(): Promise<SetupCheck> {
@@ -811,7 +251,7 @@ export class SetupService {
           status: "missing",
           message: `Hermes 未完全就绪：${health.message}`,
           description: "Hermes CLI 已存在，但当前 Python 环境缺少 PyYAML，导致读取 config.yaml 时崩溃。",
-          recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade PyYAML。",
+          recommendedAction: "点击修复 Hermes 依赖，按当前锁文件同步受管环境。",
           fixAction: "install_hermes_dependency",
           autoFixId: "hermes_pyyaml",
           canAutoFix: true,
@@ -825,7 +265,7 @@ export class SetupService {
           status: "missing",
           message: `Hermes 未完全就绪：${health.message}`,
           description: "Hermes CLI 已存在，但当前 Python 环境缺少 python-dotenv，导致读取 .env 时崩溃。",
-          recommendedAction: "点击修复 Hermes 依赖，或手动执行 python -m pip install --upgrade python-dotenv。",
+          recommendedAction: "点击修复 Hermes 依赖，按当前锁文件同步受管环境。",
           fixAction: "install_hermes_dependency",
           autoFixId: "hermes_python_dotenv",
           canAutoFix: true,
@@ -844,11 +284,6 @@ export class SetupService {
       };
     }
 
-    const hermesHomeBase = typeof (this.appPaths as { hermesDir?: unknown }).hermesDir === "function"
-      ? this.appPaths.hermesDir()
-      : path.join(os.homedir(), ".hermes");
-    const memoryDir = path.join(await resolveActiveHermesHome(hermesHomeBase), "memories");
-    await fs.mkdir(memoryDir, { recursive: true }).catch(() => undefined);
     return {
       id: "hermes",
       label: "Hermes",
@@ -932,243 +367,6 @@ export class SetupService {
     }
   }
 
-  private async ensureGitAvailable(log: string[], emit: (stage: HermesInstallEvent["stage"], progress: number, message: string, detail?: string) => void) {
-    const probe = await this.runtimeProbeService?.probe().catch(() => undefined);
-    if (probe?.gitAvailable) {
-      log.push(`RuntimeProbe Git: ${probe.commands.git.message}`);
-      return { ok: true, message: "Git 可用。" };
-    }
-    // Legacy fallback: install flow still supports standalone construction and uses direct command checks until the full installer is moved behind runtime services.
-    const git = await this.runLogged("git", ["--version"], process.cwd(), log, 15_000);
-    if (git.exitCode === 0) {
-      return { ok: true, message: "Git 可用。" };
-    }
-
-    emit("repairing_dependencies", 12, "未检测到 Git，正在尝试自动安装 Git。", "将通过 winget 安装 Git.Git。");
-    const repair = await this.repairWithWinget("git", "Git", "Git.Git");
-    log.push(`Git repair result: ${repair.message}`);
-    if (!repair.ok) {
-      return {
-        ok: false,
-        message: `无法自动安装 Hermes：未检测到可用 Git，且自动安装 Git 失败。${repair.recommendedFix ?? "请手动安装 Git for Windows 后重启客户端。"}`,
-      };
-    }
-
-    emit("preflight", 18, "Git 安装命令已完成，正在重新检测。", repair.recommendedFix);
-    const recheck = await this.runLogged("git", ["--version"], process.cwd(), log, 15_000);
-    if (recheck.exitCode === 0) {
-      return { ok: true, message: "Git 已可用。" };
-    }
-    return {
-      ok: false,
-      message: "Git 安装命令已执行，但当前进程仍未检测到 git 命令。请重启 Hermes Forge，或手动确认 Git 已加入 PATH。",
-    };
-  }
-
-  private async ensurePythonAvailable(log: string[], emit: (stage: HermesInstallEvent["stage"], progress: number, message: string, detail?: string) => void): Promise<{ ok: true; python: PythonLauncher; message: string } | { ok: false; message: string; python?: undefined }> {
-    const probe = await this.runtimeProbeService?.probe().catch(() => undefined);
-    if (probe?.runtimeMode === "windows" && probe.commands.python.available && probe.commands.python.command) {
-      const python = {
-        command: probe.commands.python.command,
-        argsPrefix: probe.commands.python.args ?? [],
-        label: probe.commands.python.label ?? probe.commands.python.command,
-      };
-      log.push(`RuntimeProbe Python: ${probe.commands.python.message}`);
-      return { ok: true, python, message: `${python.label} 可用。` };
-    }
-    // Legacy fallback: WSL managed installation is intentionally out of scope for this pass, so the existing Windows installer path keeps its direct Python detection.
-    const detected = await this.detectPythonLauncher(log);
-    if (detected) {
-      return { ok: true, python: detected, message: `${detected.label} 可用。` };
-    }
-
-    emit("repairing_dependencies", 20, "未检测到 Python，正在尝试自动安装 Python。", "将通过 winget 安装 Python.Python.3.12。");
-    const repair = await this.repairWithWinget("python", "Python", "Python.Python.3.12");
-    log.push(`Python repair result: ${repair.message}`);
-    if (!repair.ok) {
-      return {
-        ok: false,
-        message: `无法自动安装 Hermes：未检测到可用 Python，且自动安装 Python 失败。${repair.recommendedFix ?? "请手动安装 Python 后重启客户端。"}`,
-      };
-    }
-
-    emit("preflight", 26, "Python 安装命令已完成，正在重新检测。", repair.recommendedFix);
-    const recheck = await this.detectPythonLauncher(log);
-    if (recheck) {
-      return { ok: true, python: recheck, message: `${recheck.label} 已可用。` };
-    }
-    return {
-      ok: false,
-      message: "Python 安装命令已执行，但当前进程仍未检测到 python/py 命令。请重启 Hermes Forge，或手动确认 Python 已加入 PATH。",
-    };
-  }
-
-  private async detectPythonLauncher(log: string[]): Promise<PythonLauncher | undefined> {
-    const candidates: PythonLauncher[] = [
-      { command: "python", argsPrefix: [], label: "python" },
-      { command: "py", argsPrefix: ["-3"], label: "py -3" },
-      ...getWindowsPythonInstallCandidates("win32").map((command) => ({ command, argsPrefix: [], label: command })),
-    ];
-    for (const candidate of candidates) {
-      if (path.isAbsolute(candidate.command) && !(await this.exists(candidate.command))) continue;
-      const result = await this.runLogged(candidate.command, [...candidate.argsPrefix, "--version"], process.cwd(), log, 15_000);
-      if (result.exitCode === 0) {
-        return candidate;
-      }
-    }
-    return undefined;
-  }
-
-  private async installPythonDependencies(
-    rootPath: string,
-    log: string[],
-    python: PythonLauncher,
-    emit?: (stage: HermesInstallEvent["stage"], progress: number, message: string, detail?: string, extra?: Partial<HermesInstallEvent>) => void,
-  ) {
-    const mirror = await this.detectPipMirror(log);
-    const pipArgs = (baseArgs: string[]) => {
-      if (mirror) {
-        log.push(`Using pip mirror: ${mirror}`);
-        return [...baseArgs, "-i", mirror];
-      }
-      return baseArgs;
-    };
-
-    if (await this.exists(path.join(rootPath, "pyproject.toml"))) {
-      const result = await this.runLogged(python.command, [...python.argsPrefix, "-m", "pip", ...pipArgs(["install", "-e", "."])], rootPath, log, DEFAULT_INSTALL_TIMEOUT_MS, {
-        heartbeatMs: 15_000,
-        onHeartbeat: (elapsedSeconds) => emit?.("installing_dependencies", 68, "仍在安装 Hermes Python 依赖。", `已等待 ${elapsedSeconds} 秒，使用 ${python.label}${mirror ? "，国内镜像：" + mirror : ""}`),
-        onLine: (line) => emit?.("installing_dependencies", 68, "正在安装依赖...", line, { logLine: line }),
-      });
-      if (result.exitCode !== 0) {
-        log.push("Editable pip install failed; continuing to health check so the user gets a precise runtime error.");
-      }
-      return;
-    }
-    if (await this.exists(path.join(rootPath, "requirements.txt"))) {
-      const result = await this.runLogged(python.command, [...python.argsPrefix, "-m", "pip", ...pipArgs(["install", "-r", "requirements.txt"])], rootPath, log, DEFAULT_INSTALL_TIMEOUT_MS, {
-        heartbeatMs: 15_000,
-        onHeartbeat: (elapsedSeconds) => emit?.("installing_dependencies", 68, "仍在安装 Hermes Python 依赖。", `已等待 ${elapsedSeconds} 秒，使用 ${python.label}${mirror ? "，国内镜像：" + mirror : ""}`),
-        onLine: (line) => emit?.("installing_dependencies", 68, "正在安装依赖...", line, { logLine: line }),
-      });
-      if (result.exitCode !== 0) {
-        log.push("requirements.txt pip install failed; continuing to health check so the user gets a precise runtime error.");
-      }
-    }
-  }
-
-  private async detectPipMirror(log: string[]): Promise<string | undefined> {
-    const mirrors = [
-      { url: "https://pypi.tuna.tsinghua.edu.cn/simple", label: "清华" },
-      { url: "https://mirrors.aliyun.com/pypi/simple", label: "阿里云" },
-      { url: "https://pypi.mirrors.ustc.edu.cn/simple", label: "中科大" },
-    ];
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-      const start = Date.now();
-      await fetch("https://pypi.org/simple/", { method: "HEAD", signal: controller.signal });
-      clearTimeout(timer);
-      const elapsed = Date.now() - start;
-      if (elapsed < 2000) {
-        log.push(`PyPI official is fast (${elapsed}ms), using default index.`);
-        return undefined;
-      }
-      log.push(`PyPI official is slow (${elapsed}ms), probing mirrors...`);
-    } catch {
-      log.push("PyPI official is unreachable, probing mirrors...");
-    }
-
-    for (const mirror of mirrors) {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        const start = Date.now();
-        await fetch(mirror.url, { method: "HEAD", signal: controller.signal });
-        clearTimeout(timer);
-        const elapsed = Date.now() - start;
-        log.push(`Mirror ${mirror.label} is available (${elapsed}ms).`);
-        return mirror.url;
-      } catch {
-        log.push(`Mirror ${mirror.label} probe failed.`);
-      }
-    }
-    log.push("All mirrors unreachable, falling back to default index.");
-    return undefined;
-  }
-
-  private async saveHermesRoot(rootPath: string) {
-    const config = await this.configStore.read();
-    await this.configStore.write({
-      ...config,
-      enginePaths: {
-        ...(config.enginePaths ?? {}),
-        hermes: rootPath,
-      },
-    });
-  }
-
-  private async restoreHermesRoot(previousRootPath?: string) {
-    const config = await this.configStore.read();
-    const nextEnginePaths = { ...(config.enginePaths ?? {}) };
-    if (previousRootPath?.trim()) {
-      nextEnginePaths.hermes = previousRootPath;
-    } else {
-      delete nextEnginePaths.hermes;
-    }
-    await this.configStore.write({
-      ...config,
-      enginePaths: nextEnginePaths,
-    });
-  }
-
-  private async runLogged(
-    command: string,
-    args: string[],
-    cwd: string,
-    log: string[],
-    timeoutMs: number,
-    heartbeat?: { heartbeatMs: number; onHeartbeat: (elapsedSeconds: number) => void; onLine?: (line: string) => void },
-  ) {
-    log.push(`$ ${command} ${args.join(" ")}`);
-    const startedAt = Date.now();
-    const timer = heartbeat
-      ? setInterval(() => {
-          const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-          log.push(`[heartbeat] ${command} still running after ${elapsedSeconds}s`);
-          heartbeat.onHeartbeat(elapsedSeconds);
-        }, heartbeat.heartbeatMs)
-      : undefined;
-    try {
-      if (!heartbeat?.onLine) {
-        const result = await runCommand(command, args, { cwd, timeoutMs });
-        if (result.stdout.trim()) log.push(result.stdout.trim());
-        if (result.stderr.trim()) log.push(result.stderr.trim());
-        log.push(`exit ${result.exitCode ?? "unknown"}`);
-        return result;
-      }
-
-      let stdout = "";
-      let stderr = "";
-      let exitCode: number | null = null;
-      for await (const event of streamCommand(command, args, { cwd, timeoutMs })) {
-        if (event.type === "stdout" || event.type === "stderr") {
-          const line = event.line.trim();
-          if (!line) continue;
-          if (event.type === "stdout") stdout += `${line}\n`;
-          else stderr += `${line}\n`;
-          log.push(line);
-          heartbeat.onLine(line);
-        } else {
-          exitCode = event.exitCode;
-        }
-      }
-      log.push(`exit ${exitCode ?? "unknown"}`);
-      return { exitCode, stdout, stderr };
-    } finally {
-      if (timer) clearInterval(timer);
-    }
-  }
 
   private async checkCommand(
     id: string,
@@ -1203,495 +401,69 @@ export class SetupService {
     };
   }
 
-  private async checkWinget(): Promise<SetupCheck> {
-    if (process.platform !== "win32") {
-      return {
-        id: "winget",
-        label: "Windows 包管理器",
-        status: "ok",
-        message: "当前不是 Windows 打包环境，跳过 winget 检测。",
-        description: "winget 仅用于 Windows 客户端的一键安装 Git/Python。",
-        blocking: false,
-      };
+  private async checkEnabledConnectorDependencies(config: RuntimeConfig, probe?: RuntimeProbeResult): Promise<SetupCheck[]> {
+    if (config.extensionSettings?.connectorsEnabled !== true) return [];
+    const raw = await fs.readFile(path.join(this.appPaths.baseDir(), "connectors-config.json"), "utf8").catch(() => undefined);
+    if (!raw) return [];
+    let stored: { platforms?: Record<string, { enabled?: boolean; instances?: Record<string, { enabled?: boolean }> }> };
+    try { stored = JSON.parse(raw) as typeof stored; } catch {
+      return [{ id: "connectors-config", label: "连接器配置", status: "warning", message: "连接器配置无法解析，请检查连接器设置。", blocking: false }];
     }
-
-    const result = await runCommand("winget", ["--version"], { cwd: process.cwd(), timeoutMs: 8000 });
-    const ok = result.exitCode === 0;
-    return {
-      id: "winget",
-      label: "Windows 包管理器",
-      status: ok ? "ok" : "warning",
-      message: ok
-        ? (result.stdout || result.stderr).trim() || "winget 可用。"
-        : `winget 检测失败：${result.stderr || result.stdout || "系统未返回详细信息"}`,
-      description: "Git/Python 的一键修复依赖 winget；没有 winget 时仍可手动安装依赖。",
-      recommendedAction: ok ? undefined : "请在 Microsoft Store 更新“应用安装程序”，或手动安装 Git/Python。",
-      blocking: false,
-    };
-  }
-
-  private async checkPythonPackageWithRuntime(
-    probe: RuntimeProbeResult | undefined,
-    id: string,
-    label: string,
-    moduleName: string,
-    packageName: string,
-    options: Partial<Pick<SetupCheck, "description" | "recommendedAction" | "fixAction" | "autoFixId" | "blocking">> = {},
-  ): Promise<SetupCheck> {
-    if (!probe) {
-      // Legacy fallback: kept for short-term compatibility in tests and non-wired construction paths.
-      return this.checkPythonPackage(id, label, moduleName, packageName, options);
+    const specs: Array<[string, string, string, string, SetupDependencyRepairId]> = [
+      ["weixin", "微信", "aiohttp", "aiohttp", "weixin_aiohttp"],
+      ["feishu", "飞书", "lark_oapi", "lark-oapi", "feishu_lark_oapi"],
+      ["telegram", "Telegram", "telegram", "python-telegram-bot", "telegram_bot"],
+      ["discord", "Discord", "discord", "discord.py", "discord_py"],
+      ["slack", "Slack", "slack_bolt", "slack-bolt", "slack_bolt"],
+    ];
+    const checks: SetupCheck[] = [];
+    for (const [platform, label, module, pkg, repair] of specs) {
+      const settings = stored.platforms?.[platform];
+      if (!settings || settings.enabled === false) continue;
+      if (settings.instances && !Object.values(settings.instances).some((instance) => instance.enabled !== false)) continue;
+      checks.push(await this.checkHermesPythonPackageWithRuntime(probe, `connector-${platform}`, `${label} 连接依赖`, module, pkg, {
+        autoFixId: repair, fixAction: "install_hermes_dependency", blocking: false,
+        recommendedAction: "点击修复连接器依赖，按当前 Hermes 锁文件同步受管环境。",
+      }));
     }
-    const script = `import ${moduleName}; print("${packageName} ok")`;
-    const command = probe.commands.python.command;
-    const args = [...(probe.commands.python.args ?? []), "-c", script];
-    if (!command) {
-      return {
-        id,
-        label,
-        status: "warning",
-        message: `${label} 无法检测：runtime 未解析出 Python 命令。`,
-        description: options.description ?? "该依赖检测复用统一 RuntimeProbe 的 Python 解释器结论。",
-        recommendedAction: options.recommendedAction ?? "请先修复当前 runtime 的 Python 配置。",
-        fixAction: options.fixAction,
-        blocking: options.blocking ?? false,
-      };
-    }
-    const result = await runCommand(command, args, {
-      cwd: process.cwd(),
-      timeoutMs: 10_000,
-      env: {
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        NO_COLOR: "1",
-      },
-      commandId: `setup.package.${id}`,
-      runtimeKind: probe.runtimeMode,
-    });
-    const ok = result.exitCode === 0;
-    return {
-      id,
-      label,
-      status: ok ? "ok" : "warning",
-      message: ok
-        ? (result.stdout || result.stderr).trim() || `${label} 可用。`
-        : `${label} 缺失或不可用：${result.stderr || result.stdout || "Python 无法导入该模块"}`,
-      description: options.description ?? "微信二维码登录与本地网关的部分异步 HTTP 能力依赖该 Python 包。",
-      recommendedAction: ok ? undefined : options.recommendedAction ?? `点击修复依赖，或手动执行 ${probe.commands.python.label ?? "python"} -m pip install ${packageName}。`,
-      fixAction: ok ? undefined : options.fixAction ?? "install_weixin_dependency",
-      canAutoFix: ok ? undefined : true,
-      autoFixId: ok ? undefined : options.autoFixId ?? "weixin_aiohttp",
-      blocking: options.blocking ?? false,
-    };
+    return checks;
   }
 
   private async checkHermesPythonPackageWithRuntime(
-    probe: RuntimeProbeResult | undefined,
-    id: string,
-    label: string,
-    moduleName: string,
-    packageName: string,
+    _probe: RuntimeProbeResult | undefined,
+    id: string, label: string, moduleName: string, packageName: string,
     options: Partial<Pick<SetupCheck, "description" | "recommendedAction" | "fixAction" | "autoFixId" | "blocking">> = {},
   ): Promise<SetupCheck> {
-    if (probe?.runtimeMode === "wsl") {
-      return {
-        id,
-        label,
-        status: "ok",
-        message: "WSL Hermes 依赖由 Hermes venv 与 capabilities health check 验证，跳过系统 python3 包检测。",
-        description: "避免把 WSL 系统 Python 缺包误判为 Hermes venv 缺包；真实 Hermes 依赖问题会在 capabilities / Gateway 检查中显示。",
-        blocking: false,
-      };
-    }
     const rootPath = await this.configStore.getEnginePath("hermes").catch(() => undefined);
-    if (rootPath?.trim()) {
-      const venvCandidates = process.platform === "win32"
-        ? [
-            path.join(rootPath, ".venv", "Scripts", "python.exe"),
-            path.join(rootPath, "venv", "Scripts", "python.exe"),
-          ]
-        : [
-            path.join(rootPath, ".venv", "bin", "python"),
-            path.join(rootPath, "venv", "bin", "python"),
-          ];
-      let venvFailure = "";
-      for (const command of venvCandidates) {
-        if (!(await this.exists(command))) continue;
-        const script = `import ${moduleName}; print("${packageName} ok")`;
-        const result = await runCommand(command, ["-c", script], {
-          cwd: rootPath,
-          timeoutMs: 10_000,
-          env: {
-            PYTHONUTF8: "1",
-            PYTHONIOENCODING: "utf-8",
-            PYTHONPATH: `${rootPath}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-            NO_COLOR: "1",
-          },
-          commandId: `setup.package.${id}.venv`,
-          runtimeKind: probe?.runtimeMode ?? "windows",
-        });
-        if (result.exitCode === 0) {
-          return {
-            id,
-            label,
-            status: "ok",
-            message: (result.stdout || result.stderr).trim() || `${label} 可用。`,
-            description: options.description ?? "该依赖检测优先使用 Hermes 自带 venv，和真实任务运行环境保持一致。",
-            blocking: false,
-          };
-        }
-        venvFailure = result.stderr || result.stdout || `${command} 无法导入 ${moduleName}`;
-      }
-      if (venvFailure) {
-        return {
-          id,
-          label,
-          status: "warning",
-          message: `${label} 缺失或不可用：${venvFailure}`,
-          description: options.description ?? "Hermes 自带 venv 缺少运行依赖，真实任务可能无法启动。",
-          recommendedAction: options.recommendedAction ?? `点击修复 Hermes 依赖，或在 Hermes venv 中执行 python -m pip install ${packageName}。`,
-          fixAction: options.fixAction,
-          canAutoFix: true,
-          autoFixId: options.autoFixId,
-          blocking: options.blocking ?? false,
-        };
-      }
-    }
-    return this.checkPythonPackageWithRuntime(probe, id, label, moduleName, packageName, options);
-  }
-
-  private async checkPythonPackage(
-    id: string,
-    label: string,
-    moduleName: string,
-    packageName: string,
-    options: Partial<Pick<SetupCheck, "description" | "recommendedAction" | "fixAction" | "autoFixId" | "blocking">> = {},
-  ): Promise<SetupCheck> {
-    const script = `import ${moduleName}; print("${packageName} ok")`;
-    const result = await runCommand("python", ["-c", script], {
-      cwd: process.cwd(),
-      timeoutMs: 10_000,
-      env: {
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        NO_COLOR: "1",
-      },
-    });
-    const ok = result.exitCode === 0;
+    const environment = rootPath ? await resolveManagedHermesEnvironment(rootPath) : undefined;
+    const result = environment ? await runCommand(environment.pythonPath, ["-c", `import ${moduleName}; print("${packageName} ok")`], {
+      cwd: environment.rootPath, timeoutMs: 15_000,
+      env: managedHermesEnvironmentEnv(environment, { NO_COLOR: "1" }),
+      commandId: `setup.package.${id}.venv`,
+    }) : undefined;
+    const ok = result?.exitCode === 0;
     return {
-      id,
-      label,
-      status: ok ? "ok" : "warning",
-      message: ok
-        ? (result.stdout || result.stderr).trim() || `${label} 可用。`
-        : `${label} 缺失或不可用：${result.stderr || result.stdout || "Python 无法导入该模块"}`,
-      description: options.description ?? "微信二维码登录与本地网关的部分异步 HTTP 能力依赖该 Python 包。",
-      recommendedAction: ok ? undefined : options.recommendedAction ?? `点击修复微信依赖，或手动执行 python -m pip install ${packageName}。`,
-      fixAction: ok ? undefined : options.fixAction ?? "install_weixin_dependency",
-      canAutoFix: ok ? undefined : true,
-      autoFixId: ok ? undefined : options.autoFixId ?? "weixin_aiohttp",
+      id, label, status: ok ? "ok" : options.blocking === true ? "missing" : "warning",
+      message: ok ? `${label} 可用。` : `${label} 不可用：${environment ? result?.stderr || result?.stdout || "导入失败" : "Hermes 受管环境缺失"}`,
+      description: options.description ?? "使用实际 Hermes 运行环境检测依赖。",
+      recommendedAction: ok ? undefined : "点击修复 Hermes 依赖，按官方锁文件同步受管环境。",
+      fixAction: ok ? undefined : options.fixAction,
+      canAutoFix: ok ? undefined : true, autoFixId: ok ? undefined : options.autoFixId,
       blocking: options.blocking ?? false,
     };
   }
 
-  private async inspectTargetDirectory(rootPath: string, log: string[]) {
-    try {
-      const entries = await fs.readdir(rootPath);
-      const hasHermesCli = await this.exists(path.join(rootPath, "hermes"));
-      const marker = await this.exists(path.join(rootPath, ".zhenghebao-managed-install.json"));
-      const recoverableSignals = [
-        ".git",
-        ".zhenghebao-managed-install.json",
-        "pyproject.toml",
-        "requirements.txt",
-        "README.md",
-      ];
-      const recoverable = entries.some((entry) => recoverableSignals.includes(entry));
-      return {
-        exists: true,
-        isEmpty: entries.length === 0,
-        hasHermesCli,
-        recoverable: marker || recoverable,
-      };
-    } catch (error) {
-      const code = this.errorCode(error);
-      if (code === "ENOENT") {
-        return { exists: false, isEmpty: true, hasHermesCli: false, recoverable: false };
-      }
-      throw new Error(`无法访问安装目录 ${rootPath}：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  private async assertWritableDirectory(targetPath: string, label: string, log: string[]) {
-    try {
-      await fs.mkdir(targetPath, { recursive: true });
-      const probe = path.join(targetPath, `.zhenghebao-install-probe-${Date.now()}`);
-      await fs.writeFile(probe, "ok", "utf8");
-      await fs.unlink(probe);
-      log.push(`${label} 可写：${targetPath}`);
-    } catch (error) {
-      throw new Error(`${label} 不可写：${targetPath}。${error instanceof Error ? error.message : "未知错误"}`);
-    }
-  }
-
-  private async checkInstalledHermes(rootPath: string, log: string[], preferredPython?: PythonLauncher) {
-    const cliPath = path.join(rootPath, "hermes");
-    if (!(await this.exists(cliPath))) {
-      return { available: false, message: `未找到 Hermes CLI，请检查安装路径。` };
-    }
-
-    const candidates: Array<{ command: string; args: string[] }> = [
-      ...(preferredPython ? [{ command: preferredPython.command, args: [...preferredPython.argsPrefix, cliPath, "--version"] }] : []),
-      { command: "python", args: [cliPath, "--version"] },
-      { command: "py", args: ["-3", cliPath, "--version"] },
-    ];
-    let lastMessage = "未找到可用 Python 解释器。";
-    for (const candidate of candidates) {
-      const result = await runCommand(candidate.command, candidate.args, {
-        cwd: rootPath,
-        timeoutMs: 20_000,
-        env: {
-          PYTHONUTF8: "1",
-          PYTHONIOENCODING: "utf-8",
-          PYTHONPATH: `${rootPath}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-          NO_COLOR: "1",
-        },
-      });
-      const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-      log.push(`Install health via ${candidate.command}: ${output || `exit ${result.exitCode ?? "unknown"}`}`);
-      if (result.exitCode === 0 && output.length > 0) {
-        return { available: true, message: output || "Hermes CLI 可启动。" };
-      }
-      lastMessage = output || (
-        result.exitCode === 0
-          ? `启动成功但没有返回版本信息，可能只是残留占位文件。`
-          : `启动失败，退出码 ${result.exitCode ?? "unknown"}`
-      );
-    }
-    return { available: false, message: lastMessage };
-  }
-
-  private async writeManagedMarker(rootPath: string, repoUrl: string) {
-    const markerPath = path.join(rootPath, ".zhenghebao-managed-install.json");
-    await fs.writeFile(markerPath, JSON.stringify({
-      source: "zhenghebao",
-      repoUrl,
-      installedAt: new Date().toISOString(),
-    }, null, 2), "utf8");
-  }
-
-  private async writeInstallLog(logDir: string, logPath: string, message: string, log: string[]) {
-    try {
-      await fs.mkdir(logDir, { recursive: true });
-      await fs.writeFile(logPath, [message, "", ...log].join("\n"), "utf8");
-    } catch {
-      // 日志写入失败不应吞掉主流程结果
-    }
-  }
-
-  private async cleanupDirectory(targetPath: string, log: string[]) {
-    try {
-      await fs.rm(targetPath, { recursive: true, force: true });
-      log.push(`Cleaned up ${targetPath}`);
-    } catch (error) {
-      log.push(`Failed to clean up ${targetPath}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  private defaultInstallRoot() {
-    if (process.platform === "win32") {
-      return path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"), "hermes", "hermes-agent");
-    }
-    return path.join(os.homedir(), "Hermes Agent");
-  }
-
-  private samePath(left: string, right: string) {
-    return path.resolve(left).replace(/[\\/]+$/, "").toLowerCase() === path.resolve(right).replace(/[\\/]+$/, "").toLowerCase();
-  }
-
-  private errorCode(error: unknown) {
-    return typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
-  }
-
-  private async exists(targetPath: string) {
-    try {
-      await fs.access(targetPath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   async checkHermesAgentCompatibility(report?: HermesCompatibilityReport): Promise<SetupCheck> {
-    const compatibility = report ?? await this.hermesCompatibilityService?.inspect().catch(() => undefined);
-    if (compatibility) {
-      if (!compatibility.installed) {
-        return {
-          id: "hermes-agent-compat",
-          label: "Hermes Agent 兼容性",
-          status: "missing",
-          message: compatibility.blockingIssues[0] ?? "Hermes Agent 未安装或不可启动。",
-          description: "Windows Native Hermes 是默认运行环境；未安装时无法可靠执行真实任务。",
-          recommendedAction: "点击一键修复，程序会使用当前选择的 Windows 安装来源安装 Hermes。",
-          fixAction: "install_hermes",
-          blocking: true,
-        };
-      }
-      if (!compatibility.forgeTaskReady) {
-        return {
-          id: "hermes-agent-compat",
-          label: "Hermes Agent 兼容性",
-          status: "missing",
-          message: compatibility.blockingIssues[0] ?? "Hermes Agent 缺少 Forge 任务所需能力。",
-          description: "Forge 需要 Hermes Agent 提供 run_conversation 与基础模型初始化参数。",
-          recommendedAction: "点击一键修复，程序会重装或修复 Windows Hermes Agent。",
-          fixAction: "install_hermes",
-          blocking: true,
-        };
-      }
-      if (!compatibility.enhancedCapabilities.supported || compatibility.venvStatus === "missing") {
-        return {
-          id: "hermes-agent-compat",
-          label: "Hermes Agent 兼容性",
-          status: "warning",
-          message: [
-            `Hermes Agent ${compatibility.version ?? ""} 可用于 Forge 任务。`,
-            compatibility.enhancedCapabilities.supported ? "" : "官方版本未提供增强 capabilities；会话元数据将使用兼容模式。",
-            compatibility.venvStatus === "missing" ? "未检测到 venv，建议一键修复补齐。" : "",
-          ].filter(Boolean).join(" "),
-          description: "官方 Windows Hermes 可运行时不再因 capabilities --json 缺失被判为安装损坏；缺失项作为增强能力 warning 展示。",
-          recommendedAction: compatibility.venvStatus === "missing"
-            ? "可以先使用；建议运行一键修复补齐 venv 和可自动修复项。"
-            : "可以正常使用；增强 capabilities 缺失不影响基础对话、模型、Skills 与连接器。",
-          fixAction: "update_hermes",
-          blocking: false,
-        };
-      }
-      return {
-        id: "hermes-agent-compat",
-        label: "Hermes Agent 兼容性",
-        status: "ok",
-        message: `Hermes Agent ${compatibility.version ?? ""} 已满足 Forge Windows Native 运行要求。`,
-        blocking: false,
-      };
-    }
-
-    const config = await this.configStore.read();
-    const runtimeMode = config.hermesRuntime?.mode ?? "windows";
-    if (runtimeMode === "wsl") {
-      return {
-        id: "hermes-agent-compat",
-        label: "Hermes Agent 兼容性",
-        status: "ok",
-        message: "WSL 模式由安装器管理兼容性。",
-        blocking: false,
-      };
-    }
-
-    const hermesRoot = await this.configStore.getEnginePath("hermes");
-    if (!hermesRoot || !(await this.exists(hermesRoot))) {
-      return {
-        id: "hermes-agent-compat",
-        label: "Hermes Agent 兼容性",
-        status: "ok",
-        message: "未检测到 Hermes 安装，跳过兼容性检查。",
-        blocking: false,
-      };
-    }
-
-    const health = await this.hermes.healthCheck().catch((error) => ({
-      available: false,
-      message: "健康检查失败，请检查 Hermes 安装状态。"
-    }));
-    if (!health.available) {
-      return {
-        id: "hermes-agent-compat",
-        label: "Hermes Agent 兼容性",
-        status: "missing",
-        message: `Hermes Agent 安装不完整或不可启动：${health.message}`,
-        description: "兼容性检查需要先有可执行的 Windows Hermes CLI；当前目录可能是旧残留、占位文件或未完成安装。",
-        recommendedAction: "点击一键修复，程序会隔离残留目录并重跑当前选择的 Windows 安装来源。",
-        fixAction: "install_hermes",
-        blocking: true,
-      };
-    }
-
-    const script = `
-import json, sys, inspect
-sys.path.insert(0, r"""${hermesRoot}""")
-try:
-    from run_agent import AIAgent
-    sig = inspect.signature(AIAgent.__init__)
-    params = set(sig.parameters.keys())
-    required = {"base_url", "api_key", "provider", "model", "max_iterations"}
-    recommended = {"skip_context_files", "quiet_mode", "session_id", "platform", "ephemeral_system_prompt"}
-    missing = sorted(required - params)
-    missing_recommended = sorted(recommended - params)
-    has_run_conversation = hasattr(AIAgent, "run_conversation") and callable(getattr(AIAgent, "run_conversation", None))
-    print(json.dumps({
-        "compatible": len(missing) == 0 and has_run_conversation,
-        "missing": missing,
-        "missing_recommended": missing_recommended,
-        "has_run_conversation": has_run_conversation
-    }))
-except Exception as e:
-    print(json.dumps({"compatible": False, "error": str(e)}))
-`;
-    const result = await runCommand("python", ["-c", script], {
-      cwd: hermesRoot,
-      env: {
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        PYTHONPATH: `${hermesRoot}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-        NO_COLOR: "1",
-      },
-      timeoutMs: 15_000,
-    });
-
-    let parsed: { compatible: boolean; missing?: string[]; has_run_conversation?: boolean; error?: string } | undefined;
-    try {
-      const line = result.stdout.trim().split("\\n").filter(Boolean).pop() ?? "";
-      parsed = JSON.parse(line) as typeof parsed;
-    } catch {
-      parsed = undefined;
-    }
-
-    const compatible = parsed?.compatible ?? false;
-    const hasRunConversation = parsed?.has_run_conversation ?? false;
-    const missing = parsed?.missing ?? [];
-
-    if (!hasRunConversation) {
-      return {
-        id: "hermes-agent-compat",
-        label: "Hermes Agent 兼容性",
-        status: "missing",
-        message: `当前 Hermes Agent 缺少 v0.2.0 所需的关键能力：AIAgent.run_conversation 不存在。`,
-        description: "Forge 需要 Hermes Agent 支持 run_conversation 方法；缺失时无法稳定启动任务。",
-        recommendedAction: "请更新 Hermes Agent 到最新版本。",
-        fixAction: "update_hermes",
-        blocking: true,
-      };
-    }
-
-    if (!compatible && missing.length > 0) {
-      return {
-        id: "hermes-agent-compat",
-        label: "Hermes Agent 兼容性",
-        status: "warning",
-        message: `Hermes Agent 可以运行，但缺少 v0.2.0 推荐参数：${missing.join("、")}。`,
-        description: "Forge v0.2.0 重构后依赖这些参数实现最佳体验（如 Hermes 自主管理记忆、流式事件等）。",
-        recommendedAction: "可以正常使用；等待官方版本提供增强能力后可获得完整体验。",
-        fixAction: "update_hermes",
-        blocking: false,
-      };
-    }
-
+    const compatibility = report ?? await (this.hermesCompatibilityService
+      ?? new HermesCompatibilityService(this.configStore, () => resolveActiveHermesHome(this.appPaths.hermesDir()))).inspect();
+    const ready = compatibility.installed && compatibility.forgeTaskReady;
     return {
-      id: "hermes-agent-compat",
-      label: "Hermes Agent 兼容性",
-      status: "ok",
-      message: "Hermes Agent 与 Forge v0.2.0 完全兼容。",
-      blocking: false,
+      id: "hermes-agent-compat", label: "Hermes Agent 兼容性",
+      status: ready ? "ok" : "missing",
+      message: ready ? `Hermes ${compatibility.version ?? ""} 满足任务运行接口要求。` : compatibility.blockingIssues[0] ?? "Hermes 尚未就绪。",
+      description: "核验官方 Agent、流式回调、审批和会话接口。",
+      recommendedAction: ready ? undefined : "点击更新或修复 Hermes，完成后重新检测。",
+      fixAction: ready ? undefined : "update_hermes", blocking: !ready,
     };
   }
 }

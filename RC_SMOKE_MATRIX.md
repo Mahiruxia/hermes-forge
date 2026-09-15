@@ -1,57 +1,25 @@
 # Hermes Forge RC Smoke Matrix
 
-This matrix is the release-candidate gate for the WSL main path after session, metadata, capability negotiation, permission overview, and front-end overview unification.
+当前主路径为 Windows 原生；macOS 使用原生策略，WSL 只用于迁移。
 
-## Matrix
+| 项目 | 通过标准 | 验证方法 |
+| --- | --- | --- |
+| 固定版本升级 | 来源、SHA、包版本、能力同时匹配 | 本机升级 + 独立契约探针 |
+| 重复升级 | 同一环境、依赖无变更 | 实际 NativeInstallStrategy.update + locked sync dry-run |
+| 离线与中断恢复 | 明确失败阶段，不误报完成，可重试 | 安装器回归测试 |
+| 维护锁 | 活跃任务与启动预检期间不能升级；维护期间不能开始任务/Gateway | TaskRunner 和安装器测试 |
+| 最终状态 | 成功、失败、取消只产生一次终态 | 真实子进程测试 |
+| 取消 | 原进程与子进程五秒内退出 | 进程取消测试与实际契约 |
+| 官方审批 | 拒绝、超时、取消不继续执行；不支持的授权范围被拒绝 | 回调 + IPC + Renderer 测试 |
+| 官方澄清 | ID 匹配、单次消费、回答后原任务继续 | 真实 JSONL 子进程和服务测试 |
+| 配置并发 | 模型和连接器修改不互相覆盖，未知字段保留 | 并发真实文件测试 |
+| 清空与导出 | 清空后不恢复旧上下文；导出包含当前官方消息 | SessionDB 合同 + 会话测试 |
+| 会话隔离 | 清理不触碰同工作区的其他会话日志/快照 | 精确所有权回归测试 |
+| 实际模型 | 聊天、附件和工具执行成功 | 已配置模型系统审计 |
+| 模型切换与恢复 | 新进程只凭官方会话 ID 恢复随机口令；另一模型实际运行 | HERMES_FORGE_RELEASE_AUDIT=1 + --system-audit |
+| 离线安装包 | 真实窗口/preload/IPC/SQL WASM 正常，无外网和额外进程 | --smoke-test |
+| 五分钟空闲 | 关闭扩展后没有状态轮询启动 Hermes/Python | 延长 smoke 实测 |
+| 消息平台 | 实际接收/发送、重连和实例隔离 | 需单独授权的真实账号联调 |
+| macOS | 原生构建和打包后同样离线冒烟 | macOS CI/真机；Windows 模拟不替代 |
 
-| ID | Combination | Expected Result | Gate |
-| --- | --- | --- | --- |
-| M1 | `WSL + bridge_guarded + guarded` | Runnable, `native-arg-env`, green preflight | P0 |
-| M2 | `WSL + passthrough + guarded` | Runnable, yellow preflight, no blocked mismatch | P1 |
-| M3 | `WSL + bridge_guarded + yolo` | Runnable, yellow preflight, command risk shown as user-facing "命令自动放行"; raw `yolo` only in technical details | P1 |
-| M4 | `WSL + restricted_workspace` | Blocked everywhere with `policy_not_enforceable` | P0 |
-| M5 | `CLI capability below minimum gate` | Blocked everywhere with capability-based block reason | P0 |
-| M6 | `Bridge disabled / capability not reported` | Bridge panel shows "backend did not report capability" or disabled state consistently | P1 |
-| M7 | `sessionMode = fresh / resumed / degraded` | Settings, preflight strip, agent panel, and diagnostics keep the same session mode semantics | P1 |
-
-## Consistency Targets
-
-Every matrix row should keep these surfaces aligned:
-
-- `SettingsPanel`
-- `ChatInput` preflight strip
-- `AgentRunPanel`
-- task diagnostics / exported diagnostics
-
-Default UI copy should describe the user impact first. Raw fields such as `transport`, `capabilityProbe`, `permissionPolicy`, and `cliPermissionMode` should stay available only in technical details or exported diagnostics.
-
-## Release Gate
-
-### P0 blockers
-
-- Any blocked state differs across the four surfaces.
-- WSL main path runs without `native-arg-env`.
-- `restricted_workspace` does not block.
-- Capability gate failure does not block.
-- Diagnostics export misses `permissionOverview`, `capabilityProbe`, `taskDiagnostics`, or `sessionMappings`.
-
-### P1 warnings
-
-- `passthrough` / `yolo` risk strip tone differs from overview.
-- Bridge capability display is inconsistent when backend reports no capabilities.
-- `sessionMode = degraded` is not clearly shown.
-
-## Diagnostic Bundle Minimum
-
-The RC diagnostic bundle must include or embed:
-
-- `runtimeConfigSummary`
-- `runtimeConfig`
-- `permissionOverview`
-- `probes`
-- `runtimeProbe`
-- `wslDoctor`
-- `lastInstallReport`
-- `taskDiagnostics`
-- `sessionMappings`
-- `recentEvents`
+每次验收按事实填写 [验收记录](VALIDATION_0.2.31.md)。模拟通过、Windows 本机通过和 macOS 实机通过分开记录。

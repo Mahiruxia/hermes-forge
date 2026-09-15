@@ -1,9 +1,93 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { extractInlineImagePaths, mimeTypeForImagePath, resolveHermesConversationIdForRuntime, resolveInlineFileAttachments, resolveInlineImageAttachments } from "./task-runner";
-import type { SessionAttachment } from "../shared/types";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { TaskRunner, extractInlineImagePaths, mimeTypeForImagePath, resolveHermesConversationIdForRuntime, resolveInlineFileAttachments, resolveInlineImageAttachments } from "./task-runner";
+import type { EngineEvent, EngineRunRequest, SessionAttachment, StartTaskInput, TaskEventEnvelope } from "../shared/types";
+
+function runnerFor(run: () => AsyncIterable<EngineEvent>) {
+  const events: EngineEvent[] = [];
+  const release = vi.fn();
+  const recordTaskTerminal = vi.fn(async () => undefined);
+  const runner = new TaskRunner(
+    undefined as never, { release } as never, undefined as never, undefined as never, undefined as never,
+    { run } as never,
+    { redact: (envelope: TaskEventEnvelope) => envelope, append: async (_workspace: string, envelope: TaskEventEnvelope) => { events.push(envelope.event); } } as never,
+    { recordTaskTerminal } as never, () => undefined,
+  );
+  const controller = new AbortController();
+  const internal = runner as unknown as {
+    running: Map<string, AbortController>; runSessions: Map<string, string>;
+    consumeRun(request: EngineRunRequest, controller: AbortController, workSessionId: string): Promise<void>;
+  };
+  internal.running.set("task-1", controller);
+  internal.runSessions.set("task-1", "chat-1");
+  return { runner, events, release, recordTaskTerminal, controller, consume: () => internal.consumeRun({ sessionId: "task-1", workspaceId: "workspace-1" } as EngineRunRequest, controller, "chat-1") };
+}
+
+describe("task-runner terminal lifecycle", () => {
+  const at = "2026-09-15T06:00:00Z";
+  it("counts preflight as active and prevents a cancelled startup from launching", async () => {
+    let finishLayout!: (workspaceId: string) => void;
+    const layout = new Promise<string>((resolve) => { finishLayout = resolve; });
+    const assertCanStart = vi.fn();
+    const run = vi.fn();
+    const runner = new TaskRunner({ ensureWorkspaceLayout: () => layout } as never,
+      undefined as never, undefined as never, { assertCanStart } as never, undefined as never,
+      { run } as never, undefined as never, undefined as never, () => undefined);
+    const pending = runner.start({ clientTaskId: "preflight-task", sessionId: "chat-1", sessionFilesPath: "D:/session" } as StartTaskInput);
+    expect(runner.listRunningSessionIds()).toContain("preflight-task");
+    expect(runner.isWorkSessionRunning("chat-1")).toBe(true);
+    expect(await runner.cancel("preflight-task")).toBe(true);
+    finishLayout("workspace-1");
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(assertCanStart).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(runner.listRunningSessionIds()).toEqual([]);
+  });
+
+  it("keeps an adapter failure failed after normal generator completion", async () => {
+    const fixture = runnerFor(async function* () {
+      yield { type: "result", success: false, outcome: "failed", title: "Failed", detail: "Provider failed", at };
+      yield { type: "lifecycle", stage: "completed", message: "Late adapter completion", at };
+    });
+    await fixture.consume();
+    expect(fixture.events.filter((event) => event.type === "lifecycle").at(-1)).toMatchObject({ stage: "failed" });
+    expect(fixture.recordTaskTerminal).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+    expect(fixture.release).toHaveBeenCalledWith("workspace-1", "task-1");
+    expect(fixture.runner.isWorkSessionRunning("chat-1")).toBe(false);
+  });
+
+  it("treats a stream with no official result as failure", async () => {
+    const fixture = runnerFor(async function* () { yield { type: "status", level: "info", message: "started", at }; });
+    await fixture.consume();
+    expect(fixture.events.filter((event) => event.type === "result")).toEqual([expect.objectContaining({ success: false, outcome: "failed" })]);
+    expect(fixture.recordTaskTerminal).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+  });
+
+  it("keeps the workspace occupied until cancelled process cleanup finishes", async () => {
+    let finish!: () => void;
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const fixture = runnerFor(async function* () {
+      started();
+      await gate;
+      yield { type: "result", success: true, title: "Done", detail: "Late result", at };
+    });
+    const complete = fixture.consume();
+    await ready;
+    expect(await fixture.runner.cancel("task-1")).toBe(true);
+    expect(fixture.runner.isRunning("task-1")).toBe(true);
+    expect(fixture.runner.isWorkSessionRunning("chat-1")).toBe(true);
+    expect(fixture.release).not.toHaveBeenCalled();
+    finish();
+    await complete;
+    expect(fixture.events.filter((event) => event.type === "result").at(-1)).toMatchObject({ outcome: "cancelled", success: false });
+    expect(fixture.release).toHaveBeenCalledOnce();
+    expect(fixture.runner.isRunning("task-1")).toBe(false);
+  });
+});
 
 const tempDirs: string[] = [];
 
@@ -31,6 +115,17 @@ describe("task-runner inline image paths", () => {
 
     expect(conversationId).toMatch(/^session-1-model-[a-f0-9]{10}$/);
     expect(conversationId).not.toBe("hermes-session-1");
+  });
+
+  it("does not restore a previous model session after the conversation was cleared", () => {
+    const runtimeEnv = { profileId: "next", provider: "custom" as const, model: "model-b" };
+    const before = resolveHermesConversationIdForRuntime({
+      workSessionId: "session-1", workSession: { hermesSessionId: "before-clear", model: "model-a" }, runtimeEnv,
+    });
+    const after = resolveHermesConversationIdForRuntime({
+      workSessionId: "session-1", workSession: { hermesSessionId: "after-clear", model: "model-a" }, runtimeEnv,
+    });
+    expect(after).not.toBe(before);
   });
 
   it("extracts quoted Windows image paths without treating plain text as attachments", () => {

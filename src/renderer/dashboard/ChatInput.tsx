@@ -12,7 +12,7 @@ import { cn } from "./DashboardPrimitives";
 import { buildPreflightState, preflightChipsForUser, preflightDetailForUser, preflightSummaryForUser } from "./permissionModel";
 
 type FixTarget = "model" | "hermes" | "health" | "diagnostics" | "workspace";
-const STATE_CHANGING_LOCAL_COMMANDS = new Set(["/clear", "/compact", "/model", "/new", "/theme", "/usage", "/workspace"]);
+const STATE_CHANGING_LOCAL_COMMANDS = new Set(["/clear", "/model", "/new", "/theme", "/usage", "/workspace"]);
 
 export function ChatInput(props: {
   onStartTask: () => void;
@@ -339,7 +339,7 @@ export function ChatInput(props: {
 
   function handleSubmit() {
     const trimmedInput = store.userInput.trim();
-    if (trimmedInput.startsWith("/") && !isNativeHermesSlashCommand(trimmedInput)) {
+    if (trimmedInput.startsWith("/")) {
       void dispatchSlashCommand(trimmedInput);
       return;
     }
@@ -503,7 +503,7 @@ export function ChatInput(props: {
   const commandQuery = store.userInput.startsWith("/") ? store.userInput.trim().toLowerCase() : "";
   const commands = useMemo(() => {
     if (!commandQuery) return [];
-    return (store.webUiOverview?.slashCommands ?? []).filter((command) => command.name.toLowerCase().startsWith(commandQuery)).slice(0, 8);
+    return (store.webUiOverview?.slashCommands ?? []).filter((command) => !["/goal", "/compact"].includes(command.name.toLowerCase()) && command.name.toLowerCase().startsWith(commandQuery)).slice(0, 8);
   }, [commandQuery, store.webUiOverview?.slashCommands]);
 
   async function dispatchSlashCommand(raw: string) {
@@ -520,7 +520,7 @@ export function ChatInput(props: {
       return;
     }
     if (normalizedName === "/help") {
-      store.upsertClarifyCard({ id: `slash-help-${store.activeSessionId ?? "local"}`, sessionId: store.activeSessionId, question: "可用命令：/help /goal /clear /compact /model /workspace /new /usage /theme。主题可选：green-light、light、slate、oled、default-large", status: "pending", createdAt: new Date().toISOString() });
+      store.upsertClarifyCard({ id: `slash-help-${store.activeSessionId ?? "local"}`, sessionId: store.activeSessionId, question: "可用命令：/help /clear /model /workspace /new /usage /theme。主题可选：green-light、light、slate、oled、default-large", status: "pending", createdAt: new Date().toISOString() });
       store.setUserInput("");
       return;
     }
@@ -582,37 +582,6 @@ export function ChatInput(props: {
         store.warning("模型不存在", `未找到模型 "${arg}"。可用模型：${availableModels || "无"}`);
       }
       store.setUserInput("");
-      return;
-    }
-    if (normalizedName === "/goal") {
-      if (!arg) {
-        store.setUserInput("/goal ");
-      }
-      return;
-    }
-    if (normalizedName === "/compact") {
-      const sessionMessages = compactableMessagesFromProjections(
-        store.activeSessionId,
-        store.taskRunProjectionsById,
-        store.taskRunOrderBySession,
-      );
-      if (sessionMessages.length <= 2) {
-        store.info("无需压缩", "当前会话消息较少，无需压缩。");
-        store.setUserInput("");
-        return;
-      }
-      const compactedSummary = compactMessages(sessionMessages, arg);
-      store.pushSessionMessage({
-        id: `compact-${Date.now()}`,
-        sessionId: store.activeSessionId || "",
-        role: "system",
-        content: `上下文已压缩。${compactedSummary}`,
-        status: "complete",
-        createdAt: new Date().toISOString(),
-        visibleInChat: true,
-      });
-      store.setUserInput(arg ? `请基于压缩后的上下文继续，重点关注：${arg}` : "请基于压缩后的上下文继续对话。");
-      store.success("上下文已压缩", `保留了 ${sessionMessages.length} 条投影消息的关键信息`);
       return;
     }
     store.warning("未知命令", `未知命令：${name}`);
@@ -1442,29 +1411,6 @@ function contextTextFromMessages(
     .join("\n");
 }
 
-function compactableMessagesFromProjections(
-  activeSessionId: string | undefined,
-  projections: ReturnType<typeof useAppStore.getState>["taskRunProjectionsById"],
-  runOrder: ReturnType<typeof useAppStore.getState>["taskRunOrderBySession"],
-) {
-  const orderedRuns = activeSessionId && runOrder[activeSessionId]?.length
-    ? runOrder[activeSessionId].map((id) => projections[id])
-    : Object.values(projections).filter((projection) => !activeSessionId || projection.workSessionId === activeSessionId);
-  return orderedRuns
-    .filter((run): run is NonNullable<typeof run> => Boolean(run) && (!activeSessionId || run.workSessionId === activeSessionId))
-    .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
-    .flatMap((run) => {
-      const messages: Array<{ role: string; content: string }> = [];
-      if (run.userMessage?.content.trim()) {
-        messages.push({ role: "user", content: run.userMessage.content.trim() });
-      }
-      if (run.assistantMessage.content.trim()) {
-        messages.push({ role: "agent", content: run.assistantMessage.content.trim() });
-      }
-      return messages;
-    });
-}
-
 function estimateTokens(text: string) {
   return estimateTextTokens(text);
 }
@@ -1491,49 +1437,7 @@ function currentSessionPath(sessionFilesPath: string, activeSessionId?: string) 
   return sessionFilesPath || activeSessionId || "default";
 }
 
-function isNativeHermesSlashCommand(raw: string) {
-  return /^\/goal(?:\s|$)/i.test(raw);
-}
-
 function shortPath(value: string) {
   const parts = value.split(/[\\/]/).filter(Boolean);
   return parts.slice(-2).join("/") || value;
-}
-
-function compactMessages(messages: Array<{ role: string; content: string }>, focus?: string): string {
-  const userMessages = messages.filter((message) => message.role === "user");
-  const agentMessages = messages.filter((message) => message.role === "agent");
-
-  const userPoints: string[] = [];
-  for (const msg of userMessages) {
-    const trimmed = msg.content.trim();
-    if (trimmed.length > 0) {
-      const lines = trimmed.split(/\n/).filter((line) => line.trim()).slice(0, 2);
-      userPoints.push(...lines);
-    }
-  }
-
-  const agentActions: string[] = [];
-  for (const msg of agentMessages) {
-    const trimmed = msg.content.trim();
-    if (trimmed.length > 0) {
-      const lines = trimmed.split(/\n/).filter((line) => line.trim()).slice(0, 2);
-      agentActions.push(...lines);
-    }
-  }
-
-  const summaryParts: string[] = [];
-  if (userPoints.length > 0) {
-    const userSummary = userPoints.slice(-4).join(" ");
-    summaryParts.push(`用户需求：${userSummary.slice(0, 120)}${userSummary.length > 120 ? "..." : ""}`);
-  }
-  if (agentActions.length > 0) {
-    const agentSummary = agentActions.slice(-3).join(" ");
-    summaryParts.push(`已完成：${agentSummary.slice(0, 100)}${agentSummary.length > 100 ? "..." : ""}`);
-  }
-  if (focus) {
-    summaryParts.push(`重点关注：${focus}`);
-  }
-
-  return summaryParts.join("；");
 }

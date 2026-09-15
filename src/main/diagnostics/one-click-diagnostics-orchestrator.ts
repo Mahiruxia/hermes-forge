@@ -10,10 +10,11 @@ import type { HermesSystemAuditService } from "../hermes-system-audit-service";
 import type { DiagnosticsService } from "../../diagnostics/diagnostics-service";
 import type { WorkspaceLock } from "../../process/workspace-lock";
 import type { TaskRunner } from "../../process/task-runner";
-import type { HermesCompatibilityService } from "../../setup/hermes-compatibility-service";
+import { HermesCompatibilityService } from "../../setup/hermes-compatibility-service";
 import { runCommand } from "../../process/command-runner";
 import type { ResolvedHermesCli } from "../../runtime/hermes-cli-resolver";
-import { defaultWindowsHermesCliPath, isWindowsHermesExecutable, resolveWindowsHermesCliPath } from "../../runtime/hermes-cli-paths";
+import { resolveManagedHermesEnvironment, managedHermesEnvironmentEnv, type ManagedHermesEnvironment } from "../../runtime/managed-hermes-environment";
+import { findUvCommand, readConfiguredHermesExtras } from "../../install/hermes-maintenance";
 import { migrateRuntimeConfigModels } from "../../shared/model-config";
 import { redactSensitiveValue } from "../../shared/redaction";
 import type {
@@ -47,6 +48,38 @@ type ManagedInstallMarker = {
 };
 
 const STALE_LOCK_MIN_AGE_MS = 5000;
+
+export const MANAGED_DEPENDENCIES_PROBE = `
+import importlib, importlib.metadata, json, pathlib, sys, tomllib
+try:
+    from packaging.requirements import Requirement
+    project = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+    requirements = list(project.get("dependencies", []))
+    optional = project.get("optional-dependencies", {})
+    missing = []
+    for extra in json.loads(sys.argv[1]):
+        if extra not in optional:
+            missing.append("extra:" + extra)
+        requirements.extend(optional.get(extra, []))
+    for raw in requirements:
+        requirement = Requirement(raw)
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        try:
+            installed = importlib.metadata.version(requirement.name)
+            if requirement.specifier and not requirement.specifier.contains(installed, prereleases=True):
+                missing.append(str(requirement) + " (installed " + installed + ")")
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(requirement.name)
+    for module in ["yaml", "dotenv", "mcp", "hermes_logging"]:
+        try:
+            importlib.import_module(module)
+        except Exception as error:
+            missing.append(module + ": " + str(error))
+    print(json.dumps({"ok": not missing, "missing": missing}))
+except Exception as error:
+    print(json.dumps({"ok": False, "error": str(error)}))
+`;
 
 export class OneClickDiagnosticsOrchestrator {
   private lastReport?: OneClickDiagnosticsReport;
@@ -349,55 +382,17 @@ export class OneClickDiagnosticsOrchestrator {
   }
 
   private async checkWindowsToolchain(items: OneClickDiagnosticItem[], rootPath: string) {
-    this.setStage("hermes.toolchain", "正在检查 Hermes Windows 工具链...");
-    const hermesHome = path.dirname(rootPath);
-    const gitBashCandidates = [
-      process.env.HERMES_GIT_BASH_PATH,
-      path.join(hermesHome, "git", "bin", "bash.exe"),
-      path.join(hermesHome, "git", "usr", "bin", "bash.exe"),
-    ].filter((value): value is string => Boolean(value?.trim()));
-    const managedNode = path.join(hermesHome, "node", "node.exe");
-
-    const [gitBash, node, uv, rg, ffmpeg] = await Promise.all([
-      firstExistingPath(gitBashCandidates),
-      this.probeCommandChain([{ command: managedNode, args: ["--version"], label: "Hermes-managed Node.js" }, { command: "node", args: ["--version"], label: "Node.js" }]),
-      this.probeCommandChain([{ command: "uv", args: ["--version"], label: "uv" }]),
-      this.probeCommandChain([{ command: "rg", args: ["--version"], label: "ripgrep" }]),
-      this.probeCommandChain([{ command: "ffmpeg", args: ["-version"], label: "ffmpeg" }]),
-    ]);
-    const missing = [
-      gitBash ? undefined : "Git Bash",
-      node.available ? undefined : "Node.js",
-      uv.available ? undefined : "uv",
-      rg.available ? undefined : "ripgrep",
-      ffmpeg.available ? undefined : "ffmpeg",
-    ].filter((value): value is string => Boolean(value));
-    const coreMissing = [
-      gitBash ? undefined : "Git Bash",
-      uv.available ? undefined : "uv",
-    ].filter((value): value is string => Boolean(value));
+    this.setStage("hermes.toolchain", "正在检查 Hermes 维护工具...");
+    let uv: string | undefined;
+    let error: string | undefined;
+    try {
+      uv = await findUvCommand(async (command, args) => runCommand(command, args, { cwd: rootPath, timeoutMs: 8000 }), rootPath);
+    } catch (failure) { error = failure instanceof Error ? failure.message : String(failure); }
     items.push(item({
-      id: "hermes.toolchain",
-      title: "Hermes Windows 工具链",
-      status: missing.length ? "warn" : "pass",
-      severity: missing.length ? "warning" : "info",
-      summary: missing.length
-        ? `发现 ${missing.length} 个官方安装工具链组件缺失或不可见：${missing.join("、")}。`
-        : "官方 Windows 工具链组件可见：Git Bash、Node.js、uv、ripgrep、ffmpeg。",
-      details: [
-        gitBash ? `Git Bash: ${gitBash}` : "Git Bash: 未检测到 HERMES_GIT_BASH_PATH 或 Hermes-managed git\\bin\\bash.exe",
-        `Node.js: ${node.message}`,
-        `uv: ${uv.message}`,
-        `ripgrep: ${rg.message}`,
-        `ffmpeg: ${ffmpeg.message}`,
-      ].join("\n"),
-      evidence: { rootPath, hermesHome, gitBash, node, uv, rg, ffmpeg },
-      autoFixable: false,
-      userActionRequired: coreMissing.length > 0,
-      suggestedActions: missing.length
-        ? ["重跑 Hermes Windows 安装脚本可补齐官方工具链；如果是企业网络限制，请展开安装日志确认 Node/PortableGit/uv 的下载源。"]
-        : [],
-      source: "one-click-diagnostics-orchestrator",
+      id: "hermes.toolchain", title: "Hermes 维护工具", status: uv ? "pass" : "warn", severity: uv ? "info" : "warning",
+      summary: uv ? "uv 已就绪，可按 Hermes 锁文件维护受管环境。" : "未找到 uv，安装或修复 Hermes 前需要补齐。",
+      evidence: { rootPath, uv, error }, autoFixable: false, userActionRequired: false,
+      suggestedActions: uv ? [] : ["在安装设置中修复 Hermes，或安装 uv 后重试。"], source: "hermes-maintenance",
     }));
   }
 
@@ -406,7 +401,7 @@ export class OneClickDiagnosticsOrchestrator {
     const runtime = context.runtime;
     const probe = await this.runtimeProbeService.probe({
       workspacePath: options.workspacePath,
-      runtime: { ...runtime, mode: "windows", distro: undefined, workerMode: "off" },
+      runtime: { ...runtime, mode: process.platform === "darwin" ? "darwin" : "windows", distro: undefined, workerMode: "off" },
       persistResolvedHermesPath: Boolean(options.autoFix),
     });
 
@@ -426,155 +421,55 @@ export class OneClickDiagnosticsOrchestrator {
   }
 
   private async checkHermesPath(
-    items: OneClickDiagnosticItem[],
-    context: RuntimeContext,
-    options: OneClickDiagnosticsRunOptions,
+    items: OneClickDiagnosticItem[], context: RuntimeContext, _options: OneClickDiagnosticsRunOptions,
   ): Promise<ResolvedHermesCli | undefined> {
-    this.setStage("hermes.path", "正在解析 Windows Hermes 路径...");
+    this.setStage("hermes.path", "正在解析 Hermes 受管环境...");
     const rootPath = await this.configStore.getEnginePath("hermes");
-    const cliPath = await resolveWindowsHermesCliPath(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
-    const exists = await fs.access(cliPath).then(() => true).catch(() => false);
+    const environment = await resolveManagedHermesEnvironment(rootPath);
+    const exists = Boolean(environment && await pathExists(environment.cliPath));
+    const mode = process.platform === "darwin" ? "darwin" : "windows";
     items.push(item({
-      id: "hermes.path",
-      title: "Hermes 路径",
-      status: exists ? "pass" : "fail",
-      severity: exists ? "info" : "error",
-      summary: exists ? `已解析 Windows Hermes CLI：${cliPath}` : `Windows Hermes CLI 不存在：${cliPath}`,
-      evidence: { rootPath, cliPath, runtimeMode: "windows" },
-      autoFixable: false,
-      userActionRequired: !exists,
-      suggestedActions: exists ? [] : ["点击“一键修复”安装 Windows Native Hermes，或在设置中指定正确安装目录。"],
-      source: "hermes-cli-resolver",
+      id: "hermes.path", title: "Hermes 路径", status: exists ? "pass" : "fail", severity: exists ? "info" : "error",
+      summary: exists ? `已解析 Hermes CLI：${environment!.cliPath}` : "Hermes 受管虚拟环境或 CLI 缺失。",
+      evidence: { rootPath, environment, runtimeMode: mode }, autoFixable: !exists, userActionRequired: !exists,
+      suggestedActions: exists ? [] : ["在安装设置中安装或修复 Hermes。"], source: "managed-hermes-environment",
     }));
-    return {
-      runtime: { ...context.runtime, mode: "windows", distro: undefined, workerMode: "off" },
-      rootPath,
-      cliPath,
-      source: "windows",
-    };
+    return environment ? {
+      runtime: { ...context.runtime, mode, distro: undefined, workerMode: "off" },
+      rootPath, cliPath: environment.cliPath, source: mode,
+    } : undefined;
   }
 
   private async checkHermesCli(
-    items: OneClickDiagnosticItem[],
-    context: RuntimeContext,
-    resolvedCli: ResolvedHermesCli | undefined,
-    options: OneClickDiagnosticsRunOptions,
+    items: OneClickDiagnosticItem[], _context: RuntimeContext, _resolvedCli: ResolvedHermesCli | undefined, _options: OneClickDiagnosticsRunOptions,
   ) {
-    this.setStage("hermes.cli", "正在检查 Hermes CLI capabilities...");
-    if (context.runtime.mode !== "wsl") {
-      const rootPath = resolvedCli?.rootPath ?? await this.configStore.getEnginePath("hermes");
-      const cliPath = resolvedCli?.cliPath ?? await resolveWindowsHermesCliPath(rootPath) ?? defaultWindowsHermesCliPath(rootPath);
-      const compatibility = await this.hermesCompatibilityService?.inspect().catch(() => undefined);
-      const exists = await fs.access(cliPath).then(() => true).catch(() => false);
-      items.push(item({
-        id: "hermes.version",
-        title: "Hermes 版本",
-        status: compatibility?.installed || exists ? "pass" : "fail",
-        severity: compatibility?.installed || exists ? "info" : "error",
-        summary: compatibility?.installed
-          ? `Windows Hermes 可启动：${compatibility.version ?? "版本未知"}。`
-          : exists ? "Windows Hermes CLI 文件存在，但版本尚未通过兼容探测。" : "Windows Hermes CLI 文件不存在。",
-        evidence: { rootPath, cliPath, compatibility },
-        autoFixable: false,
-        userActionRequired: !exists,
-        suggestedActions: exists ? [] : ["点击“一键修复”安装 Windows Native Hermes。"],
-        source: "hermes-cli-resolver",
-      }));
-      if (!exists) {
-        items.push(skippedItem("hermes.compatibility", "Hermes 兼容性", "Hermes CLI 不存在，跳过兼容性检查。", "hermes-compatibility-service"));
-        return;
-      }
-      if (compatibility) {
-        items.push(item({
-          id: "hermes.compatibility",
-          title: "Hermes Forge 兼容性",
-          status: compatibility.forgeTaskReady ? compatibility.warnings.length ? "warn" : "pass" : "fail",
-          severity: compatibility.forgeTaskReady ? compatibility.warnings.length ? "warning" : "info" : "error",
-          summary: compatibility.forgeTaskReady
-            ? compatibility.warnings.length
-              ? "Hermes 可用于 Forge 任务，但有可完善项。"
-              : "Hermes 满足 Forge Windows Native 任务要求。"
-            : compatibility.blockingIssues[0] ?? "Hermes 缺少 Forge 任务能力。",
-          details: [...compatibility.blockingIssues, ...compatibility.warnings].join("\n") || undefined,
-          evidence: compatibility,
-          autoFixable: !compatibility.forgeTaskReady || compatibility.warnings.length > 0,
-          userActionRequired: !compatibility.forgeTaskReady,
-          suggestedActions: compatibility.forgeTaskReady
-            ? compatibility.warnings.length ? ["可运行一键修复补齐 venv 或自动修复项。"] : []
-            : ["点击“一键修复”重装或修复 Windows Hermes Agent。"],
-          source: "hermes-compatibility-service",
-        }));
-        items.push(item({
-          id: "hermes.venv",
-          title: "Hermes venv",
-          status: compatibility.venvStatus === "present" ? "pass" : "warn",
-          severity: compatibility.venvStatus === "present" ? "info" : "warning",
-          summary: compatibility.venvStatus === "present" ? "Hermes venv 已存在。" : "未检测到 Hermes venv；源码 CLI 可运行，建议补齐。",
-          evidence: { rootPath, venvStatus: compatibility.venvStatus, launchMode: compatibility.launchMode },
-          autoFixable: compatibility.venvStatus !== "present",
-          userActionRequired: false,
-          suggestedActions: compatibility.venvStatus === "present" ? [] : ["运行一键修复尝试补齐 Hermes venv。"],
-          source: "hermes-compatibility-service",
-        }));
-      }
-      const result = await this.runWindowsHermesCli(rootPath, cliPath, ["capabilities", "--json"], context.runtime.pythonCommand?.trim() || "python");
-      const capabilityStatus = this.classifyWindowsCapabilities(result.stdout, result.stderr, result.exitCode);
-      items.push(item({
-        id: "hermes.capabilities",
-        title: "Hermes capabilities",
-        status: capabilityStatus.ok ? "pass" : "warn",
-        severity: capabilityStatus.ok ? "info" : "warning",
-        summary: capabilityStatus.ok ? "Hermes CLI 增强能力可用。" : capabilityStatus.message,
-        details: capabilityStatus.ok ? undefined : "原始输出已记录到诊断报告，可通过导出功能查看。",
-        evidence: { command: result.command, cliPath, exitCode: result.exitCode, capabilities: capabilityStatus.capabilities },
-        autoFixable: false,
-        userActionRequired: false,
-        suggestedActions: capabilityStatus.ok ? [] : ["官方 Windows Hermes 可用时，capabilities 缺失只作为增强能力 warning；主聊天以 Forge 兼容性检查为准。"],
-        source: "hermes-cli-resolver",
-      }));
-      const doctor = await this.runWindowsHermesCli(
-        rootPath,
-        cliPath,
-        options.autoFix ? ["doctor", "--fix"] : ["doctor"],
-        context.runtime.pythonCommand?.trim() || "python",
-      );
-      const doctorOutput = (doctor.stdout || doctor.stderr || "").trim();
-      const doctorHasIssues = /Found\s+\d+\s+issue\(s\)|issue\(s\)\s+to\s+address/i.test(doctorOutput);
-      const doctorSupported = doctor.exitCode !== 0
-        ? !/invalid choice|unknown command|unrecognized arguments|No module named/i.test(doctorOutput)
-        : true;
-      items.push(item({
-        id: "hermes.doctor",
-        title: "Hermes doctor",
-        status: doctor.exitCode === 0 ? doctorHasIssues ? "warn" : (options.autoFix ? "fixed" : "pass") : doctorSupported ? "fail" : "skipped",
-        severity: doctor.exitCode === 0 ? doctorHasIssues ? "warning" : "info" : doctorSupported ? "error" : "info",
-        summary: doctor.exitCode === 0
-          ? doctorHasIssues
-            ? "Hermes doctor 可运行，但仍有非阻塞建议。"
-            : options.autoFix ? "已运行 hermes doctor --fix。" : "已运行 hermes doctor。"
-          : doctorSupported
-            ? "Hermes doctor 执行失败。"
-            : "当前 Hermes CLI 不支持 doctor 命令，已跳过。",
-        details: doctorOutput ? "原始输出已记录到诊断报告，可通过导出功能查看。" : undefined,
-        evidence: { command: doctor.command, exitCode: doctor.exitCode },
-        autoFixable: doctorSupported,
-        fixed: options.autoFix && doctor.exitCode === 0,
-        userActionRequired: doctorSupported && doctor.exitCode !== 0,
-        suggestedActions: doctor.exitCode === 0 || !doctorSupported ? [] : ["查看 doctor 输出；必要时点击“一键修复”运行 hermes doctor --fix。"],
-        source: "hermes doctor",
-      }));
-      return;
-    }
-
-    items.push(skippedItem(
-      "hermes.legacy-wsl",
-      "Legacy WSL runtime",
-      "WSL 不再作为运行、安装或修复环境；旧数据仅通过 Legacy WSL Migration 导入。",
-      "hermes-cli-resolver",
-    ));
+    this.setStage("hermes.cli", "正在检查 Hermes 官方任务接口...");
+    const service = this.hermesCompatibilityService ?? new HermesCompatibilityService(this.configStore, this.hermesHomeProvider);
+    const compatibility = await service.inspect();
+    items.push(item({
+      id: "hermes.version", title: "Hermes 版本", status: compatibility.installed ? "pass" : "fail",
+      severity: compatibility.installed ? "info" : "error",
+      summary: compatibility.installed ? `Hermes ${compatibility.version ?? "版本未知"} 可启动。` : "Hermes CLI 版本检查失败。",
+      evidence: { rootPath: compatibility.rootPath, cliPath: compatibility.cliPath, version: compatibility.version },
+      autoFixable: false, userActionRequired: !compatibility.installed,
+      suggestedActions: compatibility.installed ? [] : ["在安装设置中安装或修复 Hermes。"], source: "hermes-compatibility-service",
+    }));
+    items.push(item({
+      id: "hermes.compatibility", title: "Hermes 任务接口", status: compatibility.forgeTaskReady ? "pass" : "fail",
+      severity: compatibility.forgeTaskReady ? "info" : "error",
+      summary: compatibility.forgeTaskReady ? "官方 AIAgent、会话存储和交互回调检查通过。" : compatibility.blockingIssues[0] ?? "Hermes 任务接口检查失败。",
+      details: compatibility.blockingIssues.join("\n") || undefined, evidence: compatibility,
+      autoFixable: false, userActionRequired: !compatibility.forgeTaskReady,
+      suggestedActions: compatibility.forgeTaskReady ? [] : ["在安装设置中更新或修复 Hermes。"], source: "hermes-compatibility-service",
+    }));
   }
 
   private async checkGateway(items: OneClickDiagnosticItem[], options: OneClickDiagnosticsRunOptions) {
+    const config = await this.configStore.read();
+    if (config.extensionSettings?.connectorsEnabled !== true && config.extensionSettings?.cronEnabled !== true) {
+      items.push(skippedItem("gateway.status", "Gateway", "连接器和定时任务未启用，已跳过 Gateway 检查。", "extension-settings"));
+      return;
+    }
     this.setStage("gateway", "正在检查 Gateway 状态和启动前检查...");
     let status = await this.hermesConnectorService.status();
     let fixed = false;
@@ -613,133 +508,12 @@ export class OneClickDiagnosticsOrchestrator {
       evidence: preflight,
       autoFixable: false,
       userActionRequired: !preflight.ok,
-      suggestedActions: preflight.ok ? [] : ["先修复 Hermes 路径 / CLI capabilities，再启动 Gateway。"],
+      suggestedActions: preflight.ok ? [] : ["先修复 Hermes 受管环境和任务接口，再启动 Gateway。"],
       source: "hermes-connector-service",
     }));
   }
 
-  private async probeCommandChain(candidates: Array<{ command: string; args: string[]; label: string }>) {
-    const failures: string[] = [];
-    for (const candidate of candidates) {
-      if (looksLikeFilePath(candidate.command) && !(await pathExists(candidate.command))) {
-        failures.push(`${candidate.label}: 文件不存在`);
-        continue;
-      }
-      const result = await runCommand(candidate.command, candidate.args, {
-        cwd: process.cwd(),
-        timeoutMs: 8_000,
-        runtimeKind: "windows",
-        commandId: `one-click.toolchain.${candidate.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-      }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
-      const output = (result.stdout || result.stderr || "").trim().split(/\r?\n/)[0]?.trim() ?? "";
-      if (result.exitCode === 0) {
-        return {
-          available: true,
-          command: candidate.command,
-          args: candidate.args,
-          label: candidate.label,
-          version: output,
-          message: output ? `${candidate.label} 可用：${output}` : `${candidate.label} 可用。`,
-        };
-      }
-      failures.push(`${candidate.label}: ${output || `exit ${result.exitCode ?? "unknown"}`}`);
-    }
-    return {
-      available: false,
-      message: failures.slice(0, 3).join("；") || "未检测到可用命令。",
-    };
-  }
 
-  private async runWindowsHermesCli(rootPath: string, cliPath: string, args: string[], pythonCommand: string) {
-    const hermesHome = typeof this.hermesHomeProvider === "function"
-      ? await this.hermesHomeProvider()
-      : this.hermesHomeProvider;
-    const env = hermesCliEnv(rootPath, hermesHome);
-    if (isWindowsHermesExecutable(cliPath)) {
-      const result = await runCommand(cliPath, args, {
-        cwd: rootPath,
-        timeoutMs: 20_000,
-        runtimeKind: "windows",
-        commandId: "one-click.hermes-cli.windows",
-        env,
-      }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
-      return { ...result, command: `${cliPath} ${args.join(" ")}` };
-    }
-    const candidates = process.platform === "win32" ? [
-      path.join(rootPath, "venv", "Scripts", "python.exe"),
-      path.join(rootPath, ".venv", "Scripts", "python.exe"),
-      pythonCommand,
-      "py -3",
-      "python",
-      "python3",
-    ] : [
-      path.join(rootPath, "venv", "bin", "python3"),
-      path.join(rootPath, ".venv", "bin", "python3"),
-      path.join(rootPath, "venv", "bin", "python"),
-      path.join(rootPath, ".venv", "bin", "python"),
-      pythonCommand,
-      "python3",
-      "python",
-    ];
-    let last: { exitCode: number | null; stdout: string; stderr: string } = { exitCode: 1, stdout: "", stderr: "未找到可用 Python 解释器。" };
-    let lastCommand = "";
-    for (const candidate of candidates) {
-      if (path.isAbsolute(candidate) && !(await fs.access(candidate).then(() => true).catch(() => false))) continue;
-      const launch = windowsPythonLaunch(candidate);
-      const result = await runCommand(launch.command, [...launch.args, cliPath, ...args], {
-        cwd: rootPath,
-        timeoutMs: 20_000,
-        runtimeKind: "windows",
-        commandId: "one-click.hermes-cli.windows",
-        env,
-      }).catch((error) => ({ exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
-      last = result;
-      lastCommand = `${launch.command} ${[...launch.args, cliPath, ...args].join(" ")}`;
-      if (result.exitCode === 0) return { ...result, command: lastCommand };
-    }
-    return { ...last, command: lastCommand || `${pythonCommand} ${cliPath} ${args.join(" ")}` };
-  }
-
-  private classifyWindowsCapabilities(stdout: string, stderr: string, exitCode: number | null) {
-    if (exitCode !== 0) {
-      return {
-        ok: false,
-        message: `capabilities --json 执行失败：${stderr || stdout || `exit ${exitCode ?? "unknown"}`}`,
-        capabilities: undefined,
-      };
-    }
-    try {
-      const parsed = JSON.parse(stdout) as {
-        cliVersion?: unknown;
-        capabilities?: {
-          supportsLaunchMetadataArg?: unknown;
-          supportsLaunchMetadataEnv?: unknown;
-          supportsResume?: unknown;
-        };
-      };
-      const capabilities = {
-        cliVersion: typeof parsed.cliVersion === "string" ? parsed.cliVersion : undefined,
-        supportsLaunchMetadataArg: parsed.capabilities?.supportsLaunchMetadataArg === true,
-        supportsLaunchMetadataEnv: parsed.capabilities?.supportsLaunchMetadataEnv === true,
-        supportsResume: parsed.capabilities?.supportsResume === true,
-      };
-      const missing = [
-        capabilities.cliVersion ? undefined : "cliVersion",
-        capabilities.supportsLaunchMetadataArg ? undefined : "supportsLaunchMetadataArg",
-        capabilities.supportsLaunchMetadataEnv ? undefined : "supportsLaunchMetadataEnv",
-        capabilities.supportsResume ? undefined : "supportsResume",
-      ].filter(Boolean);
-      return missing.length
-        ? { ok: false, message: `Hermes CLI 存在，但官方版本缺少 Forge capability：${missing.join(", ")}。`, capabilities }
-        : { ok: true, message: "capabilities ok", capabilities };
-    } catch (error) {
-      return {
-        ok: false,
-        message: `capabilities --json 返回内容不是有效 JSON：${error instanceof Error ? error.message : String(error)}`,
-        capabilities: undefined,
-      };
-    }
-  }
 
   private async checkModels(items: OneClickDiagnosticItem[], options: OneClickDiagnosticsRunOptions) {
     this.setStage("model", "正在检查模型配置 schema 和默认模型...");
@@ -931,244 +705,44 @@ export class OneClickDiagnosticsOrchestrator {
   }
 
   private async checkPythonDeps(
-    items: OneClickDiagnosticItem[],
-    context: RuntimeContext,
-    resolvedCli: ResolvedHermesCli | undefined,
-    options: OneClickDiagnosticsRunOptions,
+    items: OneClickDiagnosticItem[], context: RuntimeContext, resolvedCli: ResolvedHermesCli | undefined, options: OneClickDiagnosticsRunOptions,
   ) {
-    this.setStage("python.deps", "正在检查 Python 关键依赖...");
-    const configuredPython = context.runtime.pythonCommand?.trim() || "python";
-
-    if (!resolvedCli) {
-      items.push(skippedItem("python.deps", "Python 依赖", "未解析到 Windows Hermes，跳过 Python 依赖检查。", "hermes-cli-resolver"));
-      return;
-    }
-
-    const candidates: string[] = [];
-    if (process.platform === "win32") {
-      candidates.push(path.join(resolvedCli.rootPath, "venv", "Scripts", "python.exe"));
-      candidates.push(path.join(resolvedCli.rootPath, ".venv", "Scripts", "python.exe"));
-    } else {
-      candidates.push(path.join(resolvedCli.rootPath, "venv", "bin", "python3"));
-      candidates.push(path.join(resolvedCli.rootPath, ".venv", "bin", "python3"));
-      candidates.push(path.join(resolvedCli.rootPath, "venv", "bin", "python"));
-      candidates.push(path.join(resolvedCli.rootPath, ".venv", "bin", "python"));
-    }
-    candidates.push(configuredPython);
-    if (configuredPython !== "python") candidates.push("python");
-    if (configuredPython !== "python3") candidates.push("python3");
-    if (configuredPython !== "py -3") candidates.push("py -3");
-
-    let pythonCmd: string | undefined;
-    let pythonCheckOutput = "";
-    for (const cmd of candidates) {
-      const check = await this.runPythonCheck(cmd);
-      if (check.ok) {
-        pythonCmd = cmd;
-        break;
-      }
-      if (check.output) pythonCheckOutput = check.output;
-    }
-
-    if (!pythonCmd) {
-      items.push(item({
-        id: "python.deps",
-        title: "Python 依赖",
-        status: "fail",
-        severity: "error",
-        summary: "未找到可用的 Python 解释器。",
-        details: "原始检测输出已记录到诊断报告。",
-        autoFixable: false,
-        userActionRequired: true,
-        suggestedActions: ["安装 Python（建议 3.10+），或在设置中指定正确的 Python 命令。"],
-        source: "hermes-cli-resolver",
-      }));
-      return;
-    }
-
-    const pipCheck = await this.runPipVersionCheck(pythonCmd);
-    let hasPip = pipCheck.exitCode === 0;
-
-    const probe = await this.probePythonModules(pythonCmd);
-
-    // 如果 pip 不可用，但关键模块都已就绪，降级为 warn（避免误报）。
-    // Windows Native 运行时可能通过其他方式已具备 yaml/dotenv，pip 缺失不阻塞主链路。
-    if (!hasPip && probe.ok) {
-      items.push(item({
-        id: "python.deps",
-        title: "Python 依赖",
-        status: "warn",
-        severity: "warning",
-        summary: "当前 Python 环境没有 pip，但 PyYAML / python-dotenv 已就绪，不影响运行。",
-        details: undefined,
-        evidence: { pythonCommand: pythonCmd, pipError: (pipCheck.stderr || pipCheck.stdout).trim() || undefined },
-        autoFixable: false,
-        userActionRequired: false,
-        suggestedActions: ["如需在 venv 中安装新包，可手动安装 pip。"],
-        source: "hermes-cli-resolver",
-      }));
-      return;
-    }
-
-    // pip 缺失且模块也不全，才是真正的阻塞错误
-    if (!hasPip && !probe.ok) {
-      items.push(item({
-        id: "python.deps",
-        title: "Python 依赖",
-        status: "fail",
-        severity: "error",
-        summary: "Python 环境缺少 pip，无法安装 PyYAML / python-dotenv。",
-        details: undefined,
-        evidence: { pythonCommand: pythonCmd, pipError: (pipCheck.stderr || pipCheck.stdout).trim() || undefined },
-        autoFixable: false,
-        userActionRequired: true,
-        suggestedActions: ["安装 pip。"],
-        source: "hermes-cli-resolver",
-      }));
-      return;
-    }
-
+    this.setStage("python.deps", "正在检查 Hermes 受管环境依赖...");
+    const rootPath = resolvedCli?.rootPath ?? await this.configStore.getEnginePath("hermes");
+    const extras = await readConfiguredHermesExtras(context.config, path.dirname(this.configStore.getConfigPath()));
+    let environment = await resolveManagedHermesEnvironment(rootPath);
+    let probe = environment ? await this.probeManagedPython(environment, extras) : { ok: false, missing: ["受管虚拟环境"] };
     let fixed = false;
-    let pipFailure: { reason: string; stderr: string; stdout: string } | undefined;
-    if (options.autoFix && !probe.ok && probe.missingModules.length > 0) {
-      const installResult = await this.installPythonModules(pythonCmd, probe.missingModules);
-      if (installResult.success) {
-        const recheck = await this.probePythonModules(pythonCmd);
-        if (recheck.ok) {
-          fixed = true;
-          probe.ok = true;
-          probe.missingModules = [];
-        }
-      } else {
-        pipFailure = { reason: installResult.reason, stderr: installResult.stderr, stdout: installResult.stdout };
-      }
+    let repairError: string | undefined;
+    if (options.autoFix && !probe.ok) {
+      // The maintenance service owns locking, Python repair and uv sync --locked;
+      // the requested core repair also synchronizes only configured extras.
+      const repair = await this.setupService.repairDependency("hermes_pyyaml");
+      if (repair.ok) {
+        environment = await resolveManagedHermesEnvironment(rootPath);
+        probe = environment ? await this.probeManagedPython(environment, extras) : { ok: false, missing: ["受管虚拟环境"] };
+        fixed = probe.ok;
+      } else { repairError = repair.message; }
     }
-
     items.push(item({
-      id: "python.deps",
-      title: "Python 依赖",
-      status: fixed ? "fixed" : probe.ok ? "pass" : "fail",
-      severity: probe.ok ? "info" : "error",
-      summary: fixed
-        ? "已自动安装缺失的 Python 依赖（PyYAML / python-dotenv）。"
-        : probe.ok
-          ? "Python 关键依赖（PyYAML、python-dotenv）已就绪。"
-          : pipFailure
-            ? `自动安装失败：${pipFailure.reason}`
-            : `Python 环境缺少关键依赖：${probe.missingModules.map((m) => (m === "yaml" ? "PyYAML" : "python-dotenv")).join("、")}。`,
-      details: pipFailure ? pipFailure.reason : probe.details,
-      evidence: { pythonCommand: pythonCmd, missingModules: probe.missingModules, rawOutput: probe.rawOutput },
-      autoFixable: !probe.ok && probe.missingModules.length > 0,
-      fixed,
-      userActionRequired: !probe.ok && !fixed,
-      suggestedActions: probe.ok
-        ? []
-        : pipFailure
-          ? [pipFailure.reason, "或在 Hermes 官方安装目录的 venv 中手动执行 pip install。"]
-          : this.pythonDepFixSuggestions(pythonCmd, probe.missingModules),
-      source: "hermes-cli-resolver",
+      id: "python.deps", title: "Hermes 依赖", status: fixed ? "fixed" : probe.ok ? "pass" : "fail", severity: probe.ok ? "info" : "error",
+      summary: fixed ? "已按 Hermes 锁文件修复受管环境和已启用扩展。" : probe.ok ? "Hermes 核心、MCP 和已启用扩展依赖检查通过。" : repairError ?? `Hermes 依赖缺失或版本不匹配：${probe.missing.join("、")}。`,
+      evidence: { pythonCommand: environment?.pythonPath, extras, missing: probe.missing, repairError },
+      autoFixable: !probe.ok, fixed, userActionRequired: !probe.ok,
+      suggestedActions: probe.ok ? [] : ["点击一键修复，按当前 Hermes 锁文件同步受管环境。"], source: "hermes-maintenance",
     }));
   }
 
-  private async runPythonCheck(cmd: string): Promise<{ ok: boolean; output?: string }> {
-    const script = `print("python_ok")`;
-    const launch = windowsPythonLaunch(cmd);
-    const result = await runCommand(launch.command, [...launch.args, "-c", script], {
-      cwd: process.cwd(),
-      timeoutMs: 10_000,
-      commandId: "one-click.python-check",
-      runtimeKind: "windows",
+  private async probeManagedPython(environment: ManagedHermesEnvironment, extras: string[]): Promise<{ ok: boolean; missing: string[] }> {
+    const hermesHome = await this.hermesHomeProvider?.();
+    const result = await runCommand(environment.pythonPath, ["-c", MANAGED_DEPENDENCIES_PROBE, JSON.stringify(extras)], {
+      cwd: environment.rootPath, timeoutMs: 30_000, commandId: "one-click.managed-dependencies",
+      env: managedHermesEnvironmentEnv(environment, hermesHome ? { HERMES_HOME: hermesHome } : {}),
     });
-    return { ok: result.exitCode === 0, output: (result.stderr || result.stdout).trim() || undefined };
-  }
-
-  private async probePythonModules(cmd: string): Promise<{ ok: boolean; missingModules: string[]; details?: string; rawOutput?: string }> {
-    const combinedScript = `import yaml, dotenv; print("ok")`;
-    const combined = await this.runPythonScript(cmd, combinedScript, "one-click.python-modules");
-    if (combined.exitCode === 0) {
-      return { ok: true, missingModules: [] };
-    }
-
-    const output = (combined.stderr || combined.stdout || "").trim();
-    const missing: string[] = [];
-
-    for (const mod of ["yaml", "dotenv"]) {
-      const modResult = await this.runPythonScript(cmd, `import ${mod}; print("${mod}_ok")`, `one-click.python-module-${mod}`);
-      if (modResult.exitCode !== 0) missing.push(mod);
-    }
-
-    return {
-      ok: false,
-      missingModules: missing,
-      details: output || undefined,
-      rawOutput: output || undefined,
-    };
-  }
-
-  private async runPipVersionCheck(cmd: string) {
-    const launch = windowsPythonLaunch(cmd);
-    return runCommand(launch.command, [...launch.args, "-m", "pip", "--version"], {
-      cwd: process.cwd(),
-      timeoutMs: 10_000,
-      commandId: "one-click.pip-check",
-      runtimeKind: "windows",
-    });
-  }
-
-  private async runPythonScript(cmd: string, script: string, commandId: string) {
-    const launch = windowsPythonLaunch(cmd);
-    return runCommand(launch.command, [...launch.args, "-c", script], {
-      cwd: process.cwd(),
-      timeoutMs: 10_000,
-      commandId,
-      runtimeKind: "windows",
-    });
-  }
-
-  private async installPythonModules(
-    cmd: string,
-    missingModules: string[],
-  ): Promise<{ success: boolean; reason: string; stderr: string; stdout: string }> {
-    const packages = missingModules.map((m) => (m === "yaml" ? "pyyaml" : "python-dotenv"));
-    const launch = windowsPythonLaunch(cmd);
-    const result = await runCommand(launch.command, [...launch.args, "-m", "pip", "install", ...packages], {
-      cwd: process.cwd(),
-      timeoutMs: 60_000,
-      commandId: "one-click.python-install",
-      runtimeKind: "windows",
-    });
-    if (result.exitCode === 0) return { success: true, reason: "", stderr: "", stdout: result.stdout };
-    const reason = this.analyzePipFailure(result.stderr || "", result.stdout || "");
-    return { success: false, reason, stderr: result.stderr || "", stdout: result.stdout || "" };
-  }
-
-  private analyzePipFailure(stderr: string, stdout: string): string {
-    const combined = `${stderr}\n${stdout}`;
-    if (/permission denied|permission error|Errno 13/i.test(combined)) {
-      return "pip install 因权限不足失败。可尝试添加 --user 参数，或使用管理员权限重新运行。";
-    }
-    if (/externally-managed|PEP 668|externally managed/i.test(combined)) {
-      return "当前 Python 为系统级外部管理环境（PEP 668）。请使用 python3 -m pip install --break-system-packages，或在 venv 中安装。";
-    }
-    if (/No module named ensurepip/i.test(combined)) {
-      return "Python 环境缺少 ensurepip 模块。请安装 python3-venv 或 python3-full。";
-    }
-    if (/Could not find a version|Connection error|timeout|SSL|certificate|CERTIFICATE_VERIFY_FAILED/i.test(combined)) {
-      return "pip install 因网络问题失败，无法连接到 PyPI。请检查网络或代理设置。";
-    }
-    if (/No module named pip/i.test(combined) || /pip.*not found/i.test(combined)) {
-      return "Python 环境缺少 pip。请先安装 python3-pip。";
-    }
-    const preview = stderr.trim().slice(0, 200) || stdout.trim().slice(0, 200);
-    return `pip install 失败${preview ? `：${preview}` : "。"}`;
-  }
-
-  private pythonDepFixSuggestions(pythonCmd: string, missingModules: string[]): string[] {
-    const packages = missingModules.map((m) => (m === "yaml" ? "pyyaml" : "python-dotenv")).join(" ");
-    return [
-      `执行：${pythonCmd} -m pip install ${packages}`,
-      "或者点击“一键修复”让 Forge 自动安装。",
-    ];
+    try {
+      const parsed = JSON.parse(result.stdout.trim().split(/\r?\n/).filter(Boolean).pop() ?? "{}") as { ok?: boolean; missing?: string[]; error?: string };
+      return { ok: result.exitCode === 0 && parsed.ok === true, missing: parsed.missing ?? [parsed.error ?? "依赖检查未完成"] };
+    } catch { return { ok: false, missing: [(result.stderr || result.stdout).trim() || "依赖检查未返回有效结果"] }; }
   }
 
   private skipHermesSystemAudit(items: OneClickDiagnosticItem[]) {
@@ -1401,13 +975,6 @@ function looksLikeFilePath(value: string) {
   return path.isAbsolute(value) || /[\\/]/.test(value);
 }
 
-async function firstExistingPath(candidates: string[]) {
-  for (const candidate of candidates) {
-    if (await pathExists(candidate)) return candidate;
-  }
-  return undefined;
-}
-
 async function pathExists(targetPath: string) {
   return fs.access(targetPath).then(() => true).catch(() => false);
 }
@@ -1431,7 +998,7 @@ function summarize(items: OneClickDiagnosticItem[]): OneClickDiagnosticsReport["
 
 function normalizeRuntime(config: RuntimeConfig): NonNullable<RuntimeConfig["hermesRuntime"]> {
   return {
-    mode: "windows",
+    mode: process.platform === "darwin" ? "darwin" : "windows",
     distro: undefined,
     pythonCommand: config.hermesRuntime?.pythonCommand?.trim() || "python",
     managedRoot: config.hermesRuntime?.managedRoot?.trim() || undefined,
@@ -1472,27 +1039,7 @@ function previewDiagnosticText(value: string | undefined) {
   return value.length > 6000 ? `${value.slice(0, 6000)}\n...[truncated]` : value;
 }
 
-function hermesCliEnv(rootPath: string, hermesHome?: string): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    PYTHONUTF8: "1",
-    PYTHONIOENCODING: "utf-8",
-    PYTHONUNBUFFERED: "1",
-    PYTHONPATH: `${rootPath}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-    NO_COLOR: "1",
-    FORCE_COLOR: "0",
-    ...(hermesHome ? { HERMES_HOME: hermesHome } : {}),
-  };
-}
 
-function windowsPythonLaunch(command: string) {
-  const trimmed = command.trim();
-  const pyLauncher = trimmed.match(/^py(?:\.exe)?\s+(-3(?:\.\d+)?)$/i);
-  if (pyLauncher) {
-    return { command: "py", args: [pyLauncher[1] ?? "-3"] };
-  }
-  return { command: trimmed, args: [] };
-}
 
 function parseJsonObject(raw: string): Record<string, unknown> | undefined {
   if (!raw.trim()) return undefined;

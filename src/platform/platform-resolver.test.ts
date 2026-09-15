@@ -17,7 +17,7 @@ describe("platform python candidates", () => {
     const candidates = getPythonCandidates("win32", "C:\\Users\\zheng\\Hermes Agent");
 
     expect(candidates[0]).toEqual({
-      command: "C:\\Users\\zheng\\Hermes Agent\\.venv\\Scripts\\python.exe",
+      command: "C:\\Users\\zheng\\Hermes Agent\\venv\\Scripts\\python.exe",
       args: [],
       label: "venv Python",
     });

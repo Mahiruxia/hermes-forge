@@ -1,5 +1,6 @@
-import { Copy, Download, FolderPlus, PanelLeftClose, PencilLine, Pin, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { Download, FolderPlus, PanelLeftClose, PencilLine, Pin, Plus, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { SessionMetaPatch, WorkSession } from "../../../shared/types";
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
@@ -8,13 +9,18 @@ export function SessionSidebar(props: {
   onCreateSession: () => void;
   onSelectSession: (session: WorkSession | string) => void;
   onDeleteSession: (session: WorkSession) => void;
-  onDuplicateSession: (session: WorkSession) => void;
   onExportSession: (session: WorkSession, format: "json" | "markdown") => void;
-  onImportSession: () => void;
   onUpdateSessionMeta: (sessionId: string, patch: SessionMetaPatch) => void;
   onCollapse: () => void;
 }) {
-  const store = useAppStore();
+  const store = useAppStore(useShallow(state => ({
+    activeSessionId: state.activeSessionId,
+    sessions: state.sessions,
+    runtimeConfig: state.runtimeConfig,
+    selectedProjectId: state.selectedProjectId,
+    projects: state.webUiOverview?.projects,
+    setSelectedProject: state.setSelectedProject,
+  })));
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"recent" | "favorite">("recent");
   const activeId = store.activeSessionId;
@@ -25,9 +31,10 @@ export function SessionSidebar(props: {
   const visibleSessions = useMemo(() => {
     const q = query.trim().toLowerCase();
     return store.sessions
-      .filter((session) => !q || session.title.toLowerCase().includes(q) || session.id.toLowerCase().includes(q))
+      .filter((session) => (!store.selectedProjectId || session.projectId === store.selectedProjectId)
+        && (!q || session.title.toLowerCase().includes(q) || session.id.toLowerCase().includes(q)))
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  }, [query, store.sessions]);
+  }, [query, store.sessions, store.selectedProjectId]);
   const sections = tab === "favorite"
     ? [{ title: "收藏", sessions: visibleSessions.filter((session) => session.pinned) }]
     : groupSessions(visibleSessions);
@@ -66,6 +73,7 @@ export function SessionSidebar(props: {
           <button className={tabClass(tab === "recent")} onClick={() => setTab("recent")} type="button">最近</button>
           <button className={tabClass(tab === "favorite")} onClick={() => setTab("favorite")} type="button">收藏</button>
         </div>
+        {store.selectedProjectId ? <button type="button" onClick={() => store.setSelectedProject(undefined)} className="flex w-full items-center justify-between rounded-lg bg-slate-100 px-2 py-1.5 text-xs text-slate-600" aria-label="清除项目筛选"><span className="truncate">{store.projects?.find(project => project.id === store.selectedProjectId)?.name ?? "已有项目"}</span><X size={12} /></button> : null}
       </div>
 
       <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-0.5 pt-2">
@@ -77,7 +85,6 @@ export function SessionSidebar(props: {
             activeId={activeId}
             onSelect={props.onSelectSession}
             onPin={togglePin}
-            onDuplicate={props.onDuplicateSession}
             onExport={(session) => props.onExportSession(session, "json")}
             onDelete={props.onDeleteSession}
             onRename={renameSession}
@@ -105,9 +112,6 @@ export function SessionSidebar(props: {
 
       <div className="mt-auto shrink-0 border-t border-slate-200/70 px-1 pt-2" data-testid="session-sidebar-footer">
         <div className="flex gap-1">
-          <button aria-label="导入会话" className={actionButtonClass} onClick={props.onImportSession} title="导入会话" type="button">
-            <Upload size={13} />
-          </button>
           <button aria-label="导出会话" className={actionButtonClass} disabled={!activeSession} onClick={() => activeSession && props.onExportSession(activeSession, "json")} title="导出会话" type="button">
             <Download size={13} />
           </button>
@@ -123,7 +127,6 @@ function SessionListSection(props: {
   activeId?: string;
   onSelect: (session: WorkSession | string) => void;
   onPin: (session: WorkSession) => void;
-  onDuplicate: (session: WorkSession) => void;
   onExport: (session: WorkSession) => void;
   onDelete: (session: WorkSession) => void;
   onRename: (session: WorkSession, title: string) => void;
@@ -141,7 +144,6 @@ function SessionListSection(props: {
             active={session.id === props.activeId}
             onSelect={() => props.onSelect(session)}
             onPin={() => props.onPin(session)}
-            onDuplicate={() => props.onDuplicate(session)}
             onExport={() => props.onExport(session)}
             onDelete={() => props.onDelete(session)}
             onRename={(title) => props.onRename(session, title)}
@@ -160,7 +162,6 @@ function SessionItem(props: {
   active: boolean;
   onSelect: () => void;
   onPin: () => void;
-  onDuplicate: () => void;
   onExport: () => void;
   onDelete: () => void;
   onRename: (title: string) => void;
@@ -217,7 +218,6 @@ function SessionItem(props: {
       <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <button className={miniButtonClass} onClick={(e) => { e.stopPropagation(); startEdit(e); }} title="重命名" type="button"><PencilLine size={10} /></button>
         <button className={miniButtonClass} onClick={props.onPin} title={props.session.pinned ? "取消收藏" : "收藏"} type="button"><Pin size={10} /></button>
-        <button className={miniButtonClass} onClick={props.onDuplicate} title="复制会话" type="button"><Copy size={11} /></button>
         <button className={miniButtonClass} onClick={props.onExport} title="导出" type="button"><Download size={11} /></button>
         <button className="grid h-6 w-6 place-items-center rounded text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600" onClick={props.onDelete} title="删除" type="button"><Trash2 size={11} /></button>
       </div>

@@ -4,11 +4,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppPaths } from "./app-paths";
 import { ensureHermesHomeLayout, resolveActiveHermesHome } from "./hermes-home";
+import { atomicWriteText, readTextIfExists, withHermesHomeLock } from "./hermes-config-files";
+import { requireManagedHermesEnvironment } from "../runtime/managed-hermes-environment";
 import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import { validateWslHermesCli } from "../runtime/hermes-cli-resolver";
 import { defaultHermesCliPath, resolveHermesCliPathSync } from "../runtime/hermes-cli-paths";
-import { getWindowsPythonInstallCandidates } from "../platform";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { summarizePreflightFailure } from "../runtime/runtime-preflight";
 import type { SecretVault } from "../auth/secret-vault";
@@ -23,7 +24,6 @@ import type {
   HermesConnectorStatus,
   HermesGatewayActionResult,
   HermesGatewayStatus,
-  WeixinDependencyInstallResult,
   WeixinQrLoginResult,
   WeixinQrLoginStatus,
   RuntimeConfig,
@@ -237,8 +237,18 @@ export class HermesConnectorService {
   private gatewayAutoStartState: HermesGatewayStatus["autoStartState"] = "idle";
   private gatewayAutoStartMessage = "等待自动启动。";
   private gatewayStartPromise?: Promise<HermesGatewayActionResult>;
+  private gatewayStopPromise?: Promise<HermesGatewayActionResult>;
+  private gatewayStartGeneration = 0;
+  private gatewayMaintenance = false;
+  private readonly expectedGatewayExits = new WeakSet<ChildProcessWithoutNullStreams>();
+  private readonly spawnGatewayProcess = spawn;
+  private readonly killGatewayProcess = killProcessTree;
   private gatewayUserStopped = false;
   private gatewayAutoRestartTimer?: NodeJS.Timeout;
+  private readonly gatewayFailures = new Map<string, string>();
+  private gatewayCliCache?: Awaited<ReturnType<HermesConnectorService["gatewayCliStatus"]>>;
+  private gatewayCliCachedAt = 0;
+  private gatewayCliCheck?: Promise<Awaited<ReturnType<HermesConnectorService["gatewayCliStatus"]>> | undefined>;
   private weixinQrProcess?: ChildProcessWithoutNullStreams;
   private weixinQrStatus: WeixinQrLoginStatus = { running: false, phase: "idle", message: "请点击开始扫码获取微信二维码。" };
   private weixinQrLineBuffer = "";
@@ -281,6 +291,10 @@ export class HermesConnectorService {
   }
 
   async save(input: HermesConnectorSaveInput): Promise<HermesConnectorConfig> {
+    return withHermesHomeLock(this.baseHermesHome(), () => this.saveInternal(input));
+  }
+
+  private async saveInternal(input: HermesConnectorSaveInput): Promise<HermesConnectorConfig> {
     const platform = platformById(input.platformId);
     const stored = await this.readConfig();
     const instanceId = platform.id === "feishu" ? normalizeFeishuInstanceId(input.instanceId) : undefined;
@@ -333,6 +347,10 @@ export class HermesConnectorService {
   }
 
   async disable(input: HermesConnectorPlatformId | { platformId: HermesConnectorPlatformId; instanceId?: string }) {
+    return withHermesHomeLock(this.baseHermesHome(), () => this.disableInternal(input));
+  }
+
+  private async disableInternal(input: HermesConnectorPlatformId | { platformId: HermesConnectorPlatformId; instanceId?: string }) {
     const platformId = typeof input === "string" ? input : input.platformId;
     const platform = platformById(platformId);
     const instanceId = platform.id === "feishu" ? normalizeFeishuInstanceId(typeof input === "string" ? undefined : input.instanceId) : undefined;
@@ -360,6 +378,10 @@ export class HermesConnectorService {
   }
 
   async syncEnv(): Promise<{ ok: boolean; envPath: string; message: string; connectors: HermesConnectorConfig[] }> {
+    return withHermesHomeLock(this.baseHermesHome(), () => this.syncEnvInternal());
+  }
+
+  private async syncEnvInternal(): Promise<{ ok: boolean; envPath: string; message: string; connectors: HermesConnectorConfig[] }> {
     const stored = await this.readConfig();
     const lines: string[] = [
       MANAGED_START,
@@ -395,19 +417,18 @@ export class HermesConnectorService {
     lines.push(MANAGED_END);
 
     const envPath = await this.envPath();
-    const existing = await fs.readFile(envPath, "utf8").catch(() => "");
-    await this.backupEnv(envPath, existing);
-    const withoutBlock = removeManagedBlock(existing).trimEnd();
     const hasAnyConnector = lines.some((line) => line.includes("=")) || feishuInstanceHomes.length > 0;
-    const next = hasAnyConnector
-      ? `${withoutBlock ? `${withoutBlock}\n\n` : ""}${lines.join("\n")}\n`
-      : `${withoutBlock}${withoutBlock ? "\n" : ""}`;
-    await fs.mkdir(path.dirname(envPath), { recursive: true });
-    await fs.writeFile(envPath, next, "utf8");
-    await this.pruneStaleFeishuInstanceHomes(feishuInstanceHomes);
-    await fs.chmod(envPath, 0o600).catch((error) => {
-      console.warn("[Hermes Forge] Failed to apply strict permissions to connector .env:", error);
-    });
+    const writeEnv = async () => {
+      const existing = await readTextIfExists(envPath);
+      const withoutBlock = removeManagedBlock(existing).trimEnd();
+      const next = hasAnyConnector
+        ? `${withoutBlock ? `${withoutBlock}\n\n` : ""}${lines.join("\n")}\n`
+        : `${withoutBlock}${withoutBlock ? "\n" : ""}`;
+      if (next !== existing) await atomicWriteText(envPath, next);
+    };
+    const activeHome = path.dirname(envPath);
+    if (path.resolve(activeHome) === path.resolve(this.baseHermesHome())) await writeEnv();
+    else await withHermesHomeLock(activeHome, writeEnv);
     await this.writeConfig(stored);
     const list = await this.list();
     return {
@@ -418,10 +439,10 @@ export class HermesConnectorService {
     };
   }
 
-  async status(): Promise<HermesGatewayStatus> {
+  async status(options: { refresh?: boolean } = {}): Promise<HermesGatewayStatus> {
     const managedRunning = Boolean(this.gatewayProcess && !this.gatewayProcess.killed) || [...this.feishuGatewayProcesses.values()].some((child) => !child.killed);
     const [cliStatus, stateStatus] = await Promise.all([
-      this.gatewayCliStatus().catch(() => undefined),
+      options.refresh ? this.refreshGatewayCliStatus() : Promise.resolve(Date.now() - this.gatewayCliCachedAt < 5000 ? this.gatewayCliCache : undefined),
       this.gatewayStateStatus().catch(() => undefined),
     ]);
     const cliRunning = cliStatus?.exitCode === 0 && looksLikeGatewayRunning(cliStatus?.stdout, cliStatus?.stderr);
@@ -432,12 +453,12 @@ export class HermesConnectorService {
     const gatewayWarnings = gatewayWarningOutput(this.gatewayError);
     const cliError = gatewayErrorOutput(cliStatus?.stderr ?? "");
     const cliWarnings = gatewayWarningOutput(cliStatus?.stderr ?? "");
-    const healthStatus = running ? "running" : (gatewayError || cliFailed) ? "error" : "stopped";
+    const healthStatus = this.gatewayFailures.size > 0 ? "error" : running ? "running" : (gatewayError || cliFailed) ? "error" : "stopped";
     return {
       running,
       managedRunning,
       healthStatus,
-      platformStates: stateStatus?.platformStates,
+      platformStates: { ...stateStatus?.platformStates, ...Object.fromEntries([...this.gatewayFailures.keys()].map((key) => [key, "error"])) },
       connectedPlatforms: stateStatus?.connectedPlatforms,
       autoStartState: this.gatewayAutoStartState,
       autoStartMessage: this.gatewayAutoStartMessage,
@@ -456,9 +477,20 @@ export class HermesConnectorService {
             ? stateStatus?.message || "Gateway 状态文件显示正在运行。"
             : cliStatus?.message || this.gatewayExitMessage || "Gateway 未由桌面端托管运行。",
       lastOutput: trimLog([this.gatewayOutput, gatewayWarnings, cliStatus?.stdout, cliWarnings].filter(Boolean).join("\n")),
-      lastError: trimLog([gatewayError, cliError].filter(Boolean).join("\n")),
+      lastError: trimLog([gatewayError, cliError, ...this.gatewayFailures.values()].filter(Boolean).join("\n")),
       checkedAt: new Date().toISOString(),
     };
+  }
+
+  private async refreshGatewayCliStatus() {
+    if (!this.gatewayCliCheck) {
+      this.gatewayCliCheck = this.gatewayCliStatus().then((status) => {
+        this.gatewayCliCache = status;
+        this.gatewayCliCachedAt = Date.now();
+        return status;
+      }).catch(() => undefined).finally(() => { this.gatewayCliCheck = undefined; });
+    }
+    return this.gatewayCliCheck;
   }
 
   async checkPreflight(): Promise<{
@@ -505,10 +537,21 @@ export class HermesConnectorService {
   }
 
   async start(options: { forceReplace?: boolean } = {}): Promise<HermesGatewayActionResult> {
+    if (this.gatewayMaintenance) return this.cancelledGatewayStart("Hermes 正在维护，请等待结束后再启动 Gateway。");
+    if (this.gatewayStopPromise) {
+      await this.gatewayStopPromise;
+      return this.cancelledGatewayStart("Gateway 已停止，请重新发起启动。");
+    }
+    if (this.gatewayMaintenance) return this.cancelledGatewayStart("Hermes 正在维护，请等待结束后再启动 Gateway。");
     if (this.gatewayStartPromise) {
       return this.gatewayStartPromise;
     }
-    const promise = this.startInternal(options);
+    const generation = ++this.gatewayStartGeneration;
+    this.gatewayUserStopped = false;
+    const promise = this.startInternal(options, generation).catch((error) => {
+      if (!this.gatewayStartIsCurrent(generation)) return this.cancelledGatewayStart("Gateway 启动已取消。");
+      throw error;
+    });
     this.gatewayStartPromise = promise;
     try {
       return await promise;
@@ -519,21 +562,53 @@ export class HermesConnectorService {
     }
   }
 
-  private async startInternal(options: { forceReplace?: boolean } = {}): Promise<HermesGatewayActionResult> {
-    this.gatewayUserStopped = false;
+  setMaintenance(active: boolean) {
+    this.gatewayMaintenance = active;
+    if (active) this.invalidateGatewayStartup();
+  }
+
+  private invalidateGatewayStartup() {
+    this.gatewayStartGeneration += 1;
+    this.gatewayUserStopped = true;
+    if (this.gatewayAutoRestartTimer) clearTimeout(this.gatewayAutoRestartTimer);
+    this.gatewayAutoRestartTimer = undefined;
+  }
+
+  private gatewayStartIsCurrent(generation: number) {
+    return generation === this.gatewayStartGeneration && !this.gatewayUserStopped && !this.gatewayMaintenance;
+  }
+
+  private assertGatewayStartCurrent(generation: number) {
+    if (!this.gatewayStartIsCurrent(generation)) throw new Error("Gateway 启动已取消。");
+  }
+
+  private async cancelledGatewayStart(message: string): Promise<HermesGatewayActionResult> {
+    return { ok: false, status: await this.status(), message };
+  }
+
+  private async startInternal(options: { forceReplace?: boolean } = {}, generation = this.gatewayStartGeneration): Promise<HermesGatewayActionResult> {
+    const config = await this.readRuntimeConfig?.();
+    this.assertGatewayStartCurrent(generation);
+    if (config?.extensionSettings && !config.extensionSettings.connectorsEnabled && !config.extensionSettings.cronEnabled) {
+      return { ok: false, status: await this.status(), message: "请先在设置中启用消息连接器或定时任务扩展。" };
+    }
+    const connectorsEnabled = config?.extensionSettings?.connectorsEnabled ?? true;
+    const cronEnabled = config?.extensionSettings?.cronEnabled ?? false;
     if (this.gatewayAutoRestartTimer) {
       clearTimeout(this.gatewayAutoRestartTimer);
       this.gatewayAutoRestartTimer = undefined;
     }
     const current = await this.status();
+    this.assertGatewayStartCurrent(generation);
     if (current.running && !options.forceReplace) {
       const stored = await this.readConfig().catch(() => ({ platforms: {} }));
-      const readyFeishuInstances = await this.configuredFeishuInstances(stored).catch(() => []);
+      const readyFeishuInstances = connectorsEnabled ? await this.configuredFeishuInstances(stored).catch(() => []) : [];
+      this.assertGatewayStartCurrent(generation);
       const hasMissingFeishuInstance = readyFeishuInstances.some(([instanceId]) => {
         const key = feishuRuntimeKey(instanceId);
         return current.platformStates?.[key]?.toLowerCase() !== "connected" && !this.feishuGatewayProcesses.has(normalizeFeishuInstanceId(instanceId));
       });
-      if (!hasMissingFeishuInstance) {
+      if (!hasMissingFeishuInstance && !this.gatewayFailures.has("main")) {
         this.gatewayAutoStartState = "running";
         this.gatewayAutoStartMessage = "Gateway 已在运行。";
         return { ok: true, status: current, message: "Gateway 已在运行。" };
@@ -542,17 +617,19 @@ export class HermesConnectorService {
     if (options.forceReplace) {
       this.gatewayBackoffUntil = undefined;
       if (this.gatewayProcess?.pid) {
-        this.gatewayUserStopped = true;
-        await killProcessTree(this.gatewayProcess.pid).catch((error) => {
-          console.warn("[Hermes Forge] Failed to stop existing managed Gateway before replace:", error);
-        });
-        this.gatewayUserStopped = false;
+        const previous = this.gatewayProcess;
+        this.expectedGatewayExits.add(previous);
+        try { await this.killGatewayProcess(previous.pid!); }
+        catch (error) { this.expectedGatewayExits.delete(previous); throw error; }
+        if (this.gatewayProcess === previous) this.gatewayProcess = undefined;
+        this.assertGatewayStartCurrent(generation);
       }
       for (const [instanceId, child] of this.feishuGatewayProcesses) {
         if (!child.pid) continue;
-        await killProcessTree(child.pid).catch((error) => {
-          console.warn(`[Hermes Forge] Failed to stop existing Feishu Gateway ${instanceId} before replace:`, error);
-        });
+        this.expectedGatewayExits.add(child);
+        try { await this.killGatewayProcess(child.pid); }
+        catch (error) { this.expectedGatewayExits.delete(child); throw error; }
+        this.assertGatewayStartCurrent(generation);
       }
       this.feishuGatewayProcesses.clear();
       this.feishuGatewayStartedAt.clear();
@@ -578,6 +655,7 @@ export class HermesConnectorService {
       };
     }
     const runtime = await this.runtimeContext(root);
+    this.assertGatewayStartCurrent(generation);
     this.gatewayAutoStartState = "starting";
     this.gatewayAutoStartMessage = "正在启动 Gateway...";
     if (!runtime.ok) {
@@ -590,6 +668,7 @@ export class HermesConnectorService {
       };
     }
     const preflight = await this.preflightGatewayRuntime(runtime);
+    this.assertGatewayStartCurrent(generation);
     if (!preflight.ok) {
       this.gatewayAutoStartState = "failed";
       this.gatewayAutoStartMessage = preflight.message;
@@ -600,6 +679,7 @@ export class HermesConnectorService {
       };
     }
     const modelSync = await this.ensureGatewayModelRuntime();
+    this.assertGatewayStartCurrent(generation);
     if (!modelSync.ok) {
       this.gatewayAutoStartState = "failed";
       this.gatewayAutoStartMessage = modelSync.message;
@@ -610,18 +690,28 @@ export class HermesConnectorService {
       };
     }
     await this.clearGatewayRuntimeMarkers();
-    await this.syncEnv().catch(() => undefined);
+    try {
+      await this.syncEnv();
+      this.assertGatewayStartCurrent(generation);
+    } catch (error) {
+      const message = `连接器配置同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
+      this.gatewayAutoStartState = "failed";
+      this.gatewayAutoStartMessage = message;
+      return { ok: false, status: { ...current, healthStatus: "error", lastError: message }, message };
+    }
     const stored = await this.readConfig();
     const hermesEnv = await this.readEnvValues();
-    const feishuInstances = await this.configuredFeishuInstances(stored);
-    const hasNonFeishuConnector = await this.hasConfiguredNonFeishuConnector(stored, hermesEnv);
+    const feishuInstances = connectorsEnabled ? await this.configuredFeishuInstances(stored) : [];
+    const hasNonFeishuConnector = cronEnabled || (connectorsEnabled && await this.hasConfiguredNonFeishuConnector(stored, hermesEnv));
+    this.assertGatewayStartCurrent(generation);
     let mainStarted = false;
-    const mainGatewayAlreadyRunning = hasMainGatewayRuntime(current, {
+    const mainGatewayAlreadyRunning = !options.forceReplace && !this.gatewayFailures.has("main") && hasMainGatewayRuntime(current, {
       managedMainRunning: Boolean(this.gatewayProcess && !this.gatewayProcess.killed),
       managedFeishuCount: this.feishuGatewayProcesses.size,
     });
     if (hasNonFeishuConnector && !mainGatewayAlreadyRunning) {
       const launch = await this.gatewayLaunchFromRuntime(runtime, hermesEnv);
+      this.assertGatewayStartCurrent(generation);
       console.info("[Hermes Forge] Gateway launch", {
         command: launch.command,
         args: launch.args,
@@ -631,13 +721,15 @@ export class HermesConnectorService {
         distro: runtime.runtime.distro,
         hermesRoot: runtime.root,
       });
-      const child = spawn(launch.command, launch.args, {
+      const child = this.spawnGatewayProcess(launch.command, launch.args, {
         cwd: launch.cwd,
         env: launch.env,
         windowsHide: true,
         shell: false,
       });
       this.gatewayProcess = child;
+      this.gatewayFailures.delete("main");
+      this.gatewayCliCache = undefined;
       this.gatewayStartedAt = new Date().toISOString();
       this.gatewayOutput = "";
       this.gatewayError = "";
@@ -658,6 +750,7 @@ export class HermesConnectorService {
       });
       await this.sleep(1200);
       const status = await this.status();
+      this.assertGatewayStartCurrent(generation);
       if (!status.running) {
         this.gatewayAutoStartState = "failed";
         this.gatewayAutoStartMessage = status.lastError || status.message || "Gateway 启动失败。";
@@ -672,7 +765,9 @@ export class HermesConnectorService {
       mainStarted = true;
     }
     for (const [instanceId, instance] of feishuInstances) {
-      await this.startFeishuGatewayInstance(runtime, instanceId, instance);
+      this.assertGatewayStartCurrent(generation);
+      await this.startFeishuGatewayInstance(runtime, instanceId, instance, generation);
+      this.assertGatewayStartCurrent(generation);
     }
     if (!mainStarted && feishuInstances.length === 0) {
       this.gatewayAutoStartState = "failed";
@@ -684,7 +779,8 @@ export class HermesConnectorService {
       };
     }
     const status = await this.status();
-    if (!status.running) {
+    this.assertGatewayStartCurrent(generation);
+    if (!status.running || status.healthStatus === "error") {
       this.gatewayAutoStartState = "failed";
       this.gatewayAutoStartMessage = status.lastError || status.message || "Gateway 启动失败。";
       return { ok: false, status, message: status.lastError || status.message || "Gateway 启动失败。" };
@@ -695,25 +791,28 @@ export class HermesConnectorService {
   }
 
   async stop(): Promise<HermesGatewayActionResult> {
-    if (!this.gatewayProcess?.pid && this.feishuGatewayProcesses.size === 0) {
-      return { ok: true, status: await this.status(), message: "没有桌面端托管的 Gateway 进程。" };
+    this.invalidateGatewayStartup();
+    if (this.gatewayStopPromise) return this.gatewayStopPromise;
+    const promise = this.stopInternal(this.gatewayStartPromise);
+    this.gatewayStopPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (this.gatewayStopPromise === promise) this.gatewayStopPromise = undefined;
     }
-    this.gatewayUserStopped = true;
-    if (this.gatewayAutoRestartTimer) {
-      clearTimeout(this.gatewayAutoRestartTimer);
-      this.gatewayAutoRestartTimer = undefined;
-    }
+  }
+
+  private async stopInternal(starting?: Promise<HermesGatewayActionResult>): Promise<HermesGatewayActionResult> {
     if (this.gatewayProcess?.pid) {
-      await killProcessTree(this.gatewayProcess.pid);
+      await this.killGatewayProcess(this.gatewayProcess.pid);
       this.gatewayProcess = undefined;
     }
     for (const [instanceId, child] of this.feishuGatewayProcesses) {
       if (child.pid) {
-        await killProcessTree(child.pid).catch((error) => {
-          console.warn(`[Hermes Forge] Failed to stop Feishu Gateway ${instanceId}:`, error);
-        });
+        await this.killGatewayProcess(child.pid);
       }
     }
+    await starting?.catch(() => undefined);
     this.feishuGatewayProcesses.clear();
     this.feishuGatewayStartedAt.clear();
     this.gatewayStartedAt = undefined;
@@ -722,6 +821,8 @@ export class HermesConnectorService {
     this.gatewayExitMessage = "Gateway 已由桌面端停止。";
     this.gatewayAutoStartState = "idle";
     this.gatewayAutoStartMessage = "Gateway 已停止。";
+    this.gatewayFailures.clear();
+    this.gatewayCliCache = undefined;
     return { ok: true, status: await this.status(), message: "Gateway 已停止。" };
   }
 
@@ -729,11 +830,17 @@ export class HermesConnectorService {
     if (this.gatewayProcess !== child) {
       return;
     }
+    if (this.expectedGatewayExits.delete(child)) {
+      this.gatewayProcess = undefined;
+      this.gatewayStartedAt = undefined;
+      return;
+    }
     const wasRunning = this.gatewayAutoStartState === "running" || this.gatewayAutoStartState === "starting";
     this.gatewayLastExitCode = exitCode;
     this.gatewayLastExitAt = new Date().toISOString();
     this.gatewayExitMessage = `Gateway 已退出，退出码：${exitCode ?? "unknown"}`;
-    if ((exitCode ?? 0) !== 0) {
+    if (!this.gatewayUserStopped) {
+      this.gatewayFailures.set("main", this.gatewayExitMessage);
       this.gatewayRestartCount += 1;
       this.gatewayBackoffUntil = new Date(Date.now() + 5_000).toISOString();
       this.gatewayAutoStartState = "failed";
@@ -744,15 +851,12 @@ export class HermesConnectorService {
     }
     this.gatewayProcess = undefined;
     this.gatewayStartedAt = undefined;
-    if (wasRunning && !this.gatewayUserStopped && (exitCode ?? 0) !== 0) {
+    if (wasRunning && !this.gatewayUserStopped) {
       this.scheduleAutoRestart();
     }
   }
 
   async restart(): Promise<HermesGatewayActionResult> {
-    if (this.gatewayStartPromise) {
-      return this.gatewayStartPromise;
-    }
     await this.stop();
     return this.start({ forceReplace: true });
   }
@@ -763,6 +867,18 @@ export class HermesConnectorService {
   }
 
   async autoStartIfConfigured() {
+    const runtimeConfig = await this.readRuntimeConfig?.();
+    if (runtimeConfig?.extensionSettings?.cronEnabled) {
+      const result = await this.start();
+      this.gatewayAutoStartState = result.ok ? "running" : "failed";
+      this.gatewayAutoStartMessage = result.message;
+      return;
+    }
+    if (runtimeConfig?.extensionSettings?.connectorsEnabled === false) {
+      this.gatewayAutoStartState = "idle";
+      this.gatewayAutoStartMessage = "扩展未启用，已跳过自动启动。";
+      return;
+    }
     this.gatewayAutoStartState = "starting";
     this.gatewayAutoStartMessage = "正在检查连接器并准备自动启动...";
     const stored = await this.readConfig();
@@ -777,7 +893,7 @@ export class HermesConnectorService {
       return;
     }
     if (readyFeishuInstances.length > 0) {
-      await this.syncEnv().catch(() => undefined);
+      await this.syncEnv();
       const result = await this.start();
       this.gatewayAutoStartState = result.ok ? "running" : "failed";
       this.gatewayAutoStartMessage = result.message;
@@ -786,7 +902,7 @@ export class HermesConnectorService {
     for (const item of enabledPlatforms) {
       const missing = await this.missingRequired(item.platform, item.config, envValues);
       if (missing.length === 0) {
-        await this.syncEnv().catch(() => undefined);
+        await this.syncEnv();
         const result = await this.start();
         this.gatewayAutoStartState = result.ok ? "running" : "failed";
         this.gatewayAutoStartMessage = result.message;
@@ -798,6 +914,7 @@ export class HermesConnectorService {
   }
 
   private scheduleAutoRestart() {
+    if (this.gatewayMaintenance || this.gatewayUserStopped) return;
     if (this.gatewayAutoRestartTimer) {
       clearTimeout(this.gatewayAutoRestartTimer);
     }
@@ -848,40 +965,6 @@ export class HermesConnectorService {
     };
     this.weixinQrStatus = status;
     return { ok: false, status: this.getWeixinQrStatus(), message };
-  }
-
-  private failWeixinDependencyInstall(
-    error: unknown,
-    command: string,
-    failureCode: string,
-    recommendedFix: string,
-  ): WeixinDependencyInstallResult {
-    const message = recommendedFix;
-    const status: WeixinQrLoginStatus = {
-      ...this.weixinQrStatus,
-      running: false,
-      phase: "failed",
-      completedAt: new Date().toISOString(),
-      success: false,
-      failureCode,
-      lastHeartbeatAt: new Date().toISOString(),
-      message,
-      recoveryAction: undefined,
-      recoveryCommand: undefined,
-      failureKind: "manual_fix",
-      recommendedFix,
-    };
-    this.weixinQrStatus = status;
-    return {
-      ok: false,
-      message,
-      command,
-      stdout: "",
-      stderr: "",
-      failureCategory: "unknown",
-      recommendedFix,
-      status,
-    };
   }
 
   async startWeixinQrLogin(): Promise<WeixinQrLoginResult> {
@@ -993,127 +1076,6 @@ export class HermesConnectorService {
       recommendedFix: undefined,
     };
     return { ok: true, status: this.getWeixinQrStatus(), message: "微信扫码登录已取消。" };
-  }
-
-  async installWeixinDependency(): Promise<WeixinDependencyInstallResult> {
-    let root: string;
-    try {
-      root = await this.resolveHermesRoot();
-    } catch (error) {
-      return this.failWeixinDependencyInstall(error, "(unavailable)", "hermes_root_unavailable", "请到「设置 → Hermes 运行时」中检查 Hermes Agent 安装状态。");
-    }
-    const runtime = await this.runtimeContext(root);
-    if (!runtime.ok && runtime.debugContext?.preflight) {
-      return this.failWeixinDependencyInstall(
-        new Error(runtime.message),
-        "(unavailable)",
-        "runtime_preflight_failed",
-        "请到「设置 → Hermes 运行时」中检查 Hermes Agent 安装状态，或运行一键诊断。",
-      );
-    }
-    let python: PythonCommand | undefined;
-    if (!runtime.ok) {
-      try {
-        python = await this.resolvePythonCommand(root);
-      } catch (error) {
-        return this.failWeixinDependencyInstall(error, "(unavailable)", "python_unavailable", "请在「设置 → Hermes 运行时」配置可用的 Python 命令。");
-      }
-    }
-    const command = runtime.ok ? `${runtime.label} -m pip install aiohttp` : `${python!.label} -m pip install aiohttp`;
-    let dependencyStatus: WeixinQrLoginStatus | undefined;
-    try {
-      dependencyStatus = runtime.ok
-        ? await this.preflightWeixinDependenciesWithRuntime(runtime)
-        : await this.preflightWeixinDependencies(root, python!);
-    } catch (error) {
-      return this.failWeixinDependencyInstall(error, command, "preflight_failed", "请确认 Python 与 Hermes Agent 安装路径正确，并具有执行权限。");
-    }
-    if (!dependencyStatus) {
-      const status = this.getWeixinQrStatus();
-      return {
-        ok: true,
-        message: "当前运行环境已具备 aiohttp，准备重新开始扫码。",
-        command,
-        stdout: "",
-        stderr: "",
-        status,
-      };
-    }
-
-    let launch: { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv };
-    try {
-      launch = runtime.ok
-        ? await runtime.adapter.buildPythonLaunch({
-          runtime: runtime.runtime,
-          rootPath: runtime.adapter.toRuntimePath(root),
-          pythonArgs: ["-m", "pip", "install", "aiohttp"],
-          cwd: root,
-          env: buildPythonEnv(undefined, await this.isEditableInstall(root) ? [runtime.adapter.toRuntimePath(root)] : []),
-        })
-        : await this.legacyPythonLaunch(root, ["-m", "pip", "install", "aiohttp"], python!.command, python!.args);
-    } catch (error) {
-      return this.failWeixinDependencyInstall(error, command, "launch_build_failed", "请在「设置 → Hermes 运行时」检查 Python 命令配置。");
-    }
-    const result = await runCommand(launch.command, launch.args, {
-      cwd: launch.cwd,
-      timeoutMs: 120000,
-      env: launch.env,
-      commandId: "connector.weixin.install-aiohttp",
-      runtimeKind: runtime.ok ? runtime.runtime.mode : "windows",
-    });
-    const stdout = trimLog(result.stdout || "");
-    const stderr = trimLog(result.stderr || "");
-    if (result.exitCode !== 0) {
-      const failure = classifyWeixinInstallFailure(`${stdout}\n${stderr}`);
-      const status: WeixinQrLoginStatus = {
-        ...dependencyStatus,
-        running: false,
-        phase: "failed",
-        completedAt: new Date().toISOString(),
-        success: false,
-        message: `安装 aiohttp 失败：${failure.message}`,
-        failureKind: "manual_fix",
-        recommendedFix: failure.recommendedFix,
-      };
-      this.weixinQrStatus = status;
-      return {
-        ok: false,
-        message: status.message,
-        command,
-        stdout,
-        stderr,
-        failureCategory: failure.category,
-        recommendedFix: failure.recommendedFix,
-        status,
-      };
-    }
-
-    const afterInstallStatus = runtime.ok
-      ? await this.preflightWeixinDependenciesWithRuntime(runtime)
-      : await this.preflightWeixinDependencies(root, python!);
-    if (afterInstallStatus) {
-      this.weixinQrStatus = afterInstallStatus;
-      return {
-        ok: false,
-        message: afterInstallStatus.message,
-        command,
-        stdout,
-        stderr,
-        failureCategory: "unknown",
-        recommendedFix: afterInstallStatus.recommendedFix,
-        status: afterInstallStatus,
-      };
-    }
-
-    const restart = await this.startWeixinQrLogin();
-    return {
-      ok: restart.ok,
-      message: restart.message,
-      command,
-      stdout,
-      stderr,
-      status: restart.status,
-    };
   }
 
   private handleWeixinQrOutput(runId: number, text: string) {
@@ -1654,14 +1616,24 @@ export class HermesConnectorService {
 
   private async gatewayLaunchFromRuntime(runtime: Extract<ConnectorRuntimeContext, { ok: true }>, hermesEnv: Record<string, string>, hermesHomeOverride?: string) {
     const runtimeRoot = runtime.adapter.toRuntimePath(runtime.root);
-    const cliPath = runtime.runtime.mode === "wsl" ? `${runtimeRoot.replace(/\/+$/, "")}/hermes` : this.hermesCliPath(runtime.root);
+    const runtimeConfig = await this.readRuntimeConfig?.();
+    const gatewayScript = [
+      path.join(process.resourcesPath ?? "", "hermes-forge-gateway.py"),
+      path.join(process.cwd(), "resources", "hermes-forge-gateway.py"),
+    ].find((candidate) => fsSync.existsSync(candidate));
+    if (!gatewayScript) throw new Error("Gateway 适配资源缺失，请修复客户端安装。");
     const runtimeHermesHome = runtime.adapter.toRuntimePath(hermesHomeOverride ?? await this.activeHermesHome());
     const launch = await runtime.adapter.buildHermesLaunch({
       runtime: runtime.runtime,
       rootPath: runtimeRoot,
-      pythonArgs: [cliPath, "gateway", "run", "--replace"],
+      pythonArgs: [runtime.adapter.toRuntimePath(gatewayScript), "--replace"],
       cwd: runtime.root,
-      env: buildGatewayEnv(process.env, hermesEnv, runtimeRoot, runtimeHermesHome, await this.isEditableInstall(runtime.root)),
+      env: {
+        ...buildGatewayEnv(process.env, hermesEnv, runtimeRoot, runtimeHermesHome, await this.isEditableInstall(runtime.root)),
+        HERMES_FORGE_CONNECTORS_ENABLED: runtimeConfig?.extensionSettings?.connectorsEnabled === false ? "0" : "1",
+        // Separate Feishu homes must not duplicate the main scheduler.
+        HERMES_FORGE_CRON_ENABLED: !hermesHomeOverride && runtimeConfig?.extensionSettings?.cronEnabled ? "1" : "0",
+      },
     });
     return {
       command: launch.command,
@@ -1676,7 +1648,9 @@ export class HermesConnectorService {
     runtime: Extract<ConnectorRuntimeContext, { ok: true }>,
     instanceId: string,
     instance: StoredPlatformConfig,
+    generation = this.gatewayStartGeneration,
   ) {
+    this.assertGatewayStartCurrent(generation);
     const normalizedId = normalizeFeishuInstanceId(instanceId);
     const existing = this.feishuGatewayProcesses.get(normalizedId);
     if (existing && !existing.killed) return;
@@ -1687,6 +1661,7 @@ export class HermesConnectorService {
     const activeEnv = await this.readEnvValues();
     const agentEnv = await this.readEnvValuesFromPath(path.join(agent.home, ".env"));
     const launch = await this.gatewayLaunchFromRuntime(runtime, { ...activeEnv, ...agentEnv, ...envValues }, instanceHome);
+    this.assertGatewayStartCurrent(generation);
     console.info("[Hermes Forge] Feishu Gateway launch", {
       instanceId: normalizedId,
       agentProfile: agent.profileId,
@@ -1695,13 +1670,14 @@ export class HermesConnectorService {
       cwd: launch.cwd,
       label: launch.label,
     });
-    const child = spawn(launch.command, launch.args, {
+    const child = this.spawnGatewayProcess(launch.command, launch.args, {
       cwd: launch.cwd,
       env: launch.env,
       windowsHide: true,
       shell: false,
     });
     this.feishuGatewayProcesses.set(normalizedId, child);
+    this.gatewayFailures.delete(feishuRuntimeKey(normalizedId));
     this.feishuGatewayStartedAt.set(normalizedId, new Date().toISOString());
     child.stdout.on("data", (chunk: Buffer) => {
       this.gatewayOutput = trimLog(`${this.gatewayOutput}\n[${feishuRuntimeKey(normalizedId)}] ${chunk.toString("utf8")}`);
@@ -1718,11 +1694,14 @@ export class HermesConnectorService {
       this.gatewayLastExitAt = new Date().toISOString();
       this.feishuGatewayProcesses.delete(normalizedId);
       this.feishuGatewayStartedAt.delete(normalizedId);
-      if ((exitCode ?? 0) !== 0) {
+      if (this.expectedGatewayExits.delete(child)) return;
+      if (!this.gatewayUserStopped) {
         this.gatewayRestartCount += 1;
         this.gatewayBackoffUntil = new Date(Date.now() + 5_000).toISOString();
         this.gatewayAutoStartState = "failed";
         this.gatewayAutoStartMessage = `${feishuRuntimeKey(normalizedId)} Gateway 已退出，退出码：${exitCode ?? "unknown"}`;
+        this.gatewayFailures.set(feishuRuntimeKey(normalizedId), this.gatewayAutoStartMessage);
+        this.scheduleAutoRestart();
       }
     });
     await this.sleep(1200);
@@ -1812,60 +1791,8 @@ export class HermesConnectorService {
   }
 
   private async resolvePythonCommand(root: string): Promise<PythonCommand> {
-    const configured = (await this.resolveConfiguredPythonCommand?.().catch(() => undefined))?.trim();
-    const candidates: PythonCommand[] = [];
-    const addCandidate = (raw: string | undefined) => {
-      if (!raw?.trim()) return;
-      const parsed = parseCommandLine(raw);
-      if (!parsed) return;
-      if (!candidates.some((item) => item.command === parsed.command && item.args.join("\0") === parsed.args.join("\0"))) {
-        candidates.push(parsed);
-      }
-    };
-
-    addCandidate(configured);
-    if (process.platform === "win32") {
-      addCandidate(path.join(process.env.USERPROFILE ?? "", "miniconda3", "python.exe"));
-      addCandidate(path.join(process.env.USERPROFILE ?? "", "anaconda3", "python.exe"));
-      addCandidate(path.join(root, ".venv", "Scripts", "python.exe"));
-      addCandidate(path.join(root, "venv", "Scripts", "python.exe"));
-      addCandidate(path.join(root, "env", "Scripts", "python.exe"));
-      addCandidate("py -3");
-      addCandidate("py");
-      addCandidate("python");
-      addCandidate("python3");
-      for (const candidate of getWindowsPythonInstallCandidates("win32")) {
-        addCandidate(candidate);
-      }
-    } else {
-      addCandidate(path.join(root, ".venv", "bin", "python"));
-      addCandidate(path.join(root, "venv", "bin", "python"));
-      addCandidate(configured || "python3");
-      addCandidate("python");
-    }
-
-    const failures: string[] = [];
-    for (const candidate of candidates) {
-      if (looksLikeFilePath(candidate.command) && !(await fileExists(candidate.command))) {
-        failures.push(`${candidate.label}: 文件不存在`);
-        continue;
-      }
-      const result = await runCommand(candidate.command, [...candidate.args, this.hermesCliPath(root), "--version"], {
-        cwd: root,
-        timeoutMs: 5000,
-        env: buildPythonEnv(undefined, await this.isEditableInstall(root) ? [root] : []),
-      });
-      if (result.exitCode === 0 && /Hermes Agent/i.test(`${result.stdout}\n${result.stderr}`)) {
-        return candidate;
-      }
-      failures.push(`${candidate.label}: ${trimLog(result.stderr || result.stdout || `exit ${result.exitCode}`)}`);
-    }
-
-    throw new Error([
-      "找不到可用的 Python，无法启动微信扫码或 Gateway。",
-      "请在设置页把 Hermes Python 命令改成可执行路径，例如 py -3，或完整的 python.exe 路径。",
-      failures.length ? `已尝试：${failures.slice(0, 6).join("；")}` : "",
-    ].filter(Boolean).join(" "));
+    const environment = await requireManagedHermesEnvironment(root);
+    return { command: environment.pythonPath, args: [], label: environment.pythonPath };
   }
 
   private editableInstallCache = new Map<string, boolean>();
@@ -2023,7 +1950,7 @@ export class HermesConnectorService {
       ...envLines,
       MANAGED_END,
     ];
-    await fs.writeFile(envPath, `${lines.join("\n")}\n`, "utf8");
+    await withHermesHomeLock(instanceHome, () => atomicWriteText(envPath, `${lines.join("\n")}\n`));
     await fs.chmod(envPath, 0o600).catch(() => undefined);
   }
 
@@ -2047,22 +1974,17 @@ export class HermesConnectorService {
     const stat = await fs.stat(source).catch(() => undefined);
     if (!stat?.isFile()) return;
     const existing = await fs.lstat(target).catch(() => undefined);
-    if (existing) return;
+    if (existing?.isSymbolicLink()) return;
+    if (existing?.isFile()) {
+      const [content, current] = await Promise.all([fs.readFile(source, "utf8"), fs.readFile(target, "utf8")]);
+      if (content !== current) await atomicWriteText(target, content);
+      return;
+    }
+    if (existing) throw new Error(`Profile 目标不是文件：${target}`);
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.symlink(source, target, "file").catch(async () => {
-      await fs.copyFile(source, target).catch(() => undefined);
+      await atomicWriteText(target, await fs.readFile(source, "utf8"));
     });
-  }
-
-  private async pruneStaleFeishuInstanceHomes(activeInstanceHomes: string[]) {
-    const roots = await this.feishuInstanceRoots();
-    const keep = new Set(activeInstanceHomes.map((home) => normalizeFsPath(home)));
-    await Promise.all(roots.map(async (root) => {
-      const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
-      await Promise.all(entries
-        .filter((entry) => entry.isDirectory() && !keep.has(normalizeFsPath(path.join(root, entry.name))))
-        .map((entry) => fs.rm(path.join(root, entry.name), { recursive: true, force: true }).catch(() => undefined)));
-    }));
   }
 
   private async feishuInstanceRoots() {
@@ -2115,7 +2037,7 @@ export class HermesConnectorService {
 
   private async writeConfig(config: StoredConnectorConfig) {
     await fs.mkdir(path.dirname(this.configPath()), { recursive: true });
-    await fs.writeFile(this.configPath(), JSON.stringify(config, null, 2), "utf8");
+    await atomicWriteText(this.configPath(), JSON.stringify(config, null, 2));
   }
 
   private ensureFeishuInstances(config: StoredPlatformConfig | undefined): StoredPlatformConfig {
@@ -2176,12 +2098,7 @@ export class HermesConnectorService {
     return values;
   }
 
-  private async backupEnv(envPath: string, existing: string) {
-    if (!existing) return;
-    const backupDir = path.join(path.dirname(envPath), ".hermes-workbench-backups");
-    await fs.mkdir(backupDir, { recursive: true });
-    await fs.writeFile(path.join(backupDir, `.env.${Date.now()}.bak`), sanitizeEnvBackup(existing), "utf8");
-  }
+
 }
 
 function platform(
@@ -2473,7 +2390,7 @@ function decorateWeixinFailure(code: string | undefined, message: string, runtim
       message,
       failureCode: code,
       recoveryAction: "install_aiohttp",
-      recoveryCommand: runtimePythonLabel ? `${runtimePythonLabel} -m pip install aiohttp` : "python -m pip install aiohttp",
+      recoveryCommand: undefined,
       runtimePythonLabel,
       failureKind: "recoverable",
       recommendedFix: "点击“一键安装依赖”，系统会把 aiohttp 安装到 Hermes 正在使用的 Python 环境里，然后自动重试扫码。",
@@ -2489,7 +2406,7 @@ function decorateWeixinFailure(code: string | undefined, message: string, runtim
       failureCode: code,
       runtimePythonLabel,
       failureKind: "manual_fix",
-      recommendedFix: "当前缺少 cryptography，建议先在 Hermes Python 环境里手动执行 pip install cryptography，再重新扫码。",
+      recommendedFix: "当前缺少 cryptography，请在设置中修复 Hermes 受管运行环境后重新扫码。",
     };
   }
   return {
@@ -2778,10 +2695,17 @@ function isPidAlive(pid: number) {
 
 async function killProcessTree(pid: number) {
   if (process.platform === "win32") {
-    await runCommand("taskkill", ["/pid", String(pid), "/t", "/f"], {
+    const result = await runCommand("taskkill", ["/pid", String(pid), "/t", "/f"], {
       cwd: process.cwd(),
       timeoutMs: 10000,
     });
+    if (result.exitCode !== 0) {
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      }
+      throw new Error(`无法停止 Gateway 进程 ${pid}，请先结束进程再重试。`);
+    }
     return;
   }
   try {

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BookOpen, Check, Plus, RefreshCw, Trash2, UserCircle, Wrench } from "lucide-react";
 import type { HermesProfile } from "../../../../shared/types";
 import { useAppStore } from "../../../store";
 import { ConfirmCard } from "../ConfirmCard";
 import { NoticeCard } from "../NoticeCard";
+import { refreshOverviewSection } from "../../../overview-data";
 
 export function ProfilesPanel() {
   const store = useAppStore();
@@ -15,8 +16,10 @@ export function ProfilesPanel() {
   const nameError = profileNameError(name);
   const activeProfile = profiles.find((profile) => profile.active);
 
+  useEffect(() => { void refresh().catch(error => setMessage(error instanceof Error ? error.message : "Agent 读取失败，请重试。")); }, []);
+
   async function refresh() {
-    store.setWebUiOverview(await window.workbenchClient.getWebUiOverview());
+    await refreshOverviewSection("profiles");
   }
 
   async function createProfile() {
@@ -85,10 +88,10 @@ export function ProfilesPanel() {
               <p className="mt-0.5 break-all font-mono text-xs text-indigo-500">{activeProfile.path}</p>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
-              <button className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-100 transition hover:bg-indigo-50" onClick={() => store.setActivePanel("skills")} type="button">
+              <button className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-100 transition hover:bg-indigo-50" onClick={() => { store.setKnowledgeTab("skills"); store.setActivePanel("knowledge"); store.setView("home"); }} type="button">
                 <Wrench size={13} /> 技能
               </button>
-              <button className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-100 transition hover:bg-indigo-50" onClick={() => store.setActivePanel("memory")} type="button">
+              <button className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-100 transition hover:bg-indigo-50" onClick={() => { store.setKnowledgeTab("memory"); store.setActivePanel("knowledge"); store.setView("home"); }} type="button">
                 <BookOpen size={13} /> 记忆
               </button>
             </div>

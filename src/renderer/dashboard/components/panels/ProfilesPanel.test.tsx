@@ -7,20 +7,20 @@ import { ProfilesPanel } from "./ProfilesPanel";
 const createProfile = vi.fn();
 const switchProfile = vi.fn();
 const deleteProfile = vi.fn();
-const getWebUiOverview = vi.fn();
+const listProfiles = vi.fn();
 
 beforeEach(() => {
   useAppStore.getState().resetStore();
   createProfile.mockReset();
   switchProfile.mockReset();
   deleteProfile.mockReset();
-  getWebUiOverview.mockReset();
+  listProfiles.mockReset();
   Object.assign(window, {
     workbenchClient: {
       createProfile,
       switchProfile,
       deleteProfile,
-      getWebUiOverview,
+      listProfiles,
     },
   });
   useAppStore.setState({
@@ -28,10 +28,10 @@ beforeEach(() => {
       { id: "default", name: "default", path: "C:/Hermes/default", active: true, hasConfig: true, skillCount: 1, memoryFiles: 2 },
     ]),
   });
-  getWebUiOverview.mockResolvedValue(overview([
+  listProfiles.mockResolvedValue([
     { id: "default", name: "default", path: "C:/Hermes/default", active: false, hasConfig: true, skillCount: 1, memoryFiles: 2 },
     { id: "wechat", name: "wechat", path: "C:/Hermes/profiles/wechat", active: true, hasConfig: false, skillCount: 0, memoryFiles: 2 },
-  ]));
+  ]);
 });
 
 describe("ProfilesPanel", () => {
@@ -47,17 +47,18 @@ describe("ProfilesPanel", () => {
     await waitFor(() => {
       expect(createProfile).toHaveBeenCalledWith("wechat");
       expect(switchProfile).toHaveBeenCalledWith("wechat");
-      expect(getWebUiOverview).toHaveBeenCalled();
+      expect(listProfiles).toHaveBeenCalled();
     });
   });
 
-  it("validates agent names before creating", () => {
+  it("validates agent names before creating", async () => {
     render(<ProfilesPanel />);
 
     fireEvent.change(screen.getByPlaceholderText("wechat-assistant"), { target: { value: "bad name" } });
 
     expect(screen.getByText("Agent 名称只能包含字母、数字、下划线和连字符。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建并切换" })).toBeDisabled();
+    await waitFor(() => expect(listProfiles).toHaveBeenCalled());
   });
 });
 

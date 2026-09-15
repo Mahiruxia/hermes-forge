@@ -1,21 +1,25 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, Save, Trash2, Wrench, Tag, Upload } from "lucide-react";
 import type { HermesSkill } from "../../../../shared/types";
 import { useAppStore } from "../../../store";
 import { cn } from "../../DashboardPrimitives";
 import { ConfirmCard } from "../ConfirmCard";
 import { NoticeCard } from "../NoticeCard";
+import { refreshOverviewSection } from "../../../overview-data";
+
+const EMPTY_SKILLS: HermesSkill[] = [];
 
 export function SkillsPanel() {
-  const store = useAppStore();
-  const skills = store.webUiOverview?.skills ?? [];
+  const skills = useAppStore(state => state.webUiOverview?.skills ?? EMPTY_SKILLS);
   const [editing, setEditing] = useState<{ id: string; content: string; isNew?: boolean } | undefined>();
   const [confirming, setConfirming] = useState<HermesSkill | undefined>();
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  useEffect(() => { void refresh().catch(error => setError(error instanceof Error ? error.message : "技能读取失败，请重试。")); }, []);
+
   async function refresh() {
-    store.setWebUiOverview(await window.workbenchClient.getWebUiOverview());
+    await refreshOverviewSection("skills");
   }
 
   async function editSkill(skill: HermesSkill) {
@@ -64,14 +68,7 @@ export function SkillsPanel() {
     }
   }
 
-  const validSkills = skills.filter((skill) => 
-    skill.name && 
-    skill.name.trim().length > 0 && 
-    skill.size > 0 && 
-    skill.path && 
-    skill.summary && 
-    skill.summary.trim().length > 0
-  );
+  const validSkills = skills.filter((skill) => skill.id && skill.path);
   const groupedSkills = validSkills.reduce<Record<string, HermesSkill[]>>((acc, skill) => {
     const category = skill.category || "other";
     acc[category] = [...(acc[category] || []), skill];
@@ -92,7 +89,7 @@ export function SkillsPanel() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm text-slate-500">
           <Wrench size={14} />
-          <span>读取并编辑当前 Hermes Home 下 `skills/` 目录的 Markdown 技能文件。</span>
+          <span>为当前 Agent 添加、编辑和整理技能。</span>
         </div>
         <div className="flex items-center gap-2">
           <button

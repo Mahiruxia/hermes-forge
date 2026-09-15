@@ -9,6 +9,7 @@ vi.mock("../process/command-runner", () => ({
 
 import { runCommand } from "../process/command-runner";
 import { __resetPreferredHermesRuntimeCacheForTests, RuntimeConfigStore } from "./runtime-config";
+import { DEFAULT_PINNED_HERMES_SOURCE } from "../install/install-source";
 
 const runCommandMock = vi.mocked(runCommand);
 const tempDirs: string[] = [];
@@ -23,6 +24,23 @@ afterEach(async () => {
 });
 
 describe("RuntimeConfigStore preferred runtime", () => {
+  it("does not re-enable an explicitly disabled connector with enabled child instances during migration", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
+    tempDirs.push(dir);
+    const store = new RuntimeConfigStore(path.join(dir, "config.json"));
+    const config = await store.read();
+    delete config.extensionSettings;
+    await fs.writeFile(path.join(dir, "config.json"), JSON.stringify(config), "utf8");
+    await fs.writeFile(path.join(dir, "connectors-config.json"), JSON.stringify({
+      platforms: { feishu: { enabled: false, instances: { primary: { enabled: true } } } },
+    }), "utf8");
+    expect((await store.read()).extensionSettings?.connectorsEnabled).toBe(false);
+    await fs.writeFile(path.join(dir, "connectors-config.json"), JSON.stringify({
+      platforms: { feishu: { enabled: true, instances: { primary: { enabled: true } } } },
+    }), "utf8");
+    expect((await store.read()).extensionSettings?.connectorsEnabled).toBe(true);
+  });
+
   it("uses the platform-native startup-safe default without probing on first run", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-config-"));
     tempDirs.push(dir);
@@ -36,7 +54,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "v2026.7.30",
+      branch: DEFAULT_PINNED_HERMES_SOURCE.branch,
     });
   });
 
@@ -56,7 +74,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "v2026.7.30",
+      branch: DEFAULT_PINNED_HERMES_SOURCE.branch,
     });
   });
 
@@ -78,7 +96,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "v2026.7.30",
+      branch: DEFAULT_PINNED_HERMES_SOURCE.branch,
     });
   });
 
@@ -150,7 +168,7 @@ describe("RuntimeConfigStore preferred runtime", () => {
     expect(config.hermesRuntime?.installSource).toMatchObject({
       sourceLabel: "official",
       repoUrl: "https://github.com/NousResearch/hermes-agent.git",
-      branch: "v2026.7.30",
+      branch: DEFAULT_PINNED_HERMES_SOURCE.branch,
     });
   });
 

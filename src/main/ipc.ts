@@ -17,6 +17,8 @@ import { modelRuntimeChanged } from "./model-runtime-snapshot";
 import type { HermesWebUiService } from "./hermes-webui-service";
 import type { HermesSystemAuditService } from "./hermes-system-audit-service";
 import type { ApprovalService } from "./approval-service";
+import type { EngineInteractionService } from "./engine-interaction-service";
+import { engineInteractionResponseSchema } from "../shared/schemas";
 import type { EngineAdapter } from "../adapters/engine-adapter";
 import type { SecretVault } from "../auth/secret-vault";
 import type { DiagnosticsService } from "../diagnostics/diagnostics-service";
@@ -131,65 +133,6 @@ const sponsorSubmitInputSchema = z.object({
   supporterId: z.string().trim().min(1).max(48),
   message: z.string().trim().max(1000).optional(),
 });
-const kanbanSlugSchema = z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
-const kanbanIdSchema = z.string().trim().min(1).max(160);
-const kanbanCreateBoardSchema = z.object({
-  slug: kanbanSlugSchema,
-  name: z.string().trim().max(120).optional(),
-  description: z.string().trim().max(1000).optional(),
-  icon: z.string().trim().max(20).optional(),
-  color: z.string().trim().max(40).optional(),
-  switchTo: z.boolean().optional(),
-});
-const kanbanTaskListSchema = z.object({
-  board: kanbanSlugSchema.optional(),
-  status: z.string().trim().max(40).optional(),
-  assignee: z.string().trim().max(120).optional(),
-  archived: z.boolean().optional(),
-  mine: z.boolean().optional(),
-  tenant: z.string().trim().max(120).optional(),
-}).optional();
-const kanbanCreateTaskSchema = z.object({
-  board: kanbanSlugSchema.optional(),
-  title: z.string().trim().min(1).max(200),
-  body: z.string().max(20000).optional(),
-  assignee: z.string().trim().max(120).optional(),
-  priority: z.string().trim().max(40).optional(),
-  tenant: z.string().trim().max(120).optional(),
-  workspaceKind: z.enum(["scratch", "worktree", "dir"]).optional(),
-  workspacePath: z.string().trim().max(1000).optional(),
-  skills: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
-  maxRetries: z.number().int().min(0).max(20).optional(),
-  triage: z.boolean().optional(),
-});
-const kanbanTaskActionSchema = z.object({
-  board: kanbanSlugSchema.optional(),
-  taskId: kanbanIdSchema,
-  action: z.enum(["assign", "reassign", "reclaim", "complete", "block", "unblock", "archive", "edit", "specify"]),
-  assignee: z.string().trim().max(120).optional(),
-  reason: z.string().trim().max(1000).optional(),
-  result: z.string().trim().max(4000).optional(),
-  summary: z.string().trim().max(4000).optional(),
-  reclaim: z.boolean().optional(),
-});
-const kanbanTaskRefSchema = z.object({
-  board: kanbanSlugSchema.optional(),
-  taskId: kanbanIdSchema,
-});
-const kanbanDiagnosticsSchema = z.object({
-  board: kanbanSlugSchema.optional(),
-  taskId: kanbanIdSchema.optional(),
-  severity: z.string().trim().max(40).optional(),
-}).optional();
-const kanbanLogSchema = kanbanTaskRefSchema.extend({
-  tail: z.number().int().min(1).max(5000).optional(),
-});
-const kanbanCommentSchema = z.object({
-  board: kanbanSlugSchema.optional(),
-  taskId: kanbanIdSchema,
-  text: z.string().trim().min(1).max(4000),
-  author: z.string().trim().max(120).optional(),
-});
 const DEFAULT_FEEDBACK_SYNC_ENDPOINT = "https://xiaoxiahome.icu/api/hermes-forge/feedback";
 const DEFAULT_FEEDBACK_WALL_ENDPOINT = "https://xiaoxiahome.icu/api/hermes-forge/feedback/recent?kind=feedback&limit=50";
 
@@ -301,6 +244,7 @@ export type IpcServices = {
   hermesModelSyncService: HermesModelSyncService;
   hermesSystemAuditService: HermesSystemAuditService;
   approvalService: ApprovalService;
+  engineInteractionService: EngineInteractionService;
   runtimeAdapterFactory: RuntimeAdapterFactory;
   legacyWslMigrationService: LegacyWslMigrationService;
   oneClickDiagnosticsOrchestrator: OneClickDiagnosticsOrchestrator;
@@ -308,13 +252,30 @@ export type IpcServices = {
 };
 
 export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServices) {
+  let maintenanceRunning = false;
+  let activeRuntimeOperations = 0;
+  const changingSessions = new Set<string>();
+  const runtimeOperationChannels = new Set<string>([
+    ...Object.values(IpcChannels).filter((channel) => /^(hermes:|hermes-core:|webui:(crons|profiles|skills):)/.test(channel)),
+    IpcChannels.startTask, IpcChannels.startGateway, IpcChannels.restartGateway, IpcChannels.getGatewayStatus,
+    IpcChannels.getSetupSummary, IpcChannels.checkUpdates, IpcChannels.exportDiagnostics,
+    IpcChannels.updateSession, IpcChannels.deleteSession, IpcChannels.exportSession,
+    IpcChannels.startWeixinQrLogin, IpcChannels.getPermissionOverview,
+    IpcChannels.saveRuntimeConfig, IpcChannels.updateHermesConfig, IpcChannels.updateModelConfig,
+    IpcChannels.setDefaultModel, IpcChannels.setModelRole, IpcChannels.syncHermesModelRuntime,
+    IpcChannels.deepTestModelConnection, IpcChannels.testModelRuntimeRole,
+  ]);
   const ipcMain = {
     handle(channel: string, listener: Parameters<typeof electronIpcMain.handle>[1]) {
-      electronIpcMain.handle(channel, (event, ...args) => {
+      electronIpcMain.handle(channel, async (event, ...args) => {
         if (!isTrustedIpcSender(event, mainWindow)) {
           throw new Error(`拒绝来自非主应用页面的 IPC 调用：${channel}`);
         }
-        return listener(event, ...args);
+        if (!runtimeOperationChannels.has(channel)) return listener(event, ...args);
+        if (maintenanceRunning) throw new Error("Hermes 正在维护，请等待结束后再执行此操作。");
+        activeRuntimeOperations += 1;
+        try { return await listener(event, ...args); }
+        finally { activeRuntimeOperations -= 1; }
       });
     },
   };
@@ -332,9 +293,39 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
     }
   }
 
+  async function withRuntimeMaintenance<T>(reason: string, operation: () => Promise<T>): Promise<T> {
+    if (maintenanceRunning || activeRuntimeOperations || services.taskRunner.listRunningSessionIds().length) {
+      throw new Error("Hermes 正在执行任务或维护，请等待结束后再更新。");
+    }
+    maintenanceRunning = true;
+    services.hermesConnectorService.setMaintenance(true);
+    try {
+      const status = await services.hermesConnectorService.status({ refresh: true });
+      if (status.running && !status.managedRunning) throw new Error("请先停止由其他程序启动的 Hermes Gateway，再进行维护。");
+      await services.hermesConnectorService.shutdown();
+      return await withTaskPreflightInvalidation(reason, operation);
+    } finally {
+      maintenanceRunning = false;
+      services.hermesConnectorService.setMaintenance(false);
+    }
+  }
+
+  async function withSessionChange<T>(id: string, operation: () => Promise<T>) {
+    if (changingSessions.has(id) || services.taskRunner.isWorkSessionRunning(id)) throw new Error("请先停止会话中的任务，并等待会话操作结束。");
+    changingSessions.add(id);
+    try { return await operation(); }
+    finally { changingSessions.delete(id); }
+  }
+
+  async function requireCronExtension() {
+    if (!(await services.configStore.read()).extensionSettings?.cronEnabled) throw new Error("请先在设置中启用定时任务扩展。");
+  }
+
   async function writeRuntimeConfigWithModelSyncResult(nextConfig: RuntimeConfig, forceModelSync = false) {
     const previous = await services.configStore.read();
     const saved = await services.configStore.write(nextConfig);
+    const extensionsChanged = JSON.stringify(previous.extensionSettings) !== JSON.stringify(saved.extensionSettings);
+    if (extensionsChanged) await services.hermesConnectorService.shutdown();
     invalidateTaskPreflight("runtime-config-write");
     let sync: HermesModelSyncResult | undefined;
     let gateway: GatewayModelRestartResult | undefined;
@@ -475,7 +466,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
   });
 
   ipcMain.handle(IpcChannels.startTask, (_event, input) => {
+    if (maintenanceRunning) throw new Error("Hermes 正在维护，请完成后再开始任务。");
     const parsed = startTaskInputSchema.parse(input);
+    if (parsed.sessionId && changingSessions.has(parsed.sessionId)) throw new Error("此会话正在清空或删除，请等待操作结束。");
     if (process.env.NODE_ENV !== "production") {
       console.info("[Hermes Trace]", {
         layer: "main:task:start",
@@ -536,7 +529,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
     return services.workSessionService.update(parsed.id, parsed);
   });
   ipcMain.handle(IpcChannels.archiveSession, async (_event, id: string) => services.workSessionService.archive(sessionIdSchema.parse(id)));
-  ipcMain.handle(IpcChannels.deleteSession, async (_event, id: string) => services.workSessionService.delete(sessionIdSchema.parse(id)));
+  ipcMain.handle(IpcChannels.deleteSession, async (_event, id: string) => {
+    const parsed = sessionIdSchema.parse(id);
+    return withSessionChange(parsed, () => services.workSessionService.delete(parsed));
+  });
   ipcMain.handle(IpcChannels.duplicateSession, async (_event, id: string) => services.workSessionService.duplicate(sessionIdSchema.parse(id)));
   ipcMain.handle(IpcChannels.exportSession, async (_event, input) => {
     const parsed = z.object({ id: sessionIdSchema, format: z.enum(["json", "markdown"]).default("json") }).parse(input);
@@ -552,7 +548,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
     return services.workSessionService.importFromFile(result.filePaths[0]);
   });
   ipcMain.handle(IpcChannels.importCliSession, async (_event, filePath: string) => services.workSessionService.importFromFile(workspacePathInputSchema.parse(filePath)));
-  ipcMain.handle(IpcChannels.clearSessionFiles, async (_event, id: string) => services.workSessionService.clearSessionFiles(sessionIdSchema.parse(id)));
+  ipcMain.handle(IpcChannels.clearSessionFiles, async (_event, id: string) => {
+    const parsed = sessionIdSchema.parse(id);
+    return withSessionChange(parsed, () => services.workSessionService.clearSessionFiles(parsed));
+  });
   ipcMain.handle(IpcChannels.openSessionFolder, async (_event, id: string) => {
     const parsed = sessionIdSchema.parse(id);
     const session = await services.workSessionService.read(parsed);
@@ -593,14 +592,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
     services.hermesConnectorService.disable(connectorDisableInputSchema.parse(input)),
   );
   ipcMain.handle(IpcChannels.syncConnectorsEnv, () => services.hermesConnectorService.syncEnv());
-  ipcMain.handle(IpcChannels.getGatewayStatus, () => services.hermesConnectorService.status());
-  ipcMain.handle(IpcChannels.startGateway, () => services.hermesConnectorService.start());
+  ipcMain.handle(IpcChannels.getGatewayStatus, () => services.hermesConnectorService.status({ refresh: true }));
+  ipcMain.handle(IpcChannels.startGateway, () => {
+    if (maintenanceRunning) throw new Error("Hermes 正在维护，请等待结束后再启动 Gateway。");
+    return services.hermesConnectorService.start();
+  });
   ipcMain.handle(IpcChannels.stopGateway, () => services.hermesConnectorService.stop());
-  ipcMain.handle(IpcChannels.restartGateway, () => services.hermesConnectorService.restart());
+  ipcMain.handle(IpcChannels.restartGateway, () => {
+    if (maintenanceRunning) throw new Error("Hermes 正在维护，请等待结束后再启动 Gateway。");
+    return services.hermesConnectorService.restart();
+  });
   ipcMain.handle(IpcChannels.startWeixinQrLogin, () => services.hermesConnectorService.startWeixinQrLogin());
   ipcMain.handle(IpcChannels.getWeixinQrLoginStatus, () => services.hermesConnectorService.getWeixinQrStatus());
   ipcMain.handle(IpcChannels.cancelWeixinQrLogin, () => services.hermesConnectorService.cancelWeixinQrLogin());
-  ipcMain.handle(IpcChannels.installWeixinDependency, () => services.hermesConnectorService.installWeixinDependency());
+  ipcMain.handle(IpcChannels.installWeixinDependency, () => withRuntimeMaintenance("repair-weixin-dependency", async () => {
+    const result = await services.setupService.repairDependency("weixin_aiohttp");
+    return {
+      ok: result.ok,
+      message: result.message,
+      command: result.command ?? "uv sync --locked --no-dev",
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+      status: services.hermesConnectorService.getWeixinQrStatus(),
+    };
+  }));
   ipcMain.handle(IpcChannels.listProjects, () => services.hermesWebUiService.listProjects());
   ipcMain.handle(IpcChannels.saveProject, (_event, input) => services.hermesWebUiService.saveProject(input ?? {}));
   ipcMain.handle(IpcChannels.deleteProject, (_event, id: string) => services.hermesWebUiService.deleteProject(sessionIdSchema.parse(id)));
@@ -642,25 +657,20 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
   ipcMain.handle(IpcChannels.createProfile, (_event, name: string) => services.hermesWebUiService.createProfile(sessionIdSchema.parse(name)));
   ipcMain.handle(IpcChannels.deleteProfile, (_event, name: string) => services.hermesWebUiService.deleteProfile(sessionIdSchema.parse(name)));
   ipcMain.handle(IpcChannels.listCronJobs, () => services.hermesWebUiService.listCronJobs());
-  ipcMain.handle(IpcChannels.saveCronJob, (_event, input) => services.hermesWebUiService.saveCronJob(input ?? {}));
-  ipcMain.handle(IpcChannels.runCronJob, (_event, id: string) => services.hermesWebUiService.runCronJob(sessionIdSchema.parse(id)));
+  ipcMain.handle(IpcChannels.saveCronJob, async (_event, input) => {
+    await requireCronExtension();
+    return services.hermesWebUiService.saveCronJob(input ?? {});
+  });
+  ipcMain.handle(IpcChannels.runCronJob, async (_event, id: string) => {
+    await requireCronExtension();
+    return services.hermesWebUiService.runCronJob(sessionIdSchema.parse(id));
+  });
   ipcMain.handle(IpcChannels.pauseCronJob, (_event, id: string) => services.hermesWebUiService.pauseCronJob(sessionIdSchema.parse(id)));
-  ipcMain.handle(IpcChannels.resumeCronJob, (_event, id: string) => services.hermesWebUiService.resumeCronJob(sessionIdSchema.parse(id)));
+  ipcMain.handle(IpcChannels.resumeCronJob, async (_event, id: string) => {
+    await requireCronExtension();
+    return services.hermesWebUiService.resumeCronJob(sessionIdSchema.parse(id));
+  });
   ipcMain.handle(IpcChannels.deleteCronJob, (_event, id: string) => services.hermesWebUiService.deleteCronJob(sessionIdSchema.parse(id)));
-  ipcMain.handle(IpcChannels.listKanbanBoards, () => services.hermesWebUiService.listKanbanBoards());
-  ipcMain.handle(IpcChannels.createKanbanBoard, (_event, input) => services.hermesWebUiService.createKanbanBoard(kanbanCreateBoardSchema.parse(input ?? {})));
-  ipcMain.handle(IpcChannels.switchKanbanBoard, (_event, slug: string) => services.hermesWebUiService.switchKanbanBoard(kanbanSlugSchema.parse(slug)));
-  ipcMain.handle(IpcChannels.deleteKanbanBoard, (_event, slug: string) => services.hermesWebUiService.deleteKanbanBoard(kanbanSlugSchema.parse(slug)));
-  ipcMain.handle(IpcChannels.renameKanbanBoard, (_event, input) => services.hermesWebUiService.renameKanbanBoard(kanbanSlugSchema.parse(input.slug), z.string().trim().min(1).max(120).parse(input.name)));
-  ipcMain.handle(IpcChannels.dispatchKanban, (_event, board?: string) => services.hermesWebUiService.dispatchKanban(board ? kanbanSlugSchema.parse(board) : undefined));
-  ipcMain.handle(IpcChannels.listKanbanTasks, (_event, input) => services.hermesWebUiService.listKanbanTasks(kanbanTaskListSchema.parse(input ?? undefined) ?? {}));
-  ipcMain.handle(IpcChannels.createKanbanTask, (_event, input) => services.hermesWebUiService.createKanbanTask(kanbanCreateTaskSchema.parse(input ?? {})));
-  ipcMain.handle(IpcChannels.getKanbanTask, (_event, input) => services.hermesWebUiService.getKanbanTask(kanbanTaskRefSchema.parse(input ?? {})));
-  ipcMain.handle(IpcChannels.runKanbanTaskAction, (_event, input) => services.hermesWebUiService.runKanbanTaskAction(kanbanTaskActionSchema.parse(input ?? {})));
-  ipcMain.handle(IpcChannels.listKanbanDiagnostics, (_event, input) => services.hermesWebUiService.listKanbanDiagnostics(kanbanDiagnosticsSchema.parse(input ?? undefined) ?? {}));
-  ipcMain.handle(IpcChannels.listKanbanAssignees, (_event, board?: string) => services.hermesWebUiService.listKanbanAssignees(board ? kanbanSlugSchema.parse(board) : undefined));
-  ipcMain.handle(IpcChannels.readKanbanTaskLog, (_event, input) => services.hermesWebUiService.readKanbanTaskLog(kanbanLogSchema.parse(input ?? {})));
-  ipcMain.handle(IpcChannels.commentKanbanTask, (_event, input) => services.hermesWebUiService.commentKanbanTask(kanbanCommentSchema.parse(input ?? {})));
   ipcMain.handle(IpcChannels.previewFile, (_event, filePath: string) => services.hermesWebUiService.previewFile(workspacePathInputSchema.parse(filePath)));
   ipcMain.handle(IpcChannels.getFileBreadcrumb, (_event, filePath: string) => services.hermesWebUiService.fileBreadcrumb(workspacePathInputSchema.parse(filePath)));
   ipcMain.handle(IpcChannels.getGitInfo, (_event, workspacePath: string) => services.hermesWebUiService.gitInfo(workspacePathInputSchema.parse(workspacePath)));
@@ -713,14 +723,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
   });
 
   ipcMain.handle(IpcChannels.updateHermes, (event) =>
-    withTaskPreflightInvalidation("update-hermes", () =>
+    withRuntimeMaintenance("update-hermes", () =>
       services.setupService.updateHermes((payload) => {
         event.sender.send(IpcChannels.installHermesEvent, payload);
       }),
     ),
   );
   ipcMain.handle(IpcChannels.installHermes, (event, input?: unknown) =>
-    withTaskPreflightInvalidation("install-hermes", () =>
+    withRuntimeMaintenance("install-hermes", () =>
       services.setupService.installHermes((payload) => {
         event.sender.send(IpcChannels.installHermesEvent, payload);
       }, installHermesOptionsSchema.parse(input ?? undefined)),
@@ -728,7 +738,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
   );
   ipcMain.handle(IpcChannels.cancelInstallHermes, () => services.setupService.cancelInstallHermes());
   ipcMain.handle(IpcChannels.repairSetupDependency, (_event, id: unknown) =>
-    withTaskPreflightInvalidation("repair-setup-dependency", () =>
+    withRuntimeMaintenance("repair-setup-dependency", () =>
       services.setupService.repairDependency(setupDependencyRepairIdSchema.parse(id)),
     ),
   );
@@ -1125,7 +1135,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
     return { ok: true };
   });
   ipcMain.handle(IpcChannels.oneClickDiagnosticsRun, (_event, input) =>
-    withTaskPreflightInvalidation("one-click-diagnostics", () =>
+    withRuntimeMaintenance("one-click-diagnostics", () =>
       services.oneClickDiagnosticsOrchestrator.run(oneClickDiagnosticsRunOptionsSchema.parse(input ?? {})),
     ),
   );
@@ -1134,13 +1144,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
   );
   ipcMain.handle(IpcChannels.oneClickDiagnosticsStatus, () => services.oneClickDiagnosticsOrchestrator.getStatus());
 
-  // Windows 原生模式 stub：前端仍可能调用这些方法，但底层桥接/审批服务已删除
-  ipcMain.handle(IpcChannels.respondApproval, (_event, input: { id: string; choice: string }) => ({
-    ok: true,
-    id: input.id,
-    approved: true,
-    message: "Windows 原生模式无需审批中介",
-  }));
+  ipcMain.handle(IpcChannels.respondApproval, (_event, input) => services.approvalService.respond(z.object({
+    id: z.string().min(1).max(240),
+    choice: z.enum(["once", "session", "always", "deny"]),
+    editedCommand: z.string().max(100000).optional(),
+  }).parse(input)));
+  ipcMain.handle(IpcChannels.respondInteraction, (_event, input) =>
+    services.engineInteractionService.respond(engineInteractionResponseSchema.parse(input)),
+  );
   ipcMain.handle(IpcChannels.testHermesWindowsBridge, async () => {
     const config = await services.configStore.read();
     const runtimeMode = config.hermesRuntime?.mode ?? "windows";

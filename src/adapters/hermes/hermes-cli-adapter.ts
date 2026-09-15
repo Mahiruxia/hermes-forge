@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import type { AppPaths } from "../../main/app-paths";
-import { readHermesJsonStream } from "./hermes-json-stream-adapter";
+import { readHermesJsonStream, terminateHermesProcessTree } from "./hermes-json-stream-adapter";
 import { resolveActiveHermesHome } from "../../main/hermes-home";
 import type { HermesModelSyncService } from "../../main/hermes-model-sync";
 import { MemoryBudgeter } from "../../memory/memory-budgeter";
@@ -18,6 +18,7 @@ import { runCommand, streamCommand } from "../../process/command-runner";
 import type { CommandLineEvent } from "../../process/command-runner";
 import { validateWslHermesCli, type HermesCliValidationFailureKind } from "../../runtime/hermes-cli-resolver";
 import { defaultHermesCliPath, resolveHermesCliPathSync } from "../../runtime/hermes-cli-paths";
+import { requireManagedHermesEnvironment, managedHermesEnvironmentEnv } from "../../runtime/managed-hermes-environment";
 import type { RuntimeAdapterFactory } from "../../runtime/runtime-adapter";
 import { toWslPath as runtimeToWslPath } from "../../runtime/runtime-resolver";
 import { isAtLeastVersion, parseHermesVersion } from "../../install/hermes-version";
@@ -154,7 +155,7 @@ export class HermesCliAdapter implements EngineAdapter {
   label = "Hermes";
   capabilities = ["file_memory", "private_skills", "context_bridge", "cli"] as const;
   private readonly liveCliSessionMappings = new Set<string>();
-  private readonly activeProcesses = new Set<ChildProcessWithoutNullStreams>();
+  private readonly activeProcesses = new Map<string, ChildProcessWithoutNullStreams>();
   private cliCapabilityProbe?: { key: string; probe: Promise<HermesCliCapabilityProbe> };
 
   constructor(
@@ -525,13 +526,9 @@ export class HermesCliAdapter implements EngineAdapter {
   }
 
 
-  async stop(_sessionId: string) {
-    for (const proc of this.activeProcesses) {
-      if (!proc.killed) {
-        proc.kill("SIGTERM");
-      }
-    }
-    this.activeProcesses.clear();
+  async stop(sessionId: string) {
+    const proc = this.activeProcesses.get(sessionId);
+    if (proc) await terminateHermesProcessTree(proc);
   }
 
   async getMemoryStatus(workspaceId: string): Promise<MemoryStatus> {
@@ -876,6 +873,7 @@ export class HermesCliAdapter implements EngineAdapter {
   ): AsyncIterable<EngineEvent> {
     const env = await this.hermesEnv(rootPath, runtime, request);
     const runnerPath = await this.windowsAgentRunnerPath();
+    const python = await this.windowsPythonSpec(rootPath, this.hermesCliPath(rootPath, runtime), env);
     const historyPath = await this.writeWindowsAgentHistoryFile(request);
     const workspacePath = request.workspacePath ?? rootPath;
     const args = [
@@ -883,6 +881,7 @@ export class HermesCliAdapter implements EngineAdapter {
       "--root-path", rootPath,
       "--query", this.windowsNativeQueryWithFileReferences(request),
       "--session-id", request.conversationId || request.sessionId,
+      "--task-run-id", request.sessionId,
       "--workspace-path", workspacePath,
       "--source", "zhenghebao-client",
       "--max-turns", "90",
@@ -897,30 +896,39 @@ export class HermesCliAdapter implements EngineAdapter {
     }
     if (process.env.HERMES_IGNORE_RULES === "1") {
       args.push("--skip-context-files", "--skip-memory");
+    } else if (request.permissions?.memoryRead === false) {
+      args.push("--skip-memory");
     }
     // 注意：模型 / provider 通过 hermesEnv 写到 OPENAI_MODEL / HERMES_INFERENCE_PROVIDER
     // 等环境变量，hermes-windows-agent.py 直接读 env，不要在这里再 push --model /
     // --provider —— Python argparse 没有这两个参数，多塞会让 runner 直接退出 2。
-    const python = await this.windowsPythonSpec(rootPath, this.hermesCliPath(rootPath, runtime), env);
-
-    const proc = spawn(python.command, [...python.argsPrefix, ...args], {
+    let proc: ChildProcessWithoutNullStreams | undefined;
+    try {
+      proc = spawn(python.command, [...python.argsPrefix, ...args], {
       cwd: workspacePath,
-      env: { ...process.env, ...env, TERMINAL_CWD: workspacePath },
+      env: {
+        ...python.env,
+        TERMINAL_CWD: workspacePath,
+        // The desktop is interactive; inherited CLI/cron flags must not bypass
+        // its official approval callback or select an unattended policy.
+        HERMES_YOLO_MODE: runtime.cliPermissionMode === "yolo" ? "1" : "0",
+        HERMES_SINGLE_QUERY_SESSION: "0",
+        HERMES_CRON_SESSION: "0",
+        HERMES_GATEWAY_SESSION: "0",
+        HERMES_EXEC_ASK: "0",
+        HERMES_SESSION_PLATFORM: "",
+      },
       windowsHide: true,
       shell: false,
-      detached: false,
-    });
-    this.activeProcesses.add(proc);
-
-    try {
-      for await (const event of readHermesJsonStream(proc, signal)) {
+      detached: process.platform !== "win32",
+      });
+      this.activeProcesses.set(request.sessionId, proc);
+      for await (const event of readHermesJsonStream(proc, signal, { taskRunId: request.sessionId, onInteraction: request.onInteraction })) {
         yield event;
       }
     } finally {
-      this.activeProcesses.delete(proc);
-      if (!proc.killed) {
-        proc.kill();
-      }
+      this.activeProcesses.delete(request.sessionId);
+      if (historyPath) await fs.rm(historyPath, { force: true }).catch(() => undefined);
     }
   }
 
@@ -1786,12 +1794,13 @@ export class HermesCliAdapter implements EngineAdapter {
       });
     }
     if (runtime.mode !== "wsl") {
-      const python = await this.windowsPythonSpec(rootPath, this.hermesCliPath(rootPath, runtime), env);
+      const environment = await requireManagedHermesEnvironment(rootPath);
+      if (!(await this.exists(environment.cliPath))) throw new Error("Hermes 虚拟环境中缺少 CLI，请修复 Hermes 依赖。");
       return {
-        command: python.command,
-        args: [...python.argsPrefix, ...pythonArgs],
+        command: environment.cliPath,
+        args: pythonArgs.slice(1),
         cwd,
-        env,
+        env: managedHermesEnvironmentEnv(environment, env),
         detached: false,
       };
     }
@@ -1810,54 +1819,20 @@ export class HermesCliAdapter implements EngineAdapter {
     return this.runtimeAdapterFactory?.(runtime);
   }
 
-  private windowsPythonSpecCache?: { rootPath: string; spec: { command: string; argsPrefix: string[]; label: string } };
-
-  private async windowsPythonSpec(rootPath: string, cliPath: string, env: NodeJS.ProcessEnv) {
-    if (this.windowsPythonSpecCache?.rootPath === rootPath) {
-      return this.windowsPythonSpecCache.spec;
-    }
-    const spec = await this.detectWindowsPython(rootPath, cliPath, env);
-    if (!spec.lastError) {
-      this.windowsPythonSpecCache = { rootPath, spec: { command: spec.command, argsPrefix: spec.argsPrefix, label: spec.label } };
-    }
-    return spec;
-  }
-
-  private async detectWindowsPython(
+  private async windowsPythonSpec(
     rootPath: string,
     _cliPath: string,
     env: NodeJS.ProcessEnv,
-  ): Promise<{ command: string; argsPrefix: string[]; label: string; lastError?: string }> {
-    const candidates: Array<{ command: string; argsPrefix: string[]; label: string }> = [
-      { command: path.join(rootPath, ".venv", "Scripts", "python.exe"), argsPrefix: [], label: ".venv Python" },
-      { command: path.join(rootPath, "venv", "Scripts", "python.exe"), argsPrefix: [], label: "venv Python" },
-      { command: "python", argsPrefix: [], label: "python" },
-      { command: "py", argsPrefix: ["-3"], label: "py -3" },
-    ];
-    let lastError = "";
-    const probeScript = [
-      "import sys",
-      "sys.path.insert(0, sys.argv[1])",
-      "from run_agent import AIAgent",
-      "print('Hermes Agent Python ok')",
-    ].join("; ");
-    for (const candidate of candidates) {
-      if (path.isAbsolute(candidate.command) && !(await this.exists(candidate.command))) {
-        lastError = `${candidate.label} not found`;
-        continue;
-      }
-      const result = await runCommand(candidate.command, [...candidate.argsPrefix, "-c", probeScript, rootPath], {
-        cwd: rootPath,
-        timeoutMs: 20_000,
-        env,
-      });
-      const output = `${result.stdout}\n${result.stderr}`;
-      if (result.exitCode === 0 && /Hermes Agent Python ok/i.test(output)) {
-        return { ...candidate, lastError: undefined };
-      }
-      lastError = `${candidate.label} failed to import run_agent.AIAgent from ${rootPath}: ${output.trim() || `exit ${result.exitCode ?? "unknown"}`}`;
-    }
-    return { command: "python", argsPrefix: [], label: "python fallback", lastError };
+  ) {
+    // Resolve on every launch: maintenance may have repaired venv while this
+    // adapter previously used .venv. Never fall through to a system interpreter.
+    const environment = await requireManagedHermesEnvironment(rootPath);
+    return {
+      command: environment.pythonPath,
+      argsPrefix: [] as string[],
+      label: environment.pythonPath,
+      env: managedHermesEnvironmentEnv(environment, env),
+    };
   }
 
   private async hermesRuntime(): Promise<HermesRuntimeConfig> {

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import codecs
 import json
 import logging
 import mimetypes
@@ -28,6 +29,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +83,7 @@ if os.name == "nt":
 
 EVENT_START = "__FORGE_EVENT__"
 EVENT_END = "__FORGE_EVENT_END__"
+_emit_lock = threading.Lock()
 
 
 def emit(event_type: str, payload: dict) -> None:
@@ -91,7 +94,183 @@ def emit(event_type: str, payload: dict) -> None:
         **payload,
     }
     line = json.dumps(event, ensure_ascii=False)
-    print(f"{EVENT_START}{line}{EVENT_END}", flush=True)
+    with _emit_lock:
+        print(f"{EVENT_START}{line}{EVENT_END}", flush=True)
+
+
+class ForgeInteractionControl:
+    """One stdin reader dispatches replies to the exact waiting tool invocation."""
+
+    def __init__(self, task_run_id: str, timeout_seconds: float = 300, emitter=emit):
+        self.task_run_id = task_run_id
+        self.timeout_seconds = max(0.01, min(timeout_seconds, 600))
+        self.emit = emitter
+        self.cancelled = threading.Event()
+        self._closed = threading.Event()
+        self._lock = threading.Lock()
+        self._pending: dict[str, dict] = {}
+        self._agent = None
+
+    def start(self) -> None:
+        # os.read avoids a daemon thread holding sys.stdin's buffered-reader lock
+        # during Python finalization. Only this thread ever reads the control pipe.
+        threading.Thread(target=self._read_stdin, name="forge-control", daemon=True).start()
+
+    def _read_stdin(self) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        buffer = ""
+        try:
+            while not self._closed.is_set():
+                chunk = os.read(sys.stdin.fileno(), 4096)
+                if not chunk:
+                    self.cancel()
+                    return
+                buffer += decoder.decode(chunk)
+                if len(buffer) > 1024 * 1024:
+                    self.cancel()
+                    return
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    try:
+                        self.accept(json.loads(line))
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        continue
+        except (OSError, ValueError, UnicodeError):
+            self.cancel()
+
+    def attach_agent(self, agent) -> None:
+        self._agent = agent
+        if self.cancelled.is_set():
+            self._interrupt_agent()
+
+    def _interrupt_agent(self) -> None:
+        agent = self._agent
+        if agent is not None:
+            try:
+                agent.hard_interrupt("Task cancelled by the desktop user.", tool_reason="user_cancelled")
+            except Exception as exc:
+                _stderr(f"Hermes cooperative cancellation failed: {type(exc).__name__}")
+
+    def cancel(self) -> None:
+        if self._closed.is_set():
+            return
+        first = not self.cancelled.is_set()
+        self.cancelled.set()
+        with self._lock:
+            for pending in self._pending.values():
+                pending["event"].set()
+        if first:
+            self._interrupt_agent()
+
+    def close(self) -> None:
+        self._closed.set()
+        with self._lock:
+            for pending in self._pending.values():
+                pending["event"].set()
+        self._agent = None
+
+    def accept(self, message) -> bool:
+        if not isinstance(message, dict) or message.get("taskRunId") != self.task_run_id or self._closed.is_set():
+            return False
+        if message.get("type") == "cancel":
+            self.cancel()
+            return True
+        if message.get("type") != "interaction_response" or self.cancelled.is_set():
+            return False
+        request_id = message.get("requestId")
+        if not isinstance(request_id, str):
+            return False
+        with self._lock:
+            pending = self._pending.get(request_id)
+            if pending is None or pending["response"] is not None or message.get("kind") != pending["kind"]:
+                return False
+            pending["response"] = message
+            pending["event"].set()
+        return True
+
+    def request(self, kind: str, payload: dict) -> dict | None:
+        request_id = uuid.uuid4().hex
+        pending = {"event": threading.Event(), "kind": kind, "response": None}
+        with self._lock:
+            if self.cancelled.is_set() or self._closed.is_set():
+                return None
+            self._pending[request_id] = pending
+        try:
+            self.emit("interaction_request", {
+                "requestId": request_id,
+                "taskRunId": self.task_run_id,
+                "timeoutMs": max(1, int(self.timeout_seconds * 1000)),
+                "kind": kind,
+                **payload,
+            })
+            pending["event"].wait(self.timeout_seconds)
+            if self.cancelled.is_set() or self._closed.is_set():
+                return None
+            return pending["response"]
+        except (BrokenPipeError, OSError):
+            self.cancel()
+            return None
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
+
+    def approval(self, command, description, *, allow_permanent=True, allow_session=True, smart_denied=False):
+        response = self.request("approval", {
+            "command": str(command),
+            "description": str(description),
+            "allowSession": bool(allow_session) and not smart_denied,
+            "allowPermanent": bool(allow_permanent) and not smart_denied,
+            "smartDenied": bool(smart_denied),
+        })
+        if response is None:
+            return "deny" if self.cancelled.is_set() or self._closed.is_set() else "timeout"
+        choice = response.get("choice")
+        if choice not in ("once", "session", "always", "deny", "timeout"):
+            return "deny"
+        if choice == "session" and (not allow_session or smart_denied):
+            return "deny"
+        if choice == "always" and (not allow_permanent or smart_denied):
+            return "deny"
+        return choice
+
+    def clarify(self, question, choices, multi_select=False, questions=None):
+        payload = {"question": str(question or ""), "multiSelect": bool(multi_select)}
+        if choices:
+            payload["choices"] = [str(choice) for choice in choices]
+        if questions:
+            # Official batch callbacks are keyed by qid. Keep that key in the
+            # desktop request, not the optional user-supplied display id.
+            payload["questions"] = [{
+                "id": item["qid"], "question": item["question"],
+                "multiSelect": bool(item.get("multi_select")),
+                **({"choices": item["choices"]} if item.get("choices") else {}),
+            } for item in questions]
+        response = self.request("clarify", payload)
+        if response is None or response.get("timedOut") is True:
+            return {"answers": {}, "timed_out": True} if questions else None
+        if questions:
+            answers = response.get("answers")
+            if not isinstance(answers, dict):
+                return {"answers": {}}
+            return {"answers": {
+                item["qid"]: _interaction_answer(answers.get(item["qid"]), bool(item.get("multi_select")))
+                for item in questions
+            }}
+        return _interaction_answer(response.get("answer"), bool(multi_select))
+
+
+def _interaction_answer(value, multi_select=False):
+    if multi_select and isinstance(value, list):
+        return [item[:20000] for item in value[:20] if isinstance(item, str)]
+    return value[:20000] if isinstance(value, str) else ""
+
+
+def _result_outcome(result, cancelled=False) -> str:
+    if cancelled or (isinstance(result, dict) and result.get("interrupted") is True):
+        return "cancelled"
+    if not isinstance(result, dict) or result.get("failed") is True:
+        return "failed"
+    return "completed"
 
 
 def _stderr(message: str) -> None:
@@ -203,19 +382,12 @@ def _load_session_history(session_db, session_id: str | None) -> list[dict]:
     except Exception:
         resolved = session_id
     try:
-        messages = session_db.get_messages_as_conversation(resolved, include_ancestors=True)
+        messages = session_db.get_messages_as_conversation(resolved, include_ancestors=True, repair_alternation=True)
     except Exception as exc:
-        emit("diagnostic", {
-            "severity": "warning",
-            "message": f"无法从 Hermes state.db 读取历史，将使用 Forge 缓存历史：{exc}",
-            "session_id": session_id,
-        })
-        return []
-    return [
-        {"role": item.get("role"), "content": item.get("content")}
-        for item in messages
-        if item.get("role") in ("user", "assistant") and isinstance(item.get("content"), str) and item.get("content").strip()
-    ]
+        raise RuntimeError("无法读取 Hermes 会话历史，请先修复会话存储后重试。") from exc
+    # Preserve tool-call pairing, summaries and multimodal content. Hermes owns
+    # compaction; flattening these messages loses the official resume contract.
+    return messages
 
 
 def _estimate_tokens(text: str) -> int:
@@ -235,99 +407,15 @@ def _message_tokens(message: dict) -> int:
     return _estimate_tokens(str(message.get("content") or "")) + 8
 
 
-def _truncate_text(text: str, max_chars: int) -> str:
-    cleaned = re.sub(r"\s+", " ", (text or "").strip())
-    if len(cleaned) <= max_chars:
-        return cleaned
-    if max_chars <= 20:
-        return cleaned[:max_chars]
-    return cleaned[: max_chars - 3].rstrip() + "..."
 
 
-def _summarize_history_messages(messages: list[dict], max_chars: int) -> str:
-    user_points = []
-    assistant_points = []
-    for item in messages:
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        first_lines = [line.strip() for line in content.splitlines() if line.strip()]
-        preview = _truncate_text(" ".join(first_lines[:3]), 220)
-        if item.get("role") == "user":
-            user_points.append(preview)
-        elif item.get("role") == "assistant":
-            assistant_points.append(preview)
-
-    parts = [
-        "以下是 Forge 为避免超过模型上下文窗口而自动压缩的较早对话摘要。"
-        "这些内容来自同一会话，请作为背景参考；后面的原始最近对话优先级更高。",
-        f"较早历史共 {len(messages)} 条消息。",
-    ]
-    if user_points:
-        parts.append("较早用户诉求：")
-        parts.extend(f"- {point}" for point in user_points[-10:])
-    if assistant_points:
-        parts.append("较早助手结论/行动：")
-        parts.extend(f"- {point}" for point in assistant_points[-10:])
-
-    summary = "\n".join(parts)
-    if len(summary) <= max_chars:
-        return summary
-    return summary[: max_chars - 3].rstrip() + "..."
 
 
-def _context_window_from_env() -> int:
-    value = _int_value(os.environ.get("HERMES_FORGE_CONTEXT_WINDOW"), 0)
-    if value > 0:
-        return value
-    return 256_000
 
 
-def _compact_conversation_history(history: list[dict], query, session_id: str | None) -> list[dict]:
-    if not history:
-        return history
-    context_window = max(8_000, _context_window_from_env())
-    query_text = _text_from_message_content(query)
-    output_reserve = max(4_096, min(32_000, int(context_window * 0.15)))
-    history_budget = max(4_000, int(context_window * 0.85) - output_reserve - _estimate_tokens(query_text))
-    current_tokens = sum(_message_tokens(item) for item in history)
-    if current_tokens <= history_budget:
-        return history
-
-    tail_budget = max(2_000, int(history_budget * 0.68))
-    tail: list[dict] = []
-    tail_tokens = 0
-    for item in reversed(history):
-        cost = _message_tokens(item)
-        if tail and tail_tokens + cost > tail_budget:
-            break
-        tail.append(item)
-        tail_tokens += cost
-    tail.reverse()
-
-    older = history[: max(0, len(history) - len(tail))]
-    summary_budget_tokens = max(800, history_budget - tail_tokens - 64)
-    summary_max_chars = max(1_200, min(24_000, summary_budget_tokens * 3))
-    summary = _summarize_history_messages(older, summary_max_chars)
-    compacted = [{"role": "user", "content": summary}, *tail]
-
-    while sum(_message_tokens(item) for item in compacted) > history_budget and len(tail) > 2:
-        tail = tail[1:]
-        compacted = [{"role": "user", "content": summary}, *tail]
-
-    emit("diagnostic", {
-        "severity": "info",
-        "message": (
-            f"长会话已自动压缩：原历史约 {current_tokens} tokens，"
-            f"压缩后约 {sum(_message_tokens(item) for item in compacted)} tokens，"
-            f"模型上下文窗口 {context_window}。"
-        ),
-        "session_id": session_id,
-    })
-    return compacted
 
 
-def _make_agent_callbacks(session_id: str | None):
+def _make_agent_callbacks(session_id: str | None, control: ForgeInteractionControl):
     def stream_delta(delta):
         if delta:
             emit("message_chunk", {"content": str(delta), "session_id": session_id})
@@ -379,20 +467,6 @@ def _make_agent_callbacks(session_id: str | None):
             "session_id": session_id,
         })
 
-    def clarify_callback(question, choices):
-        """Emit clarify event and return error since Forge does not support interactive stdin responses."""
-        emit("clarify", {
-            "question": str(question or ""),
-            "choices": list(choices) if choices else None,
-            "session_id": session_id,
-        })
-        # Forge reads stdout via pipe; we cannot synchronously wait for user input.
-        # Return an error so the agent knows clarification failed in this context.
-        raise RuntimeError(
-            "Clarify requires interactive user input, which is not supported in Forge runner. "
-            "Please rephrase your request to be more specific."
-        )
-
     return {
         "stream_delta_callback": stream_delta,
         "reasoning_callback": reasoning_delta,
@@ -401,43 +475,10 @@ def _make_agent_callbacks(session_id: str | None):
         "tool_complete_callback": tool_complete,
         "status_callback": status,
         "step_callback": step,
-        "clarify_callback": clarify_callback,
+        "clarify_callback": control.clarify,
     }
 
 
-def _try_install_stream_hooks() -> None:
-    """
-    尝试 monkey-patch Hermes 内部来捕获工具调用事件。
-    如果 Hermes 的 AIAgent 本身不支持流式回调，这是 Plan B。
-    由于我们不知道 Hermes 内部结构，这里先预留扩展点。
-    后续可以通过 inspect run_agent 模块来找到可 patch 的目标。
-    """
-    try:
-        import run_agent as ra
-        # 尝试找到 Agent 类中的工具执行方法
-        agent_cls = getattr(ra, "AIAgent", None)
-        if agent_cls is None:
-            return
-
-        # 如果 AIAgent 有 run_conversation_generator 或类似方法，优先使用
-        if hasattr(agent_cls, "run_conversation_stream"):
-            # 原生支持流式，不需要 patch
-            return
-
-        # 尝试 patch 工具调用
-        original_run_conversation = getattr(agent_cls, "run_conversation", None)
-        if original_run_conversation is None:
-            return
-
-        # 尝试找到工具执行相关的内部方法
-        # Hermes AIAgent 中实际的方法名：_invoke_tool / _execute_tool_calls / _execute_tool_calls_concurrent
-        for attr_name in ("_invoke_tool", "_execute_tool", "execute_tool", "_run_tool", "run_tool", "_call_tool", "call_tool"):
-            if hasattr(agent_cls, attr_name):
-                _patch_tool_method(agent_cls, attr_name)
-                break
-    except Exception:
-        # Patch 失败不影响主流程
-        pass
 
 
 def _win_to_git_bash_path(value: str) -> str:
@@ -545,49 +586,10 @@ def _ensure_git_bash_path() -> None:
             return
 
 
-def _patch_tool_method(agent_cls, method_name: str) -> None:
-    """Patch AIAgent 的工具执行方法来 emit 事件。"""
-    original = getattr(agent_cls, method_name)
-
-    def patched(self, *args, **kwargs):
-        # 尝试提取 tool_name 和 input
-        tool_name = _extract_tool_name(args, kwargs)
-        tool_input = _extract_tool_input(args, kwargs)
-
-        session_id = getattr(self, "session_id", None)
-        emit("tool_call", {"tool": tool_name, "input": tool_input, "session_id": session_id})
-
-        try:
-            result = original(self, *args, **kwargs)
-            emit("tool_result", {
-                "tool": tool_name,
-                "output": _safe_preview(result),
-                "session_id": session_id,
-            })
-            return result
-        except Exception as e:
-            emit("tool_result", {
-                "tool": tool_name,
-                "output": f"Error: {e}",
-                "success": False,
-                "session_id": session_id,
-            })
-            raise
-
-    setattr(agent_cls, method_name, patched)
 
 
-def _extract_tool_name(args, kwargs) -> str:
-    # 常见的参数顺序：(self, tool_name, input_data) 或 (self, tool_name, **input_data)
-    if len(args) >= 2 and isinstance(args[1], str):
-        return args[1]
-    return kwargs.get("tool_name") or kwargs.get("tool") or "unknown"
 
 
-def _extract_tool_input(args, kwargs) -> dict:
-    if len(args) >= 3 and isinstance(args[2], dict):
-        return args[2]
-    return {k: v for k, v in kwargs.items() if k not in ("tool_name", "tool")}
 
 
 def _safe_preview(value, max_len: int = 500) -> str:
@@ -645,18 +647,6 @@ def _extract_final_response(result) -> str:
     return str(result or "")
 
 
-def _looks_incomplete_response(text: str) -> bool:
-    stripped = re.sub(r"\s+", " ", (text or "").strip())
-    if not stripped:
-        return False
-    last_line = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), stripped)
-    if last_line.endswith(("：", ":", "，", ",", "；", ";", "、")):
-        return True
-    if re.search(r"(让我|我来|下面|接下来|首先|然后|包括|例如|如下)[:：]?$", last_line):
-        return True
-    if re.search(r"(我需要|我会|我将|让我们|先来|再来).{0,24}$", last_line) and not re.search(r"[。！？.!?]$", last_line):
-        return True
-    return False
 
 
 def _int_value(value, default: int = 0) -> int:
@@ -778,6 +768,8 @@ def main() -> int:
     parser.add_argument("--query", required=True, help="用户查询")
     parser.add_argument("--system-prompt", default="", help="系统提示词")
     parser.add_argument("--session-id", help="会话 ID")
+    parser.add_argument("--task-run-id", help="Forge 单次任务 ID，用于配对交互回复与取消")
+    parser.add_argument("--interaction-timeout-seconds", type=float, default=300, help="审批和澄清等待上限")
     parser.add_argument("--workspace-path", help="当前工作区路径")
     parser.add_argument("--history-file", help="Forge 传入的同一对话窗口历史 JSON")
     parser.add_argument("--image-path", help="图片附件路径")
@@ -788,6 +780,7 @@ def main() -> int:
     parser.add_argument("--skip-context-files", action="store_true", help="跳过自动注入 SOUL.md、AGENTS.md、.cursorrules")
     parser.add_argument("--skip-memory", action="store_true", help="跳过记忆加载")
     args = parser.parse_args()
+    task_run_id = args.task_run_id or args.session_id or f"forge-run-{uuid.uuid4().hex}"
 
     # Respect HERMES_IGNORE_RULES env var (set by Hermes CLI --ignore-rules) as default for skip flags.
     if os.environ.get("HERMES_IGNORE_RULES") == "1":
@@ -819,26 +812,34 @@ def main() -> int:
         return 1
     try:
         from hermes_state import SessionDB
-    except ImportError:
-        SessionDB = None
+    except ImportError as exc:
+        emit("error", {"message": f"Hermes 会话存储不可用：{exc}", "error_type": "ImportError", "session_id": args.session_id})
+        return 1
 
     _install_windows_git_bash_path_compat()
 
     emit("lifecycle", {"stage": "started", "session_id": args.session_id})
 
+    agent = None
+    session_db = None
+    control = ForgeInteractionControl(task_run_id, args.interaction_timeout_seconds)
+    approval_context = None
+    terminal_tool = None
+    interactive_token = session_token = None
     try:
-        session_db = None
-        if SessionDB is not None:
-            try:
-                session_db = SessionDB()
-            except Exception as exc:
-                emit("diagnostic", {
-                    "severity": "warning",
-                    "message": f"Hermes state.db 初始化失败，会话仍可运行但不会完整索引：{exc}",
-                    "session_id": args.session_id,
-                })
+        from tools import terminal_tool
+        from tools import approval_context
 
-        callbacks = _make_agent_callbacks(args.session_id)
+        # These are official per-thread APIs, propagated by Hermes to tool workers.
+        interactive_token = approval_context.set_hermes_interactive_context(True)
+        terminal_tool.set_approval_callback(control.approval)
+        control.start()
+        session_db = SessionDB()
+        active_session_id = session_db.resolve_resume_session_id(args.session_id) if args.session_id else None
+        active_session_id = active_session_id or args.session_id
+        session_token = approval_context.set_current_session_key(active_session_id or task_run_id)
+
+        callbacks = _make_agent_callbacks(active_session_id, control)
         agent = AIAgent(
             base_url=_base_url_from_env(),
             api_key=_api_key_from_env(),
@@ -847,7 +848,7 @@ def main() -> int:
             max_iterations=args.max_turns,
             quiet_mode=True,
             ephemeral_system_prompt=args.system_prompt or None,
-            session_id=args.session_id,
+            session_id=active_session_id,
             platform=args.source,
             session_db=session_db,
             skip_context_files=args.skip_context_files,
@@ -856,14 +857,11 @@ def main() -> int:
             pass_session_id=args.pass_session_id,
             **callbacks,
         )
+        control.attach_agent(agent)
 
         user_message = _prepare_user_message(args.query, args.image_path)
-        db_history = _load_session_history(session_db, args.session_id)
-        conversation_history = _compact_conversation_history(
-            db_history or _load_conversation_history(args.history_file),
-            user_message,
-            args.session_id,
-        )
+        db_history = _load_session_history(session_db, active_session_id)
+        conversation_history = db_history or _load_conversation_history(args.history_file)
         prompt_estimate = sum(_message_tokens(item) for item in conversation_history) + _estimate_tokens(str(user_message)) + 16
         emit("usage", {
             "source": "estimated",
@@ -872,34 +870,12 @@ def main() -> int:
             "total_tokens": prompt_estimate,
             "session_id": args.session_id,
         })
-        result = agent.run_conversation(
-            user_message,
-            conversation_history=conversation_history,
-            task_id=args.session_id,
+        result = {"interrupted": True, "messages": []} if control.cancelled.is_set() else agent.run_conversation(
+            user_message, conversation_history=conversation_history, task_id=task_run_id,
         )
 
         final_response = _extract_final_response(result)
-        auto_continue_count = 0
-        while auto_continue_count < 2 and _looks_incomplete_response(final_response):
-            emit("status", {
-                "level": "info",
-                "message": "检测到回复可能未完成，正在自动继续。",
-                "session_id": args.session_id,
-            })
-            continuation_history = [*conversation_history, {"role": "user", "content": args.query}]
-            if final_response.strip():
-                continuation_history.append({"role": "assistant", "content": final_response.strip()})
-            continuation_result = agent.run_conversation(
-                "请继续完成上一条回复，不要重复已经说过的内容，直接给出后续分析和结论。",
-                conversation_history=continuation_history,
-                task_id=args.session_id,
-            )
-            continuation_text = _extract_final_response(continuation_result).strip()
-            if not continuation_text or continuation_text == final_response.strip():
-                break
-            final_response = f"{final_response.rstrip()}\n\n{continuation_text}"
-            result = continuation_result
-            auto_continue_count += 1
+        outcome = _result_outcome(result, control.cancelled.is_set())
 
         final_messages = result.get("messages", []) if isinstance(result, dict) else []
         usage_sources = _usage_sources(result, agent)
@@ -947,12 +923,14 @@ def main() -> int:
         })
 
         emit("result", {
-            "success": True,
+            "success": outcome == "completed",
+            "outcome": outcome,
+            "interrupted": outcome == "cancelled",
             "content": final_response,
             "session_id": args.session_id,
-            "auto_continue_count": auto_continue_count,
+            "taskRunId": task_run_id,
         })
-        return 0
+        return 0 if outcome == "completed" else 130 if outcome == "cancelled" else 1
 
     except Exception as exc:
         _stderr(f"Hermes windows agent runner failed: {exc}")
@@ -964,6 +942,26 @@ def main() -> int:
             "session_id": args.session_id,
         })
         return 1
+    finally:
+        control.close()
+        # AIAgent only closes DBs it created. This wrapper owns the injected DB.
+        if agent is not None:
+            try:
+                agent.close()
+            except Exception as exc:
+                _stderr(f"Hermes agent cleanup failed: {type(exc).__name__}")
+        if session_db is not None:
+            try:
+                session_db.close()
+            except Exception as exc:
+                _stderr(f"Hermes session cleanup failed: {type(exc).__name__}")
+        if terminal_tool is not None:
+            terminal_tool.set_approval_callback(None)
+        if approval_context is not None:
+            if session_token is not None:
+                approval_context.reset_current_session_key(session_token)
+            if interactive_token is not None:
+                approval_context.reset_hermes_interactive_context(interactive_token)
 
 
 if __name__ == "__main__":

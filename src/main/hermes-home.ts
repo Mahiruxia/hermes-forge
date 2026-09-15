@@ -69,7 +69,7 @@ export async function ensureOfficialHermesHomeLink(
 
 export async function resolveActiveHermesHome(baseHome: string) {
   const activeProfile = (await fs.readFile(path.join(baseHome, "active_profile"), "utf8").catch(() => "")).trim();
-  if (!activeProfile || /[\\/]/.test(activeProfile)) {
+  if (!activeProfile || activeProfile === "." || activeProfile === ".." || /[\\/]/.test(activeProfile)) {
     return baseHome;
   }
   const candidate = path.join(baseHome, "profiles", activeProfile);

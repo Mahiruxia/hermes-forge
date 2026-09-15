@@ -1,9 +1,8 @@
 import crypto from "node:crypto";
-import fsSync from "node:fs";
 import path from "node:path";
 import { runCommand } from "../process/command-runner";
 import { resolveActiveHermesHome } from "./hermes-home";
-import { defaultWindowsHermesCliPath, resolveWindowsHermesCliPathSync } from "../runtime/hermes-cli-paths";
+import { requireManagedHermesEnvironment, managedHermesEnvironmentEnv } from "../runtime/managed-hermes-environment";
 import type { AppPaths } from "./app-paths";
 
 type PythonJsonResult<T> = {
@@ -54,36 +53,39 @@ db.create_session(
 )
 title = ARGS.get("title")
 if title:
-    try:
-        db.set_session_title(sid, title)
-    except Exception:
-        pass
+    db.set_session_title(sid, title)
 session = db.get_session(sid) or {"id": sid}
 RESULT = {"session": normalize_session(session)}
 `, { ...input, sessionId });
-    if (!result.ok) {
-      return { id: sessionId, title: input.title, source: input.source ?? "zhenghebao-client" };
-    }
-    return result.data?.session ?? { id: sessionId, title: input.title, source: input.source ?? "zhenghebao-client" };
+    if (!result.ok || !result.data?.session) throw new Error(result.message || "Hermes 未能创建会话。");
+    return result.data.session;
   }
 
   async readSession(sessionId: string) {
-    const result = await this.runPythonJson<{ session?: HermesCoreSession; messages: Array<{ role: "user" | "assistant"; content: string }> }>(`
+    const result = await this.runPythonJson<{ session?: HermesCoreSession; messages: Array<{ role: "user" | "assistant"; content: string }>; rawMessages?: Array<Record<string, unknown>> }>(`
 from hermes_state import SessionDB
-db = SessionDB()
+from hermes_constants import get_hermes_home
+db = SessionDB(read_only=True) if (get_hermes_home() / "state.db").exists() else None
 sid = ARGS.get("sessionId")
-session = db.get_session(sid)
+session = db.get_session(sid) if db else None
 messages = db.get_messages_as_conversation(sid, include_ancestors=True) if session else []
+def display_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\\n".join(part.get("text") or "[附件]" for part in content if isinstance(part, dict))
+    return ""
 RESULT = {
     "session": normalize_session(session) if session else None,
     "messages": [
-        {"role": m.get("role"), "content": m.get("content")}
+        {"role": m.get("role"), "content": display_content(m.get("content"))}
         for m in messages
-        if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)
+        if m.get("role") in ("user", "assistant")
     ],
+    "rawMessages": messages,
 }
 `, { sessionId });
-    if (!result.ok) return undefined;
+    if (!result.ok) throw new Error(result.message || "Hermes 会话读取失败。");
     return result.data;
   }
 
@@ -96,7 +98,8 @@ ok = db.set_session_title(sid, ARGS.get("title") or "")
 session = db.get_session(sid)
 RESULT = {"ok": bool(ok), "session": normalize_session(session) if session else None}
 `, { sessionId, title });
-    return result.ok && result.data?.ok;
+    if (!result.ok) throw new Error(result.message || "Hermes 会话重命名失败。");
+    return Boolean(result.data?.ok);
   }
 
   async deleteSession(sessionId: string) {
@@ -107,16 +110,22 @@ db = SessionDB()
 ok = db.delete_session(ARGS.get("sessionId"), sessions_dir=get_hermes_home() / "sessions")
 RESULT = {"ok": bool(ok)}
 `, { sessionId });
-    return Boolean(result.ok && result.data?.ok);
+    if (!result.ok) throw new Error(result.message || "Hermes 会话删除失败。");
+    return Boolean(result.data?.ok);
   }
 
   async listSessions(limit = 80) {
     const result = await this.runPythonJson<{ sessions: HermesCoreSession[] }>(`
 from hermes_state import SessionDB
-db = SessionDB()
-RESULT = {"sessions": [normalize_session(s) for s in db.search_sessions(limit=int(ARGS.get("limit") or 80))]}
-`, { limit });
-    return result.ok ? result.data?.sessions ?? [] : [];
+from hermes_constants import get_hermes_home
+if (get_hermes_home() / "state.db").exists():
+    db = SessionDB(read_only=True)
+    RESULT = {"sessions": [normalize_session(s) for s in db.search_sessions(limit=int(ARGS.get("limit") or 80))]}
+else:
+    RESULT = {"sessions": []}
+`, { limit: Math.max(1, Math.min(500, Math.floor(limit) || 80)) });
+    if (!result.ok) throw new Error(result.message || "Hermes 会话列表读取失败。");
+    return result.data?.sessions ?? [];
   }
 
   async memoryStatus() {
@@ -147,15 +156,14 @@ RESULT = {"sessions": [normalize_session(s) for s in db.search_sessions(limit=in
 
   private async runOfficialCommand(args: string[], timeoutMs: number): Promise<HermesCoreCommandResult> {
     const root = await this.resolveHermesRoot();
-    const cliPath = resolveWindowsHermesCliPathSync(root) ?? defaultWindowsHermesCliPath(root);
+    const environment = await requireManagedHermesEnvironment(root);
     const hermesHome = await resolveActiveHermesHome(this.appPaths.hermesDir());
-    const python = cliPath.toLowerCase().endsWith(".exe") ? undefined : await this.resolvePython(root);
-    const command = cliPath.toLowerCase().endsWith(".exe") ? cliPath : python!.command;
-    const finalArgs = cliPath.toLowerCase().endsWith(".exe") ? args : [...python!.args, cliPath, ...args];
+    const command = environment.pythonPath;
+    const finalArgs = ["-m", "hermes_cli.main", ...args];
     const result = await runCommand(command, finalArgs, {
       cwd: root,
       timeoutMs,
-      env: {
+      env: managedHermesEnvironmentEnv(environment, {
         ...process.env,
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
@@ -164,7 +172,7 @@ RESULT = {"sessions": [normalize_session(s) for s in db.search_sessions(limit=in
         FORCE_COLOR: "0",
         HERMES_HOME: hermesHome,
         PYTHONPATH: `${root}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-      },
+      }),
     });
     return {
       ok: result.exitCode === 0,
@@ -178,7 +186,7 @@ RESULT = {"sessions": [normalize_session(s) for s in db.search_sessions(limit=in
 
   private async runPythonJson<T>(code: string, args: Record<string, unknown>): Promise<PythonJsonResult<T>> {
     const root = await this.resolveHermesRoot();
-    const python = await this.resolvePython(root);
+    const environment = await requireManagedHermesEnvironment(root);
     const hermesHome = await resolveActiveHermesHome(this.appPaths.hermesDir());
     const script = `
 import json, os, sys
@@ -202,21 +210,27 @@ def normalize_session(session):
         "endedAt": session.get("ended_at"),
         "lastActive": session.get("last_active") or session.get("started_at"),
     }
-${code}
+db = None
+try:
+${code.trim().split("\n").map((line) => `    ${line}`).join("\n")}
+finally:
+    if db is not None:
+        db.close()
 print(json.dumps({"ok": True, "data": RESULT}, ensure_ascii=False))
 `;
-    const result = await runCommand(python.command, [...python.args, "-c", script], {
+    const result = await runCommand(environment.pythonPath, ["-c", script], {
       cwd: root,
       timeoutMs: 20000,
-      env: {
+      env: managedHermesEnvironmentEnv(environment, {
         ...process.env,
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
         PYTHONUNBUFFERED: "1",
         HERMES_HOME: hermesHome,
         PYTHONPATH: `${root}${path.delimiter}${process.env.PYTHONPATH ?? ""}`,
-      },
+      }),
     });
+    if (result.exitCode !== 0) return { ok: false, message: result.stderr || `Hermes core bridge exited ${result.exitCode}` };
     const text = result.stdout.trim().split(/\r?\n/).at(-1) ?? "";
     try {
       return JSON.parse(text) as PythonJsonResult<T>;
@@ -225,26 +239,4 @@ print(json.dumps({"ok": True, "data": RESULT}, ensure_ascii=False))
     }
   }
 
-  private async resolvePython(root: string): Promise<{ command: string; args: string[] }> {
-    const venvPython = path.join(root, "venv", "Scripts", "python.exe");
-    const dotVenvPython = path.join(root, ".venv", "Scripts", "python.exe");
-    const cliPath = resolveWindowsHermesCliPathSync(root) ?? defaultWindowsHermesCliPath(root);
-    if (cliPath.toLowerCase().endsWith(".exe") && fsSync.existsSync(venvPython)) {
-      return { command: venvPython, args: [] };
-    }
-    if (fsSync.existsSync(venvPython)) {
-      return { command: venvPython, args: [] };
-    }
-    if (fsSync.existsSync(dotVenvPython)) {
-      return { command: dotVenvPython, args: [] };
-    }
-    const configuredPython = process.env.HERMES_FORGE_PYTHON?.trim();
-    if (configuredPython) {
-      return { command: configuredPython, args: [] };
-    }
-    if (process.platform === "win32") {
-      return { command: "py", args: ["-3"] };
-    }
-    return { command: "python", args: [] };
-  }
 }

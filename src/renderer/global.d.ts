@@ -2,6 +2,7 @@ import type {
   ClientInfo,
   DiagnosticExportResult,
   EngineMaintenanceResult,
+  EngineInteractionResponse,
   EngineUpdateStatus,
   EngineWarmupResult,
   FileLockState,
@@ -217,6 +218,7 @@ declare global {
       getFileBreadcrumb(filePath: string): Promise<FileBreadcrumbItem[]>;
       getGitInfo(workspacePath: string): Promise<{ available: boolean; branch: string; dirtyCount: number; dirtyFiles?: string[] }>;
       respondApproval(input: { id: string; choice: "once" | "session" | "always" | "deny"; editedCommand?: string }): Promise<{ ok: boolean; id: string; approved: boolean; message: string }>;
+      respondInteraction(input: EngineInteractionResponse): Promise<{ ok: boolean; message: string }>;
       getHermesStatus(workspacePath?: string): Promise<HermesStatusSummary>;
       getHermesProbe(workspacePath?: string): Promise<HermesProbeSummary>;
       warmHermes(): Promise<EngineWarmupResult>;

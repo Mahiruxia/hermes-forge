@@ -9,6 +9,7 @@ import { RuntimeConfigStore } from "./runtime-config";
 import { RuntimeEnvResolver } from "./runtime-env-resolver";
 import { SessionLog } from "./session-log";
 import { ApprovalService } from "./approval-service";
+import { EngineInteractionService } from "./engine-interaction-service";
 import { HermesSystemAuditService } from "./hermes-system-audit-service";
 import { SessionAgentInsightService } from "./session-agent-insight-service";
 import { WorkSessionService } from "./work-session-service";
@@ -45,12 +46,15 @@ import { NativeInstallStrategy } from "../install/native-install-strategy";
 import { OneClickDiagnosticsOrchestrator } from "./diagnostics/one-click-diagnostics-orchestrator";
 import { LegacyWslMigrationService } from "./legacy-wsl-migration-service";
 import { isSafeExternalUrl, isTrustedAppUrl as isTrustedNavigationUrl } from "./navigation-security";
+import { PackagedSmokeTest } from "./packaged-smoke-test";
 
-loadDevelopmentEnv();
+const isSmokeTestMode = process.argv.includes("--smoke-test");
+const smokeTest = isSmokeTestMode ? new PackagedSmokeTest() : undefined;
+if (!isSmokeTestMode) loadDevelopmentEnv();
 
 const portableRoot = process.env.PORTABLE_EXECUTABLE_DIR;
 const isPortable = Boolean(portableRoot);
-const isDevMode = Boolean(process.env.VITE_DEV_SERVER_URL);
+const isDevMode = !isSmokeTestMode && Boolean(process.env.VITE_DEV_SERVER_URL);
 const isSystemAuditMode = process.argv.includes("--system-audit") || process.env.HERMES_FORGE_SYSTEM_AUDIT === "1";
 
 let mainWindow: BrowserWindow | undefined;
@@ -59,7 +63,7 @@ let shutdownStarted = false;
 app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 
 app.whenReady().then(async () => {
-  const singleInstanceLock = isSystemAuditMode || app.requestSingleInstanceLock();
+  const singleInstanceLock = isSmokeTestMode || isSystemAuditMode || app.requestSingleInstanceLock();
   if (!singleInstanceLock) {
     app.quit();
     return;
@@ -73,7 +77,7 @@ app.whenReady().then(async () => {
     mainWindow.focus();
   });
 
-  const userDataPath = portableRoot ? path.join(portableRoot, "user-data") : app.getPath("userData");
+  const userDataPath = smokeTest?.userDataPath ?? (portableRoot ? path.join(portableRoot, "user-data") : app.getPath("userData"));
   app.setName("Hermes Forge");
   app.setPath("userData", userDataPath);
   
@@ -81,11 +85,25 @@ app.whenReady().then(async () => {
   await appPaths.ensureBaseLayout();
 
   const configStore = new RuntimeConfigStore(appPaths.runtimeConfigPath());
+  if (smokeTest) {
+    await configStore.write({
+      defaultModelProfileId: "smoke-local",
+      modelProfiles: [{ id: "smoke-local", provider: "local", model: "offline-smoke", temperature: 0, maxTokens: 1 }],
+      providerProfiles: [],
+      updateSources: {},
+      enginePaths: { hermes: path.join(userDataPath, "uninstalled-runtime") },
+      startupWarmupMode: "off",
+      startupGatewayAutoStart: false,
+      extensionSettings: { connectorsEnabled: false, cronEnabled: false, desktopAutomationEnabled: false },
+      hermesRuntime: { mode: process.platform === "darwin" ? "darwin" : "windows", pythonCommand: "__offline_smoke_no_python__", windowsAgentMode: "hermes_native", cliPermissionMode: "guarded", workerMode: "off" },
+    });
+  }
   const resolveHermesRoot = async () => {
     return configStore.getEnginePath("hermes");
   };
   const hermesRuntimeResolver = new HermesRuntimeResolver(appPaths, resolveHermesRoot);
   const approvalService = new ApprovalService(appPaths);
+  const engineInteractionService = new EngineInteractionService(approvalService);
   const budgeter = new MemoryBudgeter();
   const autoHotkeyService = new AutoHotkeyService();
   const runtimeProbeService = new RuntimeProbeService(configStore, hermesRuntimeResolver, undefined, fetch);
@@ -180,7 +198,7 @@ app.whenReady().then(async () => {
     runtimeAdapterFactory,
   );
 
-  if (isSystemAuditMode) {
+  if (isSystemAuditMode && !smokeTest) {
     const result = await hermesSystemAuditService.test();
     if (process.env.HERMES_FORGE_SYSTEM_AUDIT_OUTPUT) {
       const fs = await import("node:fs/promises");
@@ -192,13 +210,13 @@ app.whenReady().then(async () => {
     await hermes.stop("system-audit");
     await hermesConnectorService.shutdown();
     await modelRuntimeProxyService.shutdown();
-    app.quit();
+    app.exit(result.ok ? 0 : 1);
     return;
   }
 
   // System audit mode must not mutate the user's official Hermes home.
   // Link it only during a normal interactive app launch.
-  ensureOfficialHermesHomeLink(appPaths.hermesDir()).then((result) => {
+  if (!smokeTest) ensureOfficialHermesHomeLink(appPaths.hermesDir()).then((result) => {
     if (!result.linked && result.reason) {
       console.warn("[Hermes Forge] Official Hermes home was left untouched:", result.reason);
     }
@@ -208,6 +226,7 @@ app.whenReady().then(async () => {
 
   function createWindow() {
     mainWindow = new BrowserWindow({
+      show: !isSmokeTestMode,
       width: 1280,
       height: 820,
       minWidth: 980,
@@ -221,6 +240,7 @@ app.whenReady().then(async () => {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        ...(isSmokeTestMode ? { backgroundThrottling: false, partition: `smoke-${Date.now()}` } : {}),
       },
     });
 
@@ -250,8 +270,10 @@ app.whenReady().then(async () => {
     mainWindow.webContents.on("will-navigate", guardMainFrameNavigation);
     mainWindow.webContents.on("will-redirect", guardMainFrameNavigation);
 
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-    if (devServerUrl) {
+    const devServerUrl = isDevMode ? process.env.VITE_DEV_SERVER_URL : undefined;
+    if (smokeTest) {
+      // The smoke runner loads the real page after all IPC handlers are registered.
+    } else if (devServerUrl) {
       void mainWindow.loadURL(devServerUrl);
     } else {
       void mainWindow.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"));
@@ -298,6 +320,7 @@ app.whenReady().then(async () => {
     sessionAgentInsightService,
     () => mainWindow,
     workSessionService,
+    engineInteractionService.handle,
   );
   const activeOneClickDiagnosticsOrchestrator = new OneClickDiagnosticsOrchestrator(
     configStore,
@@ -345,6 +368,7 @@ app.whenReady().then(async () => {
     hermesModelSyncService,
     hermesSystemAuditService,
     approvalService,
+    engineInteractionService,
     runtimeAdapterFactory,
     legacyWslMigrationService,
     oneClickDiagnosticsOrchestrator: activeOneClickDiagnosticsOrchestrator,
@@ -355,6 +379,7 @@ app.whenReady().then(async () => {
       rendererMode: isDevMode ? "dev" : "built",
     }),
   });
+
 
   const scheduleStartupWarmup = () => {
     setTimeout(() => {
@@ -393,22 +418,11 @@ app.whenReady().then(async () => {
     })();
   }, 3000);
 
-  // 启动后延迟检查 Hermes Agent 与 Forge v0.2.0+ 的兼容性（仅 Windows 原生模式）
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const check = await setupService.checkHermesAgentCompatibility();
-        if ((check.status === "missing" || check.status === "failed") && mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IpcChannels.hermesAgentCompatibilityWarning, {
-            compatible: false,
-            message: check.message,
-          });
-        }
-      } catch (error) {
-        console.warn("[Hermes Forge] Hermes Agent compatibility check failed:", error);
-      }
-    })();
-  }, 8000);
+
+  if (smokeTest) {
+    await smokeTest.run(mainWindow);
+    return;
+  }
 
   clientAutoUpdateService.scheduleStartupCheck(30000);
 
@@ -445,6 +459,13 @@ app.whenReady().then(async () => {
       app.exit(1);
     });
   });
+}).catch((error) => {
+  if (smokeTest) {
+    smokeTest.fail(error);
+    return;
+  }
+  console.error("[Hermes Forge] Startup failed:", error);
+  app.exit(1);
 });
 
 function resolveAppIconPath() {

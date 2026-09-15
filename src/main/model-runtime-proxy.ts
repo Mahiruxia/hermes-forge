@@ -161,12 +161,13 @@ export class ModelRuntimeProxyService {
     } else {
       headers.set("authorization", `Bearer ${target.upstreamApiKey ?? ""}`);
     }
-    const upstreamResponse = await fetch(upstream, {
+    // A replayable JSON body is required even for authentication failures:
+    // undici otherwise replaces an upstream 401 with "fetch failed" for streams.
+    const upstreamResponse = await fetchSameOrigin(upstream, {
       method: request.method,
       headers,
-      body: allowsBody(request.method) ? request : undefined,
-      duplex: "half",
-    } as RequestInit & { duplex: "half" });
+      body: allowsBody(request.method) ? await readRequestBody(request) : undefined,
+    });
     await writeFetchResponse(response, upstreamResponse);
   }
 
@@ -250,14 +251,20 @@ function parseBaiduCredential(raw: string): BaiduCredential | undefined {
 function headersFromIncoming(request: http.IncomingMessage) {
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
-    if (!value || ["host", "connection", "content-length"].includes(key.toLowerCase())) continue;
+    if (!value || ["host", "connection", "content-length", "transfer-encoding", "x-proxy-auth"].includes(key.toLowerCase())) continue;
     headers.set(key, Array.isArray(value) ? value.join(", ") : value);
   }
   return headers;
 }
 
 async function writeFetchResponse(response: http.ServerResponse, upstreamResponse: Response) {
-  response.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers.entries()));
+  const headers = new Headers(upstreamResponse.headers);
+  // fetch has already decompressed the response body. These original wire
+  // headers would make the Hermes HTTP client decompress it a second time.
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
+  response.writeHead(upstreamResponse.status, Object.fromEntries(headers.entries()));
   if (!upstreamResponse.body) {
     response.end();
     return;
@@ -273,6 +280,32 @@ async function writeFetchResponse(response: http.ServerResponse, upstreamRespons
       response.end();
     },
   }));
+}
+
+async function fetchSameOrigin(url: URL, init: RequestInit) {
+  const origin = url.origin;
+  let current = url;
+  let options = { ...init };
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const response = await fetch(current, { ...options, redirect: "manual" });
+    const location = response.headers.get("location");
+    if (![301, 302, 303, 307, 308].includes(response.status) || !location) return response;
+    await response.body?.cancel();
+    const next = new URL(location, current);
+    // api-key is not automatically stripped by fetch on cross-origin redirects.
+    if (next.origin !== origin || next.username || next.password) {
+      throw new Error("Model upstream redirected to a different origin; credentials were not forwarded.");
+    }
+    if (redirects === 5) throw new Error("Model upstream exceeded the redirect limit.");
+    const method = (options.method ?? "GET").toUpperCase();
+    if ((response.status === 303 && !["GET", "HEAD"].includes(method)) || ([301, 302].includes(response.status) && method === "POST")) {
+      const headers = new Headers(options.headers);
+      headers.delete("content-type");
+      options = { ...options, method: "GET", body: undefined, headers };
+    }
+    current = next;
+  }
+  throw new Error("Model upstream exceeded the redirect limit.");
 }
 
 function normalizeBaiduMessages(messages: unknown) {

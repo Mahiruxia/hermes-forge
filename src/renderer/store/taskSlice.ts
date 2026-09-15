@@ -184,6 +184,8 @@ function applyEngineEventToProjection(projection: TaskRunProjection, envelope: T
 
   if (event.type === "lifecycle") {
     const status = projectionStatusFromLifecycle(event.stage);
+    if ((base.status === "failed" || base.status === "cancelled" || base.status === "interrupted") && status !== base.status) return base;
+    if (base.status === "complete" && !["complete", "failed", "cancelled", "interrupted"].includes(status)) return base;
     return {
       ...base,
       status,
@@ -207,10 +209,14 @@ function applyEngineEventToProjection(projection: TaskRunProjection, envelope: T
 
   const content = contentFromEngineEvent(event);
   if (event.type === "result") {
-    const status = event.success ? "complete" : "failed";
+    const status = event.outcome === "cancelled" ? "cancelled" : event.success ? "complete" : "failed";
+    if ((base.status === "cancelled" || base.status === "interrupted") && status !== base.status) return base;
+    if (base.status === "failed" && status === "complete") return base;
     const streamed = base.assistantMessage.content;
     const resultContent = content ?? "";
-    const finalContent = chooseFinalAssistantContent(streamed, resultContent, base.status === "streaming");
+    const finalContent = status === "complete"
+      ? chooseFinalAssistantContent(streamed, resultContent, base.status === "streaming")
+      : resultContent || streamed;
     return {
       ...base,
       status,
@@ -225,6 +231,7 @@ function applyEngineEventToProjection(projection: TaskRunProjection, envelope: T
     };
   }
   if (content !== undefined) {
+    if (["complete", "failed", "cancelled", "interrupted"].includes(base.status)) return base;
     return appendAssistantContent(
       base,
       content,
