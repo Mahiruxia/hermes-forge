@@ -37,6 +37,6 @@ describe("managed Hermes environment", () => {
     expect(env).toMatchObject({ HERMES_HOME: "/profiles/work", VIRTUAL_ENV: venv.venvPath, UV_PROJECT_ENVIRONMENT: venv.venvPath, PYTHONNOUSERSITE: "1", HERMES_DISABLE_LAZY_INSTALLS: "1" });
     expect(env.HERMES_LAZY_INSTALL_TARGET).toBeUndefined();
     expect(env.Path).toBeUndefined();
-    expect(env.PATH).toBe(path.dirname(venv.pythonPath) + path.delimiter + "system-bin");
+    expect(env.PATH?.split(path.delimiter).slice(0, 2)).toEqual([path.dirname(venv.pythonPath), "system-bin"]);
   });
 });

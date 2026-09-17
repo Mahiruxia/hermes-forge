@@ -5,7 +5,7 @@ import type { ClientUpdateEvent, HermesGatewayStatus, HermesProbeSummary, Hermes
 import { useAppStore } from "../../store";
 import { cn } from "../DashboardPrimitives";
 
-type ConnectionState = "connected" | "warning" | "disconnected" | "checking";
+type ConnectionState = "connected" | "warning" | "disconnected" | "checking" | "unchecked";
 type BadgeTone = "ok" | "warn" | "error" | "idle";
 type StatusLevel = BadgeTone | "checking" | "notice";
 
@@ -123,7 +123,8 @@ export function StatusBar(props: { onOpenHealth?: () => void } = {}) {
   const overall = summarizeStatus(statusItems);
   const OverallIcon = overall.icon;
   const needsHealthAction = statusItems.some((item) =>
-    ["api", "hermes", "gateway"].includes(item.key) && (item.level === "error" || item.level === "warn")
+    (["api", "hermes", "gateway"].includes(item.key) && (item.level === "error" || item.level === "warn"))
+    || (item.key === "hermes" && item.level === "idle")
   );
 
   return (
@@ -221,13 +222,15 @@ function resolveHermesConnection(probe?: HermesProbeSummary, status?: HermesStat
   if (probe?.probe.status === "warning") return "warning";
   if (probe?.probe.status === "offline") return "disconnected";
   if (status?.engine?.available) return "connected";
-  return "checking";
+  if (status?.engine?.available === false) return "disconnected";
+  return "unchecked";
 }
 
 function connectionTone(status: ConnectionState): BadgeTone {
   if (status === "connected") return "ok";
   if (status === "warning") return "warn";
   if (status === "disconnected") return "error";
+  if (status === "unchecked") return "idle";
   return "warn";
 }
 
@@ -237,7 +240,7 @@ function hermesDetail(status: ConnectionState, probe?: HermesProbeSummary, summa
   const probeDetail = isBridgeNoise(probeMessage) ? undefined : probeMessage;
   const base = probeDetail
     || summary?.engine?.message?.trim()
-    || (status === "connected" ? "Hermes 在线" : status === "warning" ? "Hermes 可用，但存在警告" : status === "disconnected" ? "Hermes 离线" : "正在检查 Hermes");
+    || (status === "connected" ? "Hermes 在线" : status === "warning" ? "Hermes 可用，但存在警告" : status === "disconnected" ? "Hermes 离线" : status === "unchecked" ? "尚未检查 Hermes，可在环境设置中手动检测" : "正在检查 Hermes");
   return runtimeLabel ? `${base} · 当前运行：${runtimeLabel}` : base;
 }
 
@@ -249,6 +252,7 @@ function hermesIcon(status: ConnectionState) {
   if (status === "connected") return Server;
   if (status === "warning") return AlertCircle;
   if (status === "disconnected") return ServerOff;
+  if (status === "unchecked") return Server;
   return Loader2;
 }
 
@@ -331,6 +335,8 @@ function summarizeStatus(items: ReturnType<typeof makeStatusItem>[]) {
       spinning: true,
     };
   }
+  const uncheckedHermes = items.find((item) => item.key === "hermes" && item.level === "idle");
+  if (uncheckedHermes) return { label: "待检查", detail: uncheckedHermes.detail, tone: "idle" as BadgeTone, icon: Server, spinning: false };
   return {
     label: "环境就绪",
     detail: "API、Hermes 与本地能力处于可用状态",

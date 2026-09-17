@@ -17,14 +17,21 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   const [detail, setDetail] = useState("");
   const [setupChecks, setSetupChecks] = useState<SetupCheck[]>([]);
   const [repairingDependency, setRepairingDependency] = useState<SetupDependencyRepairId | undefined>();
-  const [installStartTime, setInstallStartTime] = useState<number | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [installLogs, setInstallLogs] = useState<string[]>([]);
   const [showLogs, setShowLogs] = useState(false);
-  const [macRuntime, setMacRuntime] = useState(false);
   const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
   const [showMirrorRetry, setShowMirrorRetry] = useState(false);
-  const [nextTarget, setNextTarget] = useState<WelcomeCompleteTarget>("workbench");
+  const [nextTarget, setNextTarget] = useState<WelcomeCompleteTarget>("model");
+  const [checkingSetup, setCheckingSetup] = useState(false);
+  const [setupNotice, setSetupNotice] = useState("");
+  const [installStage, setInstallStage] = useState<HermesInstallEvent["stage"]>("preflight");
+  const setupRequestRef = useRef<Promise<void> | undefined>(undefined);
+  const setupSequenceRef = useRef(0);
+  const detectingRef = useRef(false);
   const installRunningRef = useRef(false);
+  const installRequestPendingRef = useRef(false);
+  const cancelRequestedRef = useRef(false);
   const lastInstallSourceKindRef = useRef<InstallSourceChoice | undefined>(undefined);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -36,8 +43,12 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   }, []);
 
   async function detectHermes() {
+    if (detectingRef.current || installRunningRef.current || repairingDependency) return;
+    detectingRef.current = true;
     setStatus("detecting");
     setProgress(20);
+    setMessage("正在检查 Hermes 版本与本机环境...");
+    setDetail("");
     void refreshSetupChecks();
 
     try {
@@ -45,7 +56,7 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
         throw new Error("Hermes client not available");
       }
 
-      const probe = await window.workbenchClient.getHermesProbe();
+      const probe = await withSetupTimeout(window.workbenchClient.getHermesProbe());
       setProgress(68);
 
       if (probe?.probe?.status === "healthy") {
@@ -62,38 +73,24 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
     } catch (error) {
       console.error("Hermes detection failed:", error);
       setStatus("not-found");
-      const manualMac = await shouldUseManualMacSetup();
-      setMessage(manualMac ? "检测失败，请手动选择 macOS Hermes 安装位置。" : "检测失败，请选择 Hermes 安装来源。");
+      setMessage("检测未完成，可以重新检测或选择 Hermes 安装来源。");
       setDetail(error instanceof Error ? error.message : "未知错误");
+    } finally {
+      detectingRef.current = false;
     }
   }
 
   async function completeWelcome(target?: WelcomeCompleteTarget) {
-    const nextTarget = target ?? await nextWelcomeTarget();
+    if (!target && checkingSetup) return;
     store.setFirstLaunch(false);
-    props.onComplete(nextTarget);
-  }
-
-  async function nextWelcomeTarget(): Promise<WelcomeCompleteTarget> {
-    try {
-      const summary = await window.workbenchClient.getSetupSummary();
-      const primaryIds = new Set(["git", "python", "winget", "hermes", "model", "model-placeholder", "model-secret", "weixin-aiohttp"]);
-      setSetupChecks(summary.checks.filter((check) => primaryIds.has(check.id)).slice(0, 8));
-      const modelBlocked = summary.blocking.some((check) =>
-        check.id === "model" || check.id === "model-secret" || check.fixAction === "configure_model"
-      );
-      const target = modelBlocked ? "model" : "workbench";
-      setNextTarget(target);
-      return target;
-    } catch {
-      return "workbench";
-    }
+    props.onComplete(target ?? nextTarget);
   }
 
   function applyInstallEvent(event: HermesInstallEvent) {
+    setInstallStage(event.stage);
     const isRunning = event.stage !== "completed" && event.stage !== "failed" && event.stage !== "cancelled";
-    installRunningRef.current = isRunning;
-    setStatus(event.stage === "completed" ? "found" : event.stage === "failed" || event.stage === "cancelled" ? "not-found" : "installing");
+    installRunningRef.current = isRunning || installRequestPendingRef.current;
+    setStatus(installRunningRef.current ? "installing" : event.stage === "completed" ? "found" : "not-found");
     setProgress((current) => Math.max(current, Math.min(100, event.progress)));
     setMessage(event.message);
     setDetail(event.detail ?? "");
@@ -103,11 +100,8 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
         return next.length > 200 ? next.slice(next.length - 200) : next;
       });
     }
-    if (isRunning && !installStartTime) {
-      setInstallStartTime(Date.now());
-    }
-    if (event.stage === "completed" || event.stage === "failed" || event.stage === "cancelled") {
-      setInstallStartTime(null);
+    if (!isRunning && !installRequestPendingRef.current) {
+      setCancelling(false);
       setShowMirrorRetry(event.stage === "failed" && lastInstallSourceKindRef.current === "official");
       void refreshSetupChecks();
     }
@@ -119,15 +113,29 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
     }
   }, [installLogs, showLogs]);
 
-  async function refreshSetupChecks() {
-    try {
-      const summary = await window.workbenchClient.getSetupSummary();
-      const primaryIds = new Set(["git", "python", "winget", "hermes", "model", "model-placeholder", "model-secret", "weixin-aiohttp"]);
-      setSetupChecks(summary.checks.filter((check) => primaryIds.has(check.id)).slice(0, 8));
-      setNextTarget(summary.blocking.some((check) => check.id === "model" || check.id === "model-secret" || check.fixAction === "configure_model") ? "model" : "workbench");
-    } catch (error) {
-      console.warn("Failed to load setup summary:", error);
-    }
+  async function refreshSetupChecks(force = false) {
+    if (!force && setupRequestRef.current) return setupRequestRef.current;
+    const sequence = ++setupSequenceRef.current;
+    setCheckingSetup(true);
+    setSetupNotice("");
+    const request = (async () => {
+      try {
+        const summary = await withSetupTimeout(window.workbenchClient.getSetupSummary());
+        if (sequence !== setupSequenceRef.current) return;
+        const primaryIds = new Set(["git", "python", "hermes", "model", "model-placeholder", "model-secret"]);
+        setSetupChecks(summary.checks.filter((check) => primaryIds.has(check.id) || (check.blocking !== false && check.status !== "ok")).slice(0, 10));
+        const modelBlocked = summary.blocking.some((check) => check.id.startsWith("model") || check.fixAction === "configure_model");
+        setNextTarget(modelBlocked ? "model" : summary.ready ? "workbench" : "hermes");
+      } catch {
+        if (sequence !== setupSequenceRef.current) return;
+        setNextTarget("model");
+        setSetupNotice("模型与依赖检查未完成，可以进入设置确认后再开始对话。");
+      } finally {
+        if (sequence === setupSequenceRef.current) setCheckingSetup(false);
+      }
+    })();
+    setupRequestRef.current = request;
+    try { await request; } finally { if (setupRequestRef.current === request) setupRequestRef.current = undefined; }
   }
 
   async function handleRepairDependency(id: SetupDependencyRepairId) {
@@ -137,7 +145,7 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
       const result = await window.workbenchClient.repairSetupDependency(id);
       setMessage(result.message);
       setDetail(result.recommendedFix ?? "");
-      await refreshSetupChecks();
+      await refreshSetupChecks(true);
     } catch (error) {
       setMessage("依赖修复失败");
       setDetail(error instanceof Error ? error.message : "未知错误");
@@ -148,53 +156,53 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
   }
 
   function openInstallSourceDialog() {
-    if (installRunningRef.current) return;
+    if (installRunningRef.current || repairingDependency) return;
     setSourceDialogOpen(true);
   }
 
-  async function handleAutoDeploy() {
-    if (await shouldUseManualMacSetup()) {
-      setStatus("not-found");
-      setProgress(68);
-      setMessage("macOS 暂不支持一键自动安装");
-      setDetail("请先安装 Hermes Agent，然后点击“手动配置路径”选择 Hermes 根目录。");
-      return;
-    }
+  function handleAutoDeploy() {
     openInstallSourceDialog();
   }
 
   async function installWithSource(kind: InstallSourceChoice) {
-    if (installRunningRef.current) return;
+    if (installRunningRef.current || repairingDependency) return;
     setSourceDialogOpen(false);
     lastInstallSourceKindRef.current = kind;
     setShowMirrorRetry(false);
     installRunningRef.current = true;
-    setInstallStartTime(Date.now());
+    installRequestPendingRef.current = true;
+    cancelRequestedRef.current = false;
+    setCancelling(false);
     setStatus("installing");
-    setProgress((current) => Math.max(current, 12));
+    setInstallStage("preflight");
+    setProgress(12);
     setMessage("正在执行 Hermes 自动安装...");
     setDetail(kind === "mirror"
-      ? "正在使用国内社区镜像下载安装脚本；安装过程仍会校验 Hermes 是否可启动。"
-      : "正在使用官方 GitHub 安装脚本；如果失败，可手动改用国内社区镜像重试。");
+      ? "正在使用国内社区镜像，检查本机工具并准备 Hermes 运行环境。"
+      : "正在使用官方 GitHub，检查本机工具并准备 Hermes 运行环境。");
     setInstallLogs([]);
     setShowLogs(false);
-    void refreshSetupChecks();
 
     try {
       const result = await window.workbenchClient.installHermes({ source: { kind } });
-      installRunningRef.current = false;
+      if (result.log?.length) setInstallLogs(result.log.slice(-200));
       setMessage(result.message);
-      setDetail(result.ok ? result.rootPath ?? "" : kind === "official" ? "官方源安装失败，可改用国内社区镜像重试。" : "镜像安装失败，请检查网络/镜像可达性，或切回官方源重试。");
+      setDetail(result.ok ? result.rootPath ?? "" : cancelRequestedRef.current ? "已完成的安装步骤保留，可以稍后继续安装。" : kind === "official" ? "可先查看安装日志；网络受限时可改用国内社区镜像重试。" : "可先查看安装日志，或切回官方源重试。");
       setProgress(result.ok ? 100 : 0);
-      void refreshSetupChecks();
 
       if (!result.ok) {
         setStatus("not-found");
-        setShowMirrorRetry(kind === "official");
+        setShowMirrorRetry(kind === "official" && !cancelRequestedRef.current);
         return;
       }
 
-      const probe = await window.workbenchClient.getHermesProbe();
+      const probe = await withSetupTimeout(window.workbenchClient.getHermesProbe()).catch(() => undefined);
+      if (!probe) {
+        setStatus("not-found");
+        setMessage("Hermes 已安装，状态刷新未完成");
+        setDetail("请点击重新检测；无需重复安装。");
+        return;
+      }
       if (probe.probe.status !== "healthy") {
         setStatus("not-found");
         setMessage("Hermes 已安装，但客户端复检未通过");
@@ -206,28 +214,38 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
       setProgress(100);
       setDetail(probe.probe.secondaryMetric);
     } catch (error) {
-      installRunningRef.current = false;
       setStatus("not-found");
       setProgress(0);
       setMessage("Hermes 自动安装失败，请改用手动配置或重试");
       setDetail(kind === "official"
         ? `${error instanceof Error ? error.message : "未知错误"}。可改用国内社区镜像重试。`
         : `${error instanceof Error ? error.message : "未知错误"}。请检查网络/镜像可达性，或切回官方源重试。`);
-      setShowMirrorRetry(kind === "official");
-      void refreshSetupChecks();
+      setShowMirrorRetry(kind === "official" && !cancelRequestedRef.current);
+    } finally {
+      installRunningRef.current = false;
+      installRequestPendingRef.current = false;
+      setCancelling(false);
+      void refreshSetupChecks(true);
     }
   }
 
   async function handleCancelInstall() {
-    const result = await window.workbenchClient.cancelInstallHermes();
-    installRunningRef.current = false;
-    setInstallStartTime(null);
-    setStatus("not-found");
-    setProgress(0);
-    setMessage(result.ok ? "正在取消安装" : "取消安装");
-    setDetail(result.ok ? result.message : "当前没有可取消的安装进程。你可以重新自动安装，或查看官方文档手动配置路径。");
-    setInstallLogs((prev) => [...prev, `[cancelled] ${result.message}`]);
-    setShowMirrorRetry(false);
+    if (!installRunningRef.current || cancelRequestedRef.current) return;
+    cancelRequestedRef.current = true;
+    setCancelling(true);
+    try {
+      const result = await window.workbenchClient.cancelInstallHermes();
+      if (!installRunningRef.current) return;
+      setMessage(result.ok ? "正在取消安装" : "正在等待安装结束");
+      setDetail(result.message);
+      setInstallLogs((prev) => [...prev.slice(-199), `[cancel] ${result.message}`]);
+      setShowMirrorRetry(false);
+    } catch {
+      if (!installRunningRef.current) return;
+      cancelRequestedRef.current = false;
+      setCancelling(false);
+      setDetail("取消请求未送达，请重试。安装状态会继续更新。");
+    }
   }
 
   function handleManualConfig() {
@@ -236,13 +254,6 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
 
   function handleSkip() {
     void completeWelcome("workbench");
-  }
-
-  async function shouldUseManualMacSetup() {
-    const config = await window.workbenchClient.getRuntimeConfig().catch(() => undefined);
-    const isMac = config?.hermesRuntime?.mode === "darwin";
-    setMacRuntime(Boolean(isMac));
-    return Boolean(isMac);
   }
 
   return (
@@ -322,18 +333,21 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
               <p className="text-xs font-semibold tracking-[0.12em] text-emerald-700">环境连接成功</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em] text-slate-950">Hermes 已就绪</h2>
               <p className="mt-3 max-w-[58ch] text-sm leading-6 text-slate-500">
-                {nextTarget === "model"
+                {checkingSetup ? "Hermes 已连接，正在确认模型与关键依赖，请稍候。" : nextTarget === "model"
                   ? "本机 Hermes 已连接。下一步补齐模型来源和 API Key，完成后就能发送第一项任务。"
+                  : nextTarget === "hermes" ? "本机 Hermes 已连接，还有关键依赖需要在环境设置中确认。"
                   : "Hermes 和默认模型都已可用，可以进入工作台开始第一项任务。"}
               </p>
+              {setupNotice ? <p className="mt-3 text-xs leading-5 text-amber-700">{setupNotice}</p> : null}
               {detail ? <p className="mt-3 break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-xs text-slate-500 ring-1 ring-slate-100">{detail}</p> : null}
               <button
+                disabled={checkingSetup}
                 className="mt-8 inline-flex w-fit items-center justify-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-[0_12px_28px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:bg-slate-800 active:translate-y-0"
                 onClick={() => {
                   void completeWelcome();
                 }}
               >
-                {nextTarget === "model" ? "继续配置模型" : "进入工作台"} <ArrowRight size={16} />
+                {checkingSetup ? "正在确认设置…" : nextTarget === "model" ? "继续配置模型" : nextTarget === "hermes" ? "继续检查环境" : "进入工作台"} <ArrowRight size={16} />
               </button>
               <p className="mt-3 text-xs text-slate-400">由你确认后再继续，不会自动跳页。</p>
             </div>
@@ -350,7 +364,6 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
               {detail ? <p className="mt-3 break-all rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500 ring-1 ring-slate-100">{detail}</p> : null}
 
               <div className="mt-7 space-y-3">
-                {!macRuntime ? (
                   <button
                     className="flex w-full items-center justify-between rounded-xl bg-slate-950 px-4 py-3.5 text-left text-sm font-semibold text-white shadow-[0_12px_28px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:bg-slate-800 active:translate-y-0"
                     onClick={() => void handleAutoDeploy()}
@@ -358,8 +371,7 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
                     <span className="flex items-center gap-2"><Sparkles size={16} /> 选择安装方式</span>
                     <ArrowRight size={16} />
                   </button>
-                ) : null}
-                {showMirrorRetry && !macRuntime ? (
+                {showMirrorRetry ? (
                   <button
                     className="w-full rounded-xl border border-amber-200 bg-amber-50 px-6 py-3 text-sm font-semibold text-amber-800 transition-all hover:bg-amber-100"
                     onClick={() => void installWithSource("mirror")}
@@ -379,14 +391,15 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
                     <Settings size={16} /> 手动配置路径
                   </button>
                   <a
-                    href={macRuntime ? OFFICIAL_HERMES_DOCS_URL : OFFICIAL_HERMES_REPO_URL}
+                    href={OFFICIAL_HERMES_REPO_URL}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
                   >
-                    <BookOpen size={16} /> {macRuntime ? "官方文档" : "官方 GitHub"}
+                    <BookOpen size={16} /> 官方 GitHub
                   </a>
                 </div>
+                <button type="button" onClick={() => void detectHermes()} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">重新检测</button>
 
                 <button
                   className="w-full rounded-lg px-4 py-2 text-sm text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700"
@@ -419,38 +432,16 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
               <div className="mt-2 flex items-center gap-2 font-mono text-xs tabular-nums text-slate-400">
                 <span>{progress}%</span>
                 <span>·</span>
-                <span>{installStageLabel(progress)}</span>
+                <span>{installStageLabel(installStage)}</span>
               </div>
-              {installLogs.length > 0 && (
-                <div className="mt-3 text-left">
-                  <button
-                    onClick={() => setShowLogs((v) => !v)}
-                    className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500 transition hover:text-slate-700"
-                    type="button"
-                  >
-                    <Terminal size={12} />
-                    {showLogs ? "收起实时日志" : `查看实时日志 (${installLogs.length} 行)`}
-                    {showLogs ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                  </button>
-                  {showLogs && (
-                    <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-slate-200 bg-slate-900 px-3 py-2">
-                      <pre className="text-[10px] leading-4 text-slate-300">
-                        <code>
-                          {installLogs.join("\n")}
-                          <div ref={logsEndRef} />
-                        </code>
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              )}
               <div className="mt-5 flex flex-wrap items-center gap-3">
                 <button
                   className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                   onClick={() => void handleCancelInstall()}
+                  disabled={cancelling}
                   type="button"
                 >
-                  <X size={14} /> 取消安装
+                  <X size={14} /> {cancelling ? "正在取消…" : "取消安装"}
                 </button>
                 <a
                   href={OFFICIAL_HERMES_DOCS_URL}
@@ -463,12 +454,36 @@ export function WelcomePage(props: { onComplete: (target?: WelcomeCompleteTarget
               </div>
             </div>
           )}
+              {installLogs.length > 0 && (
+                <div className="mt-3 text-left">
+                  <button
+                    onClick={() => setShowLogs((v) => !v)}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500 transition hover:text-slate-700"
+                    type="button"
+                  >
+                    <Terminal size={12} />
+                    {showLogs ? "收起安装日志" : `查看安装日志 (${installLogs.length} 行)`}
+                    {showLogs ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </button>
+                  {showLogs && (
+                    <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-slate-200 bg-slate-900 px-3 py-2">
+                      <pre className="text-[10px] leading-4 text-slate-300">
+                        <code>
+                          {installLogs.join("\n")}
+                        </code>
+                      </pre>
+                      <div ref={logsEndRef} />
+                    </div>
+                  )}
+                </div>
+              )}
           </section>
 
           <aside className="space-y-4">
             {setupChecks.length ? (
             <DependencyChecklist
               checks={setupChecks}
+              busy={installRunningRef.current || checkingSetup || Boolean(repairingDependency)}
               repairingDependency={repairingDependency}
               onRepair={handleRepairDependency}
             />
@@ -504,7 +519,7 @@ function OnboardingSteps(props: { status: "idle" | "detecting" | "found" | "not-
   const steps = [
     { label: "检查环境", state: props.status === "idle" || props.status === "detecting" ? "active" : "done" },
     { label: "安装 Hermes", state: props.status === "idle" || props.status === "detecting" ? "upcoming" : props.status === "found" ? "done" : "active" },
-    { label: "配置模型", state: props.status === "found" ? (props.nextTarget === "model" ? "active" : "done") : "upcoming" },
+    { label: "配置模型", state: props.status === "found" ? (props.nextTarget === "workbench" ? "done" : "active") : "upcoming" },
   ] as const;
   return (
     <ol className="mt-8 grid gap-2 sm:grid-cols-3" aria-label="首次设置进度">
@@ -522,6 +537,7 @@ function OnboardingSteps(props: { status: "idle" | "detecting" | "found" | "not-
 
 function DependencyChecklist(props: {
   checks: SetupCheck[];
+  busy?: boolean;
   repairingDependency?: SetupDependencyRepairId;
   onRepair: (id: SetupDependencyRepairId) => void | Promise<void>;
 }) {
@@ -551,7 +567,7 @@ function DependencyChecklist(props: {
                 <button
                   type="button"
                   onClick={() => void props.onRepair(check.autoFixId!)}
-                  disabled={props.repairingDependency === check.autoFixId}
+                  disabled={props.busy}
                   className="shrink-0 rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-indigo-600 shadow-sm ring-1 ring-slate-200 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <span className="inline-flex items-center gap-1">
@@ -587,12 +603,24 @@ function welcomeSetupFixLabel(id: SetupDependencyRepairId) {
   return "修微信";
 }
 
-function installStageLabel(progress: number) {
-  if (progress <= 12) return "环境预检";
-  if (progress <= 32) return "下载安装脚本";
-  if (progress <= 62) return "执行安装脚本";
-  if (progress <= 82) return "健康检查";
-  return "完成";
+function installStageLabel(stage: HermesInstallEvent["stage"]) {
+  if (stage === "completed") return "安装完成";
+  if (stage === "health_check") return "验证运行环境";
+  if (stage === "installing_dependencies") return "准备 Python 与模型依赖";
+  if (stage === "cloning") return "下载 Hermes 源码";
+  if (stage === "downloading_script") return "下载安装工具";
+  if (stage === "running_installer") return "准备安装工具";
+  if (stage === "cancelling" || stage === "cancelled") return "正在结束安装";
+  return "环境预检";
+}
+
+async function withSetupTimeout<T>(request: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([request, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("环境检测用时较长，请重试；已有安装不会被删除。")), 25_000);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 function ManualInstallGuide(props: { defaultOpen?: boolean }) {

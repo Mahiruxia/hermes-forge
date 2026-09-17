@@ -35,6 +35,21 @@ function harness() {
 
 beforeEach(() => handlers.clear());
 describe("IPC maintenance coordination", () => {
+  it("accepts a recreated window and rejects the old sender without re-registering handlers", async () => {
+    const oldContents = { mainFrame: {}, isDestroyed: () => false };
+    const newContents = { mainFrame: {}, isDestroyed: () => false };
+    let currentWindow: { webContents: typeof oldContents } | undefined = { webContents: oldContents };
+    const clientInfo = vi.fn(() => ({ appVersion: "test" }));
+    registerIpcHandlers(() => currentWindow as never, { clientInfo } as never);
+    const invoke = handlers.get(IpcChannels.getClientInfo)!;
+    await expect(invoke({ sender: oldContents, senderFrame: oldContents.mainFrame })).resolves.toEqual({ appVersion: "test" });
+    currentWindow = undefined;
+    await expect(invoke({ sender: oldContents, senderFrame: oldContents.mainFrame })).rejects.toThrow("拒绝");
+    currentWindow = { webContents: newContents };
+    await expect(invoke({ sender: oldContents, senderFrame: oldContents.mainFrame })).rejects.toThrow("拒绝");
+    await expect(invoke({ sender: newContents, senderFrame: newContents.mainFrame })).resolves.toEqual({ appVersion: "test" });
+  });
+
   it("blocks manual cron execution while the extension is disabled", async () => {
     const { services, invoke } = harness();
     await expect(invoke(IpcChannels.runCronJob, "job-a")).rejects.toThrow("启用定时任务");

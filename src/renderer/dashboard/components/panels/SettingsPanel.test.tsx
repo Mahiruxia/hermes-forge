@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../store";
 import type { HermesInstallEvent, RuntimeConfig } from "../../../../shared/types";
@@ -86,6 +86,28 @@ beforeEach(() => {
 });
 
 describe("SettingsPanel Hermes installation", () => {
+  it("shows a recoverable failure when installation IPC rejects", async () => {
+    installHermes.mockRejectedValue(new Error("network unavailable"));
+    renderSettingsPanel();
+    fireEvent.click(await screen.findByRole("button", { name: /一键安装/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /官方 GitHub/ }));
+    await waitFor(() => expect(useAppStore.getState().toasts.some((toast) => toast.title === "Hermes 安装未完成")).toBe(true));
+    expect(screen.getByRole("button", { name: /一键安装/ })).toBeEnabled();
+  });
+
+  it("keeps maintenance controls locked after a terminal event until IPC finishes", async () => {
+    let finish!: (value: unknown) => void;
+    installHermes.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    renderSettingsPanel();
+    fireEvent.click(await screen.findByRole("button", { name: /一键安装/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /官方 GitHub/ }));
+    await waitFor(() => expect(installHermes).toHaveBeenCalledTimes(1));
+    act(() => installEventHandler?.({ stage: "cancelled", progress: 100, message: "已取消", startedAt: "now", at: "now" }));
+    expect(screen.getByRole("button", { name: /一键安装/ })).toBeDisabled();
+    await act(async () => finish({ ok: false, message: "已取消" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /一键安装/ })).toBeEnabled());
+  });
+
   it("asks for an install source before one-click install", async () => {
     installHermes.mockResolvedValue({ ok: true, message: "installed", rootPath: "C:/Hermes" });
 

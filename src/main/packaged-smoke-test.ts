@@ -100,6 +100,7 @@ export class PackagedSmokeTest {
         await new Promise(resolve => setTimeout(resolve, 250));
       })()`);
       this.metrics.welcomeReadyMs = Math.round(process.uptime() * 1000);
+      await this.captureScreenshot("welcome");
       if (this.errors.length || this.processLaunchAttempts.length) throw new Error("First-run welcome unexpectedly requested a command or produced renderer errors.");
       this.checks.push({ id: "fresh-welcome", ok: true, message: "The actual first-run welcome rendered its manual detection action without launching commands." });
       // Continue through the established workbench path using the same persisted
@@ -136,6 +137,7 @@ export class PackagedSmokeTest {
       this.checks.push({ id: "preload-ipc", ok: true, message: "Real preload calls reached the registered main-process handlers and returned the isolated session/configuration." });
       this.checks.push({ id: "rendered-chat", ok: true, message: "The built React application rendered its chat composer and all primary navigation controls in a hidden window." });
       this.metrics.rendererReadyMs = Math.round(process.uptime() * 1000);
+      await this.captureScreenshot("chat");
       this.metrics.atReady = appMemoryMetrics();
       console.log("__HERMES_FORGE_SMOKE_READY__", JSON.stringify(this.metrics));
       if (this.idleMs) {
@@ -161,6 +163,15 @@ export class PackagedSmokeTest {
     if (this.completed) return;
     this.checks.push({ id: "failure", ok: false, message: error instanceof Error ? error.message : String(error) });
     this.finish();
+  }
+
+  private async captureScreenshot(name: string) {
+    const directory = process.env.HERMES_FORGE_SMOKE_TEST_SCREENSHOTS;
+    if (!directory || !this.window) return;
+    fs.mkdirSync(directory, { recursive: true });
+    await this.window.webContents.executeJavaScript("document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))");
+    const screenshot = await this.window.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
+    fs.writeFileSync(path.join(directory, `${name}.png`), screenshot.toPNG());
   }
 
   private finish() {

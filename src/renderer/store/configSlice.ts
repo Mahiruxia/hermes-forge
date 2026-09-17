@@ -6,6 +6,7 @@ import type {
   HermesProbeSummary,
   HermesStatusSummary,
   HermesWebUiOverview,
+  HermesWebUiSettings,
   ModelProviderProfile,
   PermissionOverview,
   RuntimeConfig,
@@ -25,6 +26,7 @@ export interface ConfigState {
   setupSummary?: SetupSummary;
   secretStatus?: SecretVaultStatus;
   webUiOverview?: HermesWebUiOverview;
+  webUiSettings?: HermesWebUiSettings;
   permissionOverview?: PermissionOverview;
 }
 
@@ -39,6 +41,7 @@ export interface ConfigActions {
   setSetupSummary(setupSummary: SetupSummary): void;
   setSecretStatus(secretStatus: SecretVaultStatus): void;
   setWebUiOverview(overview?: HermesWebUiOverview): void;
+  setWebUiSettings(settings: HermesWebUiSettings): void;
   setPermissionOverview(overview?: PermissionOverview): void;
 }
 
@@ -54,6 +57,7 @@ export const configSlice = combine<ConfigState, ConfigActions>(
     setupSummary: undefined,
     secretStatus: undefined,
     webUiOverview: undefined,
+    webUiSettings: undefined,
     permissionOverview: undefined,
   },
   (set) => ({
@@ -69,7 +73,11 @@ export const configSlice = combine<ConfigState, ConfigActions>(
     setHermesWarmup: (warmup: EngineWarmupState) => set({ hermesWarmup: warmup }),
     setSetupSummary: (setupSummary: SetupSummary) => set({ setupSummary }),
     setSecretStatus: (secretStatus: SecretVaultStatus) => set({ secretStatus }),
-    setWebUiOverview: (overview?: HermesWebUiOverview) => set({ webUiOverview: overview }),
+    setWebUiOverview: (overview?: HermesWebUiOverview) => set((state) => ({ webUiOverview: overview, webUiSettings: overview?.settings ?? state.webUiSettings })),
+    setWebUiSettings: (settings: HermesWebUiSettings) => set((state) => ({
+      webUiSettings: settings,
+      webUiOverview: state.webUiOverview ? { ...state.webUiOverview, settings } : undefined,
+    })),
     setPermissionOverview: (permissionOverview?: PermissionOverview) => set({ permissionOverview }),
   })
 );

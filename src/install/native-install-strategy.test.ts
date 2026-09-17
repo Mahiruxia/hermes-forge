@@ -24,6 +24,7 @@ vi.mock("../process/command-runner", () => ({
 let tempRoot = "";
 let rootPath = "";
 let config: RuntimeConfig;
+let toolsReady: { uv: boolean; git: boolean };
 const success = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
 const stageScript = "param([string]$Stage,[switch]$NonInteractive,[switch]$SkipSetup,[string]$HermesHome,[string]$InstallDir)";
 const basePython = path.resolve("test-managed-base", "python.exe");
@@ -33,15 +34,26 @@ beforeEach(async () => {
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "forge-install-test-"));
   rootPath = path.join(tempRoot, "Hermes Agent");
   config = { modelProfiles: [], updateSources: {}, enginePaths: { hermes: rootPath } };
+  toolsReady = { uv: false, git: false };
+  vi.stubEnv("PATH", process.env.PATH);
+  vi.stubEnv("HERMES_GIT_BASH_PATH", process.env.HERMES_GIT_BASH_PATH);
   runCommandMock.mockReset();
   runCommandMock.mockImplementation(async (command: string, args: string[], options: { cwd: string }) => {
+    if (args[0] === "--version" && (/uv(?:\.exe)?$/i.test(command) || command === "git")) {
+      const ready = command === "git" ? toolsReady.git : toolsReady.uv;
+      return ready ? success("available") : { exitCode: 1, stdout: "", stderr: "not found" };
+    }
     if (args[0] === "-I") return success(JSON.stringify({ version: [3, 13], basePrefix: path.dirname(basePython), baseExecutable: basePython }));
     if (command === "powershell.exe" && args.some((arg) => arg.includes("Invoke-WebRequest"))) {
       const destination = /-OutFile '([^']+)'/.exec(args.at(-1)!)?.[1];
       if (destination) await fs.writeFile(destination, stageScript);
       return success("downloaded");
     }
-    if (command === "powershell.exe" && args.includes("-Stage")) return success(JSON.stringify({ stage: args[args.indexOf("-Stage") + 1], ok: true }));
+    if (command === "powershell.exe" && args.includes("-Stage")) {
+      const stage = args[args.indexOf("-Stage") + 1] as "uv" | "git";
+      toolsReady[stage] = true;
+      return success(JSON.stringify({ stage, ok: true }));
+    }
     if (command === "git" && args[0] === "init") {
       await fs.mkdir(path.join(options.cwd, ".git"), { recursive: true });
       return success();
@@ -70,6 +82,7 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await fs.rm(tempRoot, { recursive: true, force: true });
 });
 
@@ -80,6 +93,56 @@ function strategy() {
 }
 
 describeWindows("native official installation", () => {
+  it("reports live source and dependency output and verifies both chat SDKs", async () => {
+    toolsReady = { uv: true, git: true };
+    const originalRun = runCommandMock.getMockImplementation()!;
+    runCommandMock.mockImplementation(async (...args: Parameters<typeof originalRun>) => {
+      const result = await originalRun(...args);
+      if (args[1][0] === "fetch") return success("Receiving objects: 42%");
+      if (args[1][0] === "sync") return success("Installed anthropic");
+      return result;
+    });
+    const publish = vi.fn();
+    expect((await strategy().install(publish)).ok).toBe(true);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ stage: "cloning", logLine: "Receiving objects: 42%" }));
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ stage: "installing_dependencies", logLine: "Installed anthropic" }));
+    expect(runCommandMock.mock.calls.some(([, args]) => args[0] === "-c" && args[1].includes("mcp, openai, anthropic"))).toBe(true);
+  });
+  it("installs with existing tools when the remote bootstrap script is unavailable", async () => {
+    toolsReady = { uv: true, git: true };
+    const base = runCommandMock.getMockImplementation()!;
+    runCommandMock.mockImplementation(async (...args: Parameters<typeof base>) => {
+      if ((args[1] as string[]).some((arg) => arg.includes("Invoke-WebRequest"))) throw new Error("bootstrap host offline");
+      return base(...args);
+    });
+    const result = await strategy().install();
+    expect(result.ok, result.message).toBe(true);
+    expect(runCommandMock.mock.calls.some(([, args]) => args.includes("-File") || args.some((arg: string) => arg.includes("Invoke-WebRequest")))).toBe(false);
+  });
+
+  it("bootstraps only the missing tool", async () => {
+    toolsReady.git = true;
+    const result = await strategy().install();
+    expect(result.ok, result.message).toBe(true);
+    const stages = runCommandMock.mock.calls.filter(([, args]) => args.includes("-Stage"));
+    expect(stages.map(([, args]) => args[args.indexOf("-Stage") + 1])).toEqual(["uv"]);
+  });
+
+  it("does not run health checks or save a successful install after cancellation", async () => {
+    const service = strategy();
+    const base = runCommandMock.getMockImplementation()!;
+    runCommandMock.mockImplementation(async (...args: Parameters<typeof base>) => {
+      const result = await base(...args);
+      if ((args[1] as string[])[0] === "sync") await service.cancelInstall();
+      return result;
+    });
+    const result = await service.install();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("已取消");
+    expect(config.hermesRuntime).toBeUndefined();
+    expect(runCommandMock.mock.calls.some(([command]) => /hermes\.exe$/i.test(command))).toBe(false);
+  });
+
   it("bootstraps only uv and git then syncs the exact official commit and selected venv", async () => {
     const result = await strategy().install();
     expect(result.ok, result.message).toBe(true);
@@ -88,7 +151,7 @@ describeWindows("native official installation", () => {
     expect(stageCalls.every(([, args]) => args.includes("-NonInteractive"))).toBe(true);
     expect(runCommandMock).toHaveBeenCalledWith("git", ["checkout", "--detach", AUDITED_HERMES_COMMIT], expect.anything());
     const sync = runCommandMock.mock.calls.find(([, args]) => args[0] === "sync")!;
-    expect(sync[1]).toEqual(["sync", "--locked", "--no-dev", "--python", basePython, "--extra", "mcp"]);
+    expect(sync[1]).toEqual(["sync", "--locked", "--no-dev", "--python", basePython, "--extra", "anthropic", "--extra", "mcp"]);
     expect(config.hermesRuntime?.installSource).toMatchObject({ branch: AUDITED_HERMES_RELEASE_TAG, commit: AUDITED_HERMES_COMMIT });
   });
 
@@ -146,6 +209,7 @@ describeWindows("native official installation", () => {
   });
 
   it("updates a detached existing installation without invoking the bootstrap installer", async () => {
+    toolsReady = { uv: true, git: true };
     const environment = managedHermesEnvironmentAt(rootPath);
     await fs.mkdir(path.dirname(environment.pythonPath), { recursive: true });
     await fs.mkdir(path.join(rootPath, ".git"));

@@ -1,8 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ModelProfile, RuntimeConfig } from "../shared/types";
-import { normalizeSourceTypeForProfile, resolveHermesProvider } from "../shared/model-config";
+import type { RuntimeConfig } from "../shared/types";
 import { getPlatformKind, type PlatformKind } from "../platform";
 import type { InstallSource } from "./install-source";
 import type { ManagedHermesEnvironment } from "../runtime/managed-hermes-environment";
@@ -47,28 +46,11 @@ export async function synchronizeHermesSource(source: InstallSource, run: Mainte
 
 type ConnectorSettings = { platforms?: Record<string, { enabled?: boolean; instances?: Record<string, { enabled?: boolean }> }> };
 
-function requiresAnthropicRuntime(profile: ModelProfile): boolean {
-  const provider = resolveHermesProvider({ provider: profile.provider, sourceType: normalizeSourceTypeForProfile(profile) });
-  // These native routes use Hermes' Anthropic Messages client, even when Forge
-  // stores a Coding Plan under provider=custom. Keep SDK selection aligned with
-  // hermes_cli/runtime_provider.py and the same provider mapping used at launch.
-  if (["anthropic", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn"].includes(provider)) return true;
-  try {
-    const url = new URL(profile.baseUrl ?? "");
-    const pathname = url.pathname.toLowerCase().replace(/\/+$/, "");
-    return url.hostname.toLowerCase() === "api.anthropic.com"
-      || /\/anthropic(?:\/v1)?$/.test(pathname)
-      || (url.hostname.toLowerCase() === "api.kimi.com" && pathname.includes("/coding"));
-  } catch { return false; }
-}
-
 export function configuredHermesExtras(config: RuntimeConfig, connectors: ConnectorSettings = {}): string[] {
-  const extras = new Set(["mcp"]);
-  const selectedIds = new Set([config.defaultModelProfileId, ...Object.values(config.modelRoleAssignments ?? {})]);
-  if (!config.modelProfiles.some((profile) => profile.id === (config.modelRoleAssignments?.chat ?? config.defaultModelProfileId))) {
-    selectedIds.add(config.modelProfiles.find((profile) => profile.id === config.defaultModelProfileId)?.id ?? config.modelProfiles[0]?.id);
-  }
-  if (config.modelProfiles.some((profile) => selectedIds.has(profile.id) && requiresAnthropicRuntime(profile))) extras.add("anthropic");
+  // Onboarding installs Hermes before a model is chosen. Both supported chat
+  // SDKs must be ready even when the only profile is the initial placeholder;
+  // runtime lazy installs are disabled. OpenAI is already an upstream core dep.
+  const extras = new Set(["anthropic", "mcp"]);
   if (config.extensionSettings?.connectorsEnabled !== true) return [...extras].sort();
   const mapping: Record<string, string> = {
     telegram: "messaging", discord: "messaging", weixin: "messaging", qq: "messaging", qqbot: "messaging",
@@ -104,7 +86,8 @@ export async function findUvCommand(run: MaintenanceRunner, rootPath?: string) {
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
     candidates.push(path.join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", executable));
   }
-  for (const candidate of candidates) {
+  for (const candidate of new Set(candidates)) {
+    if (path.isAbsolute(candidate) && !await fs.stat(candidate).then((stat) => stat.isFile()).catch(() => false)) continue;
     const result = await run(candidate, ["--version"]).catch(() => undefined);
     if (result?.exitCode === 0) return candidate;
   }

@@ -8,6 +8,17 @@ describe("StatusBar", () => {
     useAppStore.getState().resetStore();
   });
 
+  it("labels an unrequested Hermes probe as idle instead of spinning indefinitely", () => {
+    useAppStore.setState({ clientInfo: { appVersion: "0.2.32", userDataPath: "test", portable: false, rendererMode: "built" } });
+    const getHermesProbe = vi.fn();
+    window.workbenchClient = { ...window.workbenchClient, getHermesProbe, onClientUpdateEvent: vi.fn().mockReturnValue(() => undefined) };
+    render(<StatusBar />);
+    expect(screen.getByRole("button", { name: /待检查/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /检查中/ })).toBeNull();
+    expect(screen.getByTestId("status-summary-light")).toHaveClass("hermes-status-light--idle");
+    expect(getHermesProbe).not.toHaveBeenCalled();
+  });
+
   it("makes no Gateway or probe requests during five idle minutes", async () => {
     vi.useFakeTimers();
     try {

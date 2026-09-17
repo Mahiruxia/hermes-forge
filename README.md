@@ -11,7 +11,7 @@
 
 ## 定位
 
-Hermes Forge 是以聊天为中心的 Hermes Agent 桌面助手，保留 Electron 架构。Windows 原生是主要验收平台；macOS 使用原生安装和运行策略，实际平台验收状态见 [验收记录](VALIDATION_0.2.31.md)。
+Hermes Forge 是以聊天为中心的 Hermes Agent 桌面助手，保留 Electron 架构。Windows 原生是主要验收平台；macOS 使用原生安装和运行策略，实际平台验收状态见 [验收记录](VALIDATION_0.2.32.md)。
 
 核心能力：
 
@@ -38,6 +38,10 @@ Hermes Forge 是以聊天为中心的 Hermes Agent 桌面助手，保留 Electro
 2. 未发现 Hermes 时，点击“选择安装方式”，优先使用官方 GitHub；网络受限时可主动选择国内社区镜像。
 3. Hermes 就绪后继续配置模型来源和 API Key。密钥只保存到本机安全存储，不会在界面回显。
 4. 进入工作台并选择项目目录，然后描述希望完成的目标。
+
+Windows 安装包已包含桌面客户端运行环境，无需另外安装 Node.js 或 npm。首次安装 Hermes 时会复用已有 Git / uv，只为缺失工具运行引导阶段，并准备独立的 Python 环境；后续启动自动发现安装目录内的便携工具，无需手动修改系统 PATH。首次下载 Hermes 和模型联网服务仍需要网络。macOS 支持原生安装入口，自动准备缺失的 uv，需已有 Git 或系统命令行工具。
+
+安装取消后会等待后台操作结束再允许重试，已完成步骤可继续使用。若安装成功后状态刷新失败，点击“重新检测”即可。界面缓存只保存偏好设置，会话从本机日志恢复；缓存损坏或写满不会阻止继续操作，界面异常时可点击“恢复界面”。
 
 常用快捷键：
 
@@ -70,7 +74,9 @@ npm run build    # 生产构建
 
 当前默认锁定官方 **0.21.3 / v2026.9.14**，提交 `345cd2b057a452236de401d3534b8502a7465e8d`，版本清单位于 `src/install/hermes-version-constants.ts`。
 
-升级在原目录进行，支持旧分支、标签与 detached HEAD。使用官方 `uv.lock` 同步核心依赖、MCP 和已启用扩展需要的 extras，不安装全部可选依赖。聊天、Gateway、会话数据库和诊断统一使用安装目录内的 `venv`，旧环境仅在没有 `venv` 时兼容 `.venv`。不会向系统 Python 安装包，也不自动 stash 或创建升级备份。
+升级在原目录进行，支持旧分支、标签与 detached HEAD。使用官方 `uv.lock` 同步核心依赖、MCP、常用模型所需的 Anthropic SDK，以及已启用扩展需要的 extras，不安装全部可选依赖。首次安装在选择模型前就准备好两种聊天协议，避免后续选用 Kimi、MiniMax 或 Anthropic 时缺包。聊天、Gateway、会话数据库和诊断统一使用安装目录内的 `venv`，旧环境仅在没有 `venv` 时兼容 `.venv`。不会向系统 Python 安装包，也不自动 stash 或创建升级备份。
+
+macOS 缺少 uv 时会自动下载固定版本的官方安装器，校验 SHA256 后安装到 Hermes 旁的独立工具目录，无需 Homebrew，也不修改 shell 配置；Git 缺失时仍需完成系统命令行工具安装。首次安装需要联网，运行环境尚未随桌面安装包离线捆绑。社区选项目前只替换 Windows 工具引导脚本，Hermes 源码仍需访问官方 GitHub。
 
 升级前检查任务与 Gateway，下载和核实目标提交后再切换。失败报告保留具体阶段；重试沿用同一目录。除已确认可替换的 `uv.lock` 外，存在源码修改时停止升级并提示。
 

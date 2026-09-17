@@ -31,6 +31,7 @@ export function ModelConfigWizard(props: {
   secrets: SecretMeta[];
   onRefresh: () => Promise<void>;
   onSaved: (message: string) => void;
+  onStartChat?: () => void;
 }) {
   const currentProfile = props.models.modelProfiles.find((item) => item.id === props.models.defaultProfileId) ?? props.models.modelProfiles[0];
   const providerCatalog = useMemo(() => providerPresetsForDefinitions(props.models.providers), [props.models.providers]);
@@ -48,6 +49,7 @@ export function ModelConfigWizard(props: {
   const [operationNotice, setOperationNotice] = useState<OperationNotice | undefined>();
   const [connectionTestPassedInSession, setConnectionTestPassedInSession] = useState(false);
   const [draftNonce, setDraftNonce] = useState(0);
+  const [savedForChat, setSavedForChat] = useState(false);
   const feedbackPanelRef = useRef<HTMLDivElement | null>(null);
   const wizardTopRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef({ sourceType, baseUrl, model, secretRef, apiKey, apiSecret });
@@ -110,6 +112,7 @@ export function ModelConfigWizard(props: {
   }, [discovery?.recommendedModel, model, provider.modelOptions, testResult?.availableModels]);
 
   function updateSource(nextSource: ModelSourceType) {
+    setSavedForChat(false);
     const next = draftStateForNewProfile(nextSource, providerCatalog);
     draftRef.current = { sourceType: next.sourceType, baseUrl: next.baseUrl, model: next.model, secretRef: next.secretRef, apiKey: "", apiSecret: "" };
     setEditingProfileId(undefined);
@@ -134,6 +137,7 @@ export function ModelConfigWizard(props: {
   }
 
   function editProfile(profileId: string) {
+    setSavedForChat(false);
     const next = draftStateForProfile(props.models, profileId, providerCatalog);
     draftRef.current = { sourceType: next.sourceType, baseUrl: next.baseUrl, model: next.model, secretRef: next.secretRef, apiKey: "", apiSecret: "" };
     setEditingProfileId(profileId);
@@ -150,6 +154,7 @@ export function ModelConfigWizard(props: {
   }
 
   function updateBaseUrl(value: string) {
+    setSavedForChat(false);
     draftRef.current.baseUrl = value;
     setBaseUrl(value);
     setTestResult(undefined);
@@ -158,6 +163,7 @@ export function ModelConfigWizard(props: {
   }
 
   function updateModel(value: string) {
+    setSavedForChat(false);
     draftRef.current.model = value;
     setModel(value);
     setTestResult(undefined);
@@ -166,6 +172,7 @@ export function ModelConfigWizard(props: {
   }
 
   function updateApiKey(value: string) {
+    setSavedForChat(false);
     draftRef.current.apiKey = value;
     setApiKey(value);
     setTestResult(undefined);
@@ -174,6 +181,7 @@ export function ModelConfigWizard(props: {
   }
 
   function updateApiSecret(value: string) {
+    setSavedForChat(false);
     draftRef.current.apiSecret = value;
     setApiSecret(value);
     setTestResult(undefined);
@@ -251,6 +259,8 @@ export function ModelConfigWizard(props: {
   }
 
   async function saveModel(asAuxiliary = false) {
+    if (busyAction) return;
+    setSavedForChat(false);
     setBusyAction("save");
     revealFeedbackPanel();
 
@@ -260,7 +270,7 @@ export function ModelConfigWizard(props: {
       setOperationNotice({
         tone: "info",
         title: "正在测试并保存",
-        message: "正在依次检查鉴权、模型可达性、最小 Chat、工具探针和 Windows Native 运行同步，通过后会自动保存。",
+        message: "正在检查鉴权、模型可达性和工具支持，通过后会自动保存并同步运行配置。",
       });
       try {
         health = await runTestConnection();
@@ -351,7 +361,7 @@ export function ModelConfigWizard(props: {
         modelRoleAssignments: roleAssignments,
         modelProfiles: nextProfiles,
       });
-      await props.onRefresh();
+      const refreshed = await props.onRefresh().then(() => true, () => false);
       setEditingProfileId(profileId);
       const defaultSavedMessage = asAuxiliary
         ? "模型已保存为辅助模型"
@@ -361,11 +371,12 @@ export function ModelConfigWizard(props: {
       const savedMessage = !asAuxiliary && health.agentRole === "primary_agent"
         ? updateResult.modelSync?.message ?? defaultSavedMessage
         : defaultSavedMessage;
-      const syncWarning = !asAuxiliary && health.agentRole === "primary_agent" && updateResult.modelSync?.code === "HERMES_SYNC_DEFERRED";
+      const syncWarning = !asAuxiliary && health.agentRole === "primary_agent" && Boolean(updateResult.modelSync?.code);
+      setSavedForChat(refreshed && !asAuxiliary && health.agentRole === "primary_agent" && !syncWarning);
       setOperationNotice({
-        tone: syncWarning ? "warning" : asAuxiliary ? "info" : health.agentRole === "primary_agent" ? "success" : "warning",
-        title: syncWarning ? "已保存，Gateway 需确认" : asAuxiliary ? "已保存为辅助模型" : health.agentRole === "primary_agent" ? "保存完成" : "已保存，暂未设为默认",
-        message: savedMessage,
+        tone: !refreshed || syncWarning ? "warning" : asAuxiliary ? "info" : health.agentRole === "primary_agent" ? "success" : "warning",
+        title: !refreshed ? "模型已保存，列表刷新未完成" : syncWarning ? "已保存，运行环境需确认" : asAuxiliary ? "已保存为辅助模型" : health.agentRole === "primary_agent" ? "保存完成" : "已保存，暂未设为默认",
+        message: !refreshed ? `${savedMessage}。请重新打开设置刷新列表，无需重复保存。` : savedMessage,
       });
       props.onSaved(savedMessage);
     } catch (error) {
@@ -519,6 +530,11 @@ export function ModelConfigWizard(props: {
 
       <div ref={feedbackPanelRef}>
         <ConnectionTestResult busyAction={busyAction} notice={operationNotice} testResult={testResult} formBlockingHint={formBlockingHint} />
+        {savedForChat && props.onStartChat ? (
+          <button type="button" onClick={props.onStartChat} className="mt-4 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
+            开始第一条对话
+          </button>
+        ) : null}
       </div>
 
       <details className="overflow-hidden rounded-[24px] bg-white shadow-[0_18px_60px_rgba(15,23,42,0.045)] ring-1 ring-slate-200/55">

@@ -78,7 +78,7 @@ describe("managed dependencies", () => {
     expect(configuredHermesExtras(config, { platforms: { weixin: { enabled: true } } })).toEqual(["anthropic", "mcp", "messaging"]);
   });
 
-  it("includes native MiniMax and Anthropic-compatible endpoints only for selected profiles", () => {
+  it("prepares both chat SDKs before onboarding chooses its first model", () => {
     const config: RuntimeConfig = {
       modelProfiles: [
         { id: "local", provider: "local", model: "local" },
@@ -86,7 +86,7 @@ describe("managed dependencies", () => {
         { id: "proxy", provider: "custom", model: "claude", baseUrl: "https://proxy.example.test/anthropic/v1" },
       ], defaultModelProfileId: "local", updateSources: {},
     };
-    expect(configuredHermesExtras(config)).toEqual(["mcp"]);
+    expect(configuredHermesExtras(config)).toEqual(["anthropic", "mcp"]);
     config.modelRoleAssignments = { coding_plan: "mini" };
     expect(configuredHermesExtras(config)).toEqual(["anthropic", "mcp"]);
     config.modelRoleAssignments = { chat: "proxy" };
@@ -112,15 +112,15 @@ describe("managed dependencies", () => {
   it("keeps disabled connectors out and installs only configured active extras", () => {
     const config: RuntimeConfig = { modelProfiles: [], updateSources: {}, extensionSettings: { connectorsEnabled: false, cronEnabled: false, desktopAutomationEnabled: false } };
     const connectors = { platforms: { feishu: { enabled: true }, telegram: { enabled: false }, slack: { enabled: true } } };
-    expect(configuredHermesExtras(config, connectors)).toEqual(["mcp"]);
+    expect(configuredHermesExtras(config, connectors)).toEqual(["anthropic", "mcp"]);
     config.extensionSettings!.connectorsEnabled = true;
-    expect(configuredHermesExtras(config, connectors)).toEqual(["feishu", "mcp", "slack"]);
+    expect(configuredHermesExtras(config, connectors)).toEqual(["anthropic", "feishu", "mcp", "slack"]);
     expect(configuredHermesExtras(config, connectors)).not.toContain("all");
   });
 
   it("does not enable an extension from child instances when its platform is disabled", () => {
     const config: RuntimeConfig = { modelProfiles: [], updateSources: {}, extensionSettings: { connectorsEnabled: true, cronEnabled: false, desktopAutomationEnabled: false } };
-    expect(configuredHermesExtras(config, { platforms: { feishu: { enabled: false, instances: { primary: { enabled: true } } } } })).toEqual(["mcp"]);
+    expect(configuredHermesExtras(config, { platforms: { feishu: { enabled: false, instances: { primary: { enabled: true } } } } })).toEqual(["anthropic", "mcp"]);
   });
 
   it("verifies a managed replacement before rebuilding a Windows Store based venv", async () => {

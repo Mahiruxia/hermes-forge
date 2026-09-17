@@ -1,10 +1,68 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "./store";
 import type { SessionAttachment, SessionMessage, StreamEvent, TaskEventEnvelope } from "../shared/types";
 
 function reset() {
   useAppStore.getState().resetStore();
 }
+
+describe("renderer preference recovery", () => {
+  beforeEach(() => { reset(); localStorage.clear(); });
+  afterEach(() => { vi.restoreAllMocks(); reset(); });
+
+  it("migrates old caches without restoring stale loaders, runtime state, or broken actions", async () => {
+    localStorage.setItem("hermes-workbench", JSON.stringify({ version: 0, state: {
+      firstLaunch: false, sessionSidebarWidth: 290, activeSessionId: "saved-session",
+      loadingStates: { bootstrap: true }, toasts: null, sessions: "corrupt",
+      runtimeConfig: { modelProfiles: null }, setUserInput: "corrupt",
+      modelProfileIdBySession: { a: "profile-a", b: null },
+      runningTaskRunId: "stale-task", taskRunProjectionsById: { invalid: { status: "running" } },
+    } }));
+    await useAppStore.persist.rehydrate();
+    const state = useAppStore.getState();
+    expect(state.firstLaunch).toBe(false);
+    expect(state.sessionSidebarWidth).toBe(290);
+    expect(state.activeSessionId).toBe("saved-session");
+    expect(state.modelProfileIdBySession).toEqual({ a: "profile-a" });
+    expect(state.loadingStates).toEqual({});
+    expect(state.sessions).toEqual([]);
+    expect(state.toasts).toEqual([]);
+    expect(state.runtimeConfig).toBeUndefined();
+    expect(state.runningTaskRunId).toBeUndefined();
+    expect(state.taskRunProjectionsById).toEqual({});
+    expect(() => state.setUserInput("still usable")).not.toThrow();
+  });
+
+  it("keeps chat actions working when localStorage is full", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("full", "QuotaExceededError"); });
+    expect(() => useAppStore.getState().setUserInput("hello")).not.toThrow();
+    expect(() => useAppStore.getState().startLoading("task")).not.toThrow();
+    expect(() => useAppStore.getState().stopLoading("task")).not.toThrow();
+    expect(useAppStore.getState().userInput).toBe("hello");
+  });
+
+  it("migrates theme and send-key preferences without restoring the old overview scans", async () => {
+    const settings = { theme: "slate", language: "zh", sendKey: "mod-enter", sendKeyHintDismissed: true, showUsage: true, showCliSessions: false } as const;
+    localStorage.setItem("hermes-workbench", JSON.stringify({ version: 0, state: {
+      webUiOverview: { settings, skills: [{ id: "stale-skill" }], crons: [{ id: "stale-job" }] },
+    } }));
+    await useAppStore.persist.rehydrate();
+    expect(useAppStore.getState().webUiSettings).toEqual(settings);
+    expect(useAppStore.getState().webUiOverview).toBeUndefined();
+    useAppStore.getState().setWebUiSettings({ ...settings, theme: "light" });
+    const saved = JSON.parse(localStorage.getItem("hermes-workbench")!).state;
+    expect(saved.webUiSettings.theme).toBe("light");
+    expect(saved.webUiSettings.sendKey).toBe("mod-enter");
+    expect(saved).not.toHaveProperty("webUiOverview");
+  });
+
+  it("does not fill the preference cache with task logs or transient errors", () => {
+    useAppStore.setState({ firstLaunch: false, loadingStates: { test: true }, toasts: [{ id: "old", type: "error", title: "old error" }] });
+    const saved = JSON.parse(localStorage.getItem("hermes-workbench")!).state;
+    expect(saved.firstLaunch).toBe(false);
+    for (const key of ["loadingStates", "toasts", "taskRunProjectionsById", "sessions", "runtimeConfig"]) expect(saved).not.toHaveProperty(key);
+  });
+});
 
 describe("renderer store task projections", () => {
   beforeEach(() => {

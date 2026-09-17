@@ -42,9 +42,9 @@ describe("OneClickDiagnosticsOrchestrator", () => {
     const probe = vi.spyOn(orchestrator as any, "probeManagedPython").mockResolvedValue({ ok: true, missing: [] });
     const items: any[] = [];
     await (orchestrator as any).checkPythonDeps(items, context, undefined, { autoFix: true });
-    expect(probe).toHaveBeenCalledWith(environment, ["mcp"]);
+    expect(probe).toHaveBeenCalledWith(environment, ["anthropic", "mcp"]);
     expect(repairDependency).not.toHaveBeenCalled();
-    expect(items[0]).toMatchObject({ status: "pass", evidence: { pythonCommand: environment.pythonPath, extras: ["mcp"] } });
+    expect(items[0]).toMatchObject({ status: "pass", evidence: { pythonCommand: environment.pythonPath, extras: ["anthropic", "mcp"] } });
   });
 
   it("delegates missing dependencies to locked maintenance and verifies the repaired environment", async () => {

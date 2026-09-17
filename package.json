@@ -1,6 +1,6 @@
 {
   "name": "hermes-forge",
-  "version": "0.2.31",
+  "version": "0.2.32",
   "description": "本地优先的 Hermes Agent 桌面客户端，支持自动部署、模型同步、微信连接器、Windows 桥接、文件上传与 GitHub 自动更新。",
   "author": "",
   "license": "MIT",
@@ -41,7 +41,7 @@
     "autoprefixer": "^10.5.0",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "^41.2.1",
+    "electron": "^41.10.7",
     "electron-builder": "^26.8.1",
     "jsdom": "^26.1.0",
     "lucide-react": "^1.8.0",
@@ -79,7 +79,10 @@
       "output": "release"
     },
     "afterPack": "scripts/after-pack.cjs",
-    "electronLanguages": ["en-US", "zh-CN"],
+    "electronLanguages": [
+      "en-US",
+      "zh-CN"
+    ],
     "artifactName": "Hermes-Forge-${version}-${arch}.${ext}",
     "files": [
       "dist/main/**/*",

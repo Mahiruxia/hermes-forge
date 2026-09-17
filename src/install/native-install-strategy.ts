@@ -10,6 +10,7 @@ import { runCommand, streamCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import type { RuntimeProbeService } from "../runtime/runtime-probe-service";
 import { managedHermesEnvironmentEnv, resolveManagedHermesEnvironment } from "../runtime/managed-hermes-environment";
+import { mergeProcessEnvironment, nativeToolEnvironment } from "../runtime/native-tool-environment";
 import type { SetupDependencyRepairId } from "../shared/types";
 import type { InstallStrategy } from "./install-strategy";
 import type {
@@ -25,7 +26,7 @@ import { DEFAULT_PINNED_HERMES_SOURCE, resolveInstallSource, resolveInstallSourc
 import type { InstallSource } from "./install-source";
 import { AUDITED_HERMES_RELEASE_TAG, MINIMUM_HERMES_VERSION } from "./hermes-version-constants";
 import { isAtLeastVersion, parseHermesVersion } from "./hermes-version";
-import { ensureManagedHermesEnvironment, readConfiguredHermesExtras, synchronizeHermesDependencies, synchronizeHermesSource, type MaintenanceRunner } from "./hermes-maintenance";
+import { ensureManagedHermesEnvironment, findUvCommand, readConfiguredHermesExtras, synchronizeHermesDependencies, synchronizeHermesSource, type MaintenanceRunner } from "./hermes-maintenance";
 import { MacosInstallStrategy } from "./macos-install-strategy";
 
 const DEFAULT_INSTALL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -215,16 +216,28 @@ export class NativeInstallStrategy implements InstallStrategy {
         const head = await runCommand("git", ["rev-parse", "--verify", "HEAD"], { cwd: rootPath, timeoutMs: 10_000 });
         if (head.exitCode === 0) throw new Error("目标 Git 仓库不是 Hermes 安装，未修改。");
       }
-      const urls = this.installerUrlsForSource(source);
-      emit("downloading_script", 15, "正在准备官方安装引导工具。", urls[0]);
-      const download = await this.downloadOfficialInstallerScript(scriptPath, logDir, log, urls, signal);
-      if (!download.ok) throw new Error(this.scriptDownloadFailureMessage(source.sourceLabel));
-      await this.patchOfficialInstallerScript(scriptPath, log);
-      const script = await fs.readFile(scriptPath, "utf8");
-      if (!/\[string\]\s*\$Stage\b/i.test(script) || !/\[switch\]\s*\$NonInteractive\b/i.test(script)) {
-        throw new Error("安装脚本不支持官方分阶段安装协议，请切换官方安装源；未运行旧版全量安装器。");
+      this.prependProcessPath([path.join(hermesHome, "bin"), path.join(hermesHome, "git", "cmd"), path.join(hermesHome, "git", "bin")]);
+      const probeTool: MaintenanceRunner = (command, args, env) => this.runLogged(command, args, logDir, log, 10_000, { env, signal });
+      const uv = await findUvCommand(probeTool, rootPath).catch(() => undefined);
+      this.throwIfAborted(signal);
+      if (uv && path.isAbsolute(uv)) this.prependProcessPath([path.dirname(uv)]);
+      const git = await probeTool("git", ["--version"]);
+      this.throwIfAborted(signal);
+      const missingStages = [...(!uv ? ["uv"] : []), ...(git.exitCode !== 0 ? ["git"] : [])];
+      if (missingStages.length) {
+        const urls = this.installerUrlsForSource(source);
+        emit("downloading_script", 15, `正在准备缺失的安装工具：${missingStages.join("、")}。`, urls[0]);
+        const download = await this.downloadOfficialInstallerScript(scriptPath, logDir, log, urls, signal);
+        if (!download.ok) throw new Error(this.scriptDownloadFailureMessage(source.sourceLabel));
+        await this.patchOfficialInstallerScript(scriptPath, log);
+        const script = await fs.readFile(scriptPath, "utf8");
+        if (!/\[string\]\s*\$Stage\b/i.test(script) || !/\[switch\]\s*\$NonInteractive\b/i.test(script)) {
+          throw new Error("安装脚本不支持官方分阶段安装协议，请切换官方安装源；未运行旧版全量安装器。");
+        }
+      } else {
+        emit("running_installer", 35, "已复用本机 Git 和 uv，跳过引导脚本下载。");
       }
-      for (const stage of ["uv", "git"]) {
+      for (const stage of missingStages) {
         this.throwIfAborted(signal);
         emit("running_installer", stage === "uv" ? 25 : 35, `正在准备 ${stage}。`);
         const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-Stage", stage, "-NonInteractive", "-SkipSetup", "-HermesHome", hermesHome, "-InstallDir", rootPath];
@@ -248,17 +261,21 @@ export class NativeInstallStrategy implements InstallStrategy {
         if (remote.exitCode !== 0) throw new Error("无法设置 Hermes 安装来源。");
       }
       emit("cloning", 45, "正在同步指定的官方版本。", source.commit ?? source.branch);
-      const sync = await this.syncInstalledSourceIfNeeded(rootPath, source, log, signal);
+      const reportSourceLine = (line: string) => publish?.({ stage: "cloning", progress: 45, message: "正在下载并校验 Hermes 源码。", detail: line, logLine: line, startedAt, at: new Date().toISOString() });
+      const sync = await this.syncInstalledSourceIfNeeded(rootPath, source, log, signal, reportSourceLine);
       if (!sync.ok) throw new Error(sync.message);
       emit("installing_dependencies", 65, "正在同步核心、MCP 与已启用功能的依赖。");
-      await this.synchronizeManagedDependencies(rootPath, log, signal);
+      const reportDependencyLine = (line: string) => publish?.({ stage: "installing_dependencies", progress: 65, message: "正在准备 Python 和模型运行依赖。", detail: line, logLine: line, startedAt, at: new Date().toISOString() });
+      await this.synchronizeManagedDependencies(rootPath, log, signal, reportDependencyLine);
       this.throwIfAborted(signal);
       emit("health_check", 90, "正在检查 Hermes 版本与核心依赖。");
-      const health = await this.checkInstalledHermes(rootPath, log);
+      const health = await this.checkInstalledHermes(rootPath, log, signal);
       if (!health.available) throw new Error(health.message);
+      this.throwIfAborted(signal);
       await this.verifyHermesHomeWritable(hermesHome, log);
       await this.recordManagedWindowsTools(hermesHome, log);
       const commit = await this.currentGitCommit(rootPath, log);
+      this.throwIfAborted(signal);
       await this.writeManagedMarker(rootPath, true, source, commit);
       await this.saveHermesRoot(rootPath, source);
       ok = true;
@@ -337,9 +354,9 @@ export class NativeInstallStrategy implements InstallStrategy {
     if (signal?.aborted) throw new Error("install_cancelled");
   }
 
-  private async syncInstalledSourceIfNeeded(rootPath: string, source: InstallSource, log: string[], signal?: AbortSignal) {
+  private async syncInstalledSourceIfNeeded(rootPath: string, source: InstallSource, log: string[], signal?: AbortSignal, onLine?: (line: string) => void) {
     try {
-      const run: MaintenanceRunner = (command, args, env) => this.runLogged(command, args, rootPath, log, 180_000, { env, signal });
+      const run: MaintenanceRunner = (command, args, env) => this.runLogged(command, args, rootPath, log, 180_000, { env, signal, onLine, heartbeatMs: 10_000, onHeartbeat: (seconds) => onLine?.(`下载仍在进行，当前命令已运行 ${seconds} 秒；可取消后重试。`) });
       await synchronizeHermesSource(source, run);
       return { ok: true, message: "安装源和实际提交已核验。" };
     } catch (error) {
@@ -371,8 +388,8 @@ export class NativeInstallStrategy implements InstallStrategy {
     }
   }
 
-  private async synchronizeManagedDependencies(rootPath: string, log: string[], signal?: AbortSignal) {
-    const run: MaintenanceRunner = (command, args, env) => this.runLogged(command, args, rootPath, log, DEFAULT_INSTALL_TIMEOUT_MS, { env, signal });
+  private async synchronizeManagedDependencies(rootPath: string, log: string[], signal?: AbortSignal, onLine?: (line: string) => void) {
+    const run: MaintenanceRunner = (command, args, env) => this.runLogged(command, args, rootPath, log, DEFAULT_INSTALL_TIMEOUT_MS, { env, signal, onLine, heartbeatMs: 10_000, onHeartbeat: (seconds) => onLine?.(`依赖准备仍在进行，当前命令已运行 ${seconds} 秒；首次下载可能需要几分钟。`) });
     const environment = await ensureManagedHermesEnvironment(rootPath, run);
     const extras = await readConfiguredHermesExtras(await this.configStore.read(), this.appPaths.baseDir());
     await synchronizeHermesDependencies(environment, extras, run);
@@ -400,6 +417,8 @@ export class NativeInstallStrategy implements InstallStrategy {
   }
 
   private async runLogged(command: string, args: string[], cwd: string, log: string[], timeoutMs: number, heartbeat?: { heartbeatMs?: number; onHeartbeat?: (elapsedSeconds: number) => void; signal?: AbortSignal; onLine?: (line: string) => void; env?: NodeJS.ProcessEnv }) {
+    this.throwIfAborted(heartbeat?.signal);
+    const env = nativeToolEnvironment(cwd, mergeProcessEnvironment(heartbeat?.env));
     log.push(`$ ${command} ${args.join(" ")}`);
     const startedAt = Date.now();
     const timer = heartbeat?.heartbeatMs && heartbeat.onHeartbeat ? setInterval(() => {
@@ -409,7 +428,7 @@ export class NativeInstallStrategy implements InstallStrategy {
     }, heartbeat.heartbeatMs) : undefined;
     try {
       if (!heartbeat?.onLine) {
-        const result = await runCommand(command, args, { cwd, timeoutMs, signal: heartbeat?.signal, env: heartbeat?.env });
+        const result = await runCommand(command, args, { cwd, timeoutMs, signal: heartbeat?.signal, env });
         if (result.stdout.trim()) log.push(result.stdout.trim());
         if (result.stderr.trim()) log.push(result.stderr.trim());
         log.push(`exit ${result.exitCode ?? "unknown"}`);
@@ -419,7 +438,7 @@ export class NativeInstallStrategy implements InstallStrategy {
       let stdout = "";
       let stderr = "";
       let exitCode: number | null = null;
-      for await (const event of streamCommand(command, args, { cwd, timeoutMs, signal: heartbeat.signal, env: heartbeat.env })) {
+      for await (const event of streamCommand(command, args, { cwd, timeoutMs, signal: heartbeat.signal, env })) {
         if (event.type === "stdout" || event.type === "stderr") {
           const line = event.line.trim();
           if (!line) continue;
@@ -438,18 +457,18 @@ export class NativeInstallStrategy implements InstallStrategy {
     }
   }
 
-  private async checkInstalledHermes(rootPath: string, log: string[]) {
+  private async checkInstalledHermes(rootPath: string, log: string[], signal?: AbortSignal) {
     const environment = await resolveManagedHermesEnvironment(rootPath);
     if (!environment) return { available: false, message: "Hermes 受管虚拟环境缺失。" };
     const hermesHome = await resolveActiveHermesHome(this.appPaths.hermesDir());
     const env = managedHermesEnvironmentEnv(environment, { HERMES_HOME: hermesHome });
-    const result = await this.runLogged(environment.cliPath, ["--version"], rootPath, log, 20_000, { env });
+    const result = await this.runLogged(environment.cliPath, ["--version"], rootPath, log, 20_000, { env, signal });
     const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
     const version = parseHermesVersion(output);
     if (result.exitCode !== 0 || !version || !isAtLeastVersion(version, MINIMUM_HERMES_VERSION)) {
       return { available: false, message: `需要 Hermes ${MINIMUM_HERMES_VERSION}+，当前 CLI 检查失败：${output || "无版本输出"}` };
     }
-    const imports = await this.runLogged(environment.pythonPath, ["-c", "from run_agent import AIAgent; from hermes_state import SessionDB; import hermes_logging, mcp; print('hermes-import-ok')"], rootPath, log, 60_000, { env });
+    const imports = await this.runLogged(environment.pythonPath, ["-c", "from run_agent import AIAgent; from hermes_state import SessionDB; import hermes_logging, mcp, openai, anthropic; print('hermes-import-ok')"], rootPath, log, 60_000, { env, signal });
     if (imports.exitCode !== 0 || !imports.stdout.includes("hermes-import-ok")) {
       return { available: false, message: `Hermes 核心依赖导入失败：${imports.stderr || imports.stdout}` };
     }

@@ -47,6 +47,7 @@ import { OneClickDiagnosticsOrchestrator } from "./diagnostics/one-click-diagnos
 import { LegacyWslMigrationService } from "./legacy-wsl-migration-service";
 import { isSafeExternalUrl, isTrustedAppUrl as isTrustedNavigationUrl } from "./navigation-security";
 import { PackagedSmokeTest } from "./packaged-smoke-test";
+import { nativeToolEnvironment } from "../runtime/native-tool-environment";
 
 const isSmokeTestMode = process.argv.includes("--smoke-test");
 const smokeTest = isSmokeTestMode ? new PackagedSmokeTest() : undefined;
@@ -101,6 +102,11 @@ app.whenReady().then(async () => {
   const resolveHermesRoot = async () => {
     return configStore.getEnginePath("hermes");
   };
+  if (!smokeTest) {
+    const toolEnv = nativeToolEnvironment(await resolveHermesRoot());
+    process.env.PATH = toolEnv.PATH;
+    if (toolEnv.HERMES_GIT_BASH_PATH) process.env.HERMES_GIT_BASH_PATH = toolEnv.HERMES_GIT_BASH_PATH;
+  }
   const hermesRuntimeResolver = new HermesRuntimeResolver(appPaths, resolveHermesRoot);
   const approvalService = new ApprovalService(appPaths);
   const engineInteractionService = new EngineInteractionService(approvalService);
@@ -270,15 +276,6 @@ app.whenReady().then(async () => {
     mainWindow.webContents.on("will-navigate", guardMainFrameNavigation);
     mainWindow.webContents.on("will-redirect", guardMainFrameNavigation);
 
-    const devServerUrl = isDevMode ? process.env.VITE_DEV_SERVER_URL : undefined;
-    if (smokeTest) {
-      // The smoke runner loads the real page after all IPC handlers are registered.
-    } else if (devServerUrl) {
-      void mainWindow.loadURL(devServerUrl);
-    } else {
-      void mainWindow.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"));
-    }
-
     if (isDevMode) {
       mainWindow.webContents.openDevTools();
     }
@@ -286,6 +283,13 @@ app.whenReady().then(async () => {
     mainWindow.on("closed", () => {
       mainWindow = undefined;
     });
+  }
+
+  async function loadWindow() {
+    if (!mainWindow || smokeTest) return;
+    const devServerUrl = isDevMode ? process.env.VITE_DEV_SERVER_URL : undefined;
+    if (devServerUrl) await mainWindow.loadURL(devServerUrl);
+    else await mainWindow.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"));
   }
 
   createWindow();
@@ -343,7 +347,7 @@ app.whenReady().then(async () => {
     () => appPaths.hermesDir(),
   );
 
-  registerIpcHandlers(mainWindow, {
+  registerIpcHandlers(() => mainWindow, {
     appPaths,
     taskRunner,
     snapshotManager,
@@ -380,6 +384,8 @@ app.whenReady().then(async () => {
     }),
   });
 
+  // The renderer invokes IPC immediately on mount. Register every handler first.
+  await loadWindow();
 
   const scheduleStartupWarmup = () => {
     setTimeout(() => {
@@ -429,6 +435,10 @@ app.whenReady().then(async () => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+      void loadWindow().catch((error) => {
+        console.error("[Hermes Forge] Window reload failed:", error);
+        dialog.showErrorBox("界面加载失败", "请重新启动 Hermes Forge。如问题持续，请重新安装客户端；本机配置和会话保留在用户数据目录中。");
+      });
     }
   });
 
@@ -465,6 +475,7 @@ app.whenReady().then(async () => {
     return;
   }
   console.error("[Hermes Forge] Startup failed:", error);
+  dialog.showErrorBox("Hermes Forge 启动失败", "无法完成本机数据初始化或加载界面。请检查用户数据目录的写入权限和可用磁盘空间后重试。");
   app.exit(1);
 });
 

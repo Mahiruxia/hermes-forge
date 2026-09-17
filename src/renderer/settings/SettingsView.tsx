@@ -411,6 +411,7 @@ export function SettingsView(props: {
             secrets={overview?.secrets ?? []}
             onRefresh={props.onRefresh}
             onSaved={showSaveNotice}
+            onStartChat={props.onBack}
           />
         </section>
       ) : null}

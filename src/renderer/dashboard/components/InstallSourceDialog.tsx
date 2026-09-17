@@ -66,7 +66,7 @@ export function InstallSourceDialog(props: {
           <InstallSourceOption
             badge="推荐"
             busy={props.busy}
-            detail="安装脚本来自 GitHub Raw，仓库为 NousResearch/hermes-agent。适合可以稳定访问 GitHub 的环境。"
+            detail="使用 NousResearch/hermes-agent 官方仓库；缺少工具时按需下载官方引导脚本。适合可以稳定访问 GitHub 的环境。"
             icon={ShieldCheck}
             label="官方 GitHub"
             onClick={() => props.onSelect("official")}
@@ -75,7 +75,7 @@ export function InstallSourceDialog(props: {
           <InstallSourceOption
             badge="备用 · 非官方"
             busy={props.busy}
-            detail="安装脚本来自中文社区镜像，适合 GitHub、uv 或 Python 依赖下载慢、失败时使用。"
+            detail="Windows 缺少工具时使用社区引导脚本。Hermes 源码仍需连接官方 GitHub，Python 依赖仍需连接其下载服务；macOS 使用官方 uv。"
             icon={Globe2}
             label="国内社区镜像"
             onClick={() => props.onSelect("mirror")}
@@ -84,7 +84,7 @@ export function InstallSourceDialog(props: {
         </div>
 
         <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs leading-5 text-slate-500">
-          安装前会记录脚本 URL、大小和 SHA256 到安装日志，便于诊断和追溯。
+          已有工具会直接复用；下载引导脚本时会记录来源、大小和 SHA256，便于诊断和追溯。
         </div>
       </div>
     </div>
@@ -103,6 +103,7 @@ function InstallSourceOption(props: {
   const Icon = props.icon;
   return (
     <button
+      aria-label={props.label}
       data-install-source
       className={cn(
         "group flex min-h-40 flex-col items-start rounded-xl border bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60",

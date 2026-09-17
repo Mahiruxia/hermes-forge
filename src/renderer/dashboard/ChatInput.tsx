@@ -52,7 +52,7 @@ export function ChatInput(props: {
     sessions: state.sessions,
     setModelProfileSelection: state.setModelProfileSelection,
     setUserInput: state.setUserInput,
-    setWebUiOverview: state.setWebUiOverview,
+    setWebUiSettings: state.setWebUiSettings,
     setWorkspacePath: state.setWorkspacePath,
     success: state.success,
     taskEventsByRunId: state.taskEventsByRunId,
@@ -62,6 +62,7 @@ export function ChatInput(props: {
     userInput: state.userInput,
     warning: state.warning,
     webUiOverview: state.webUiOverview,
+    webUiSettings: state.webUiSettings,
     workspacePath: state.workspacePath,
   })));
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -131,7 +132,7 @@ export function ChatInput(props: {
     ? props.sendBlockReason
     : `${currentModelLabel} · ${store.workspacePath ? shortPath(store.workspacePath) : "无工作区"} · ${permissionsLabel}${props.locked ? " · 工作区占用中" : ""}`;
   const hermesUpdate = store.hermesStatus?.update;
-  const sendKeySettings = store.webUiOverview?.settings;
+  const sendKeySettings = store.webUiOverview?.settings ?? store.webUiSettings;
   const showSendKeyPrompt = Boolean(sendKeySettings && !sendKeySettings.sendKeyHintDismissed);
 
   useEffect(() => {
@@ -535,25 +536,15 @@ export function ChatInput(props: {
       return;
     }
     if (normalizedName === "/usage") {
-      void window.workbenchClient.saveWebUiSettings({ showUsage: !store.webUiOverview?.settings.showUsage }).then((settings) => {
-        store.setWebUiOverview(store.webUiOverview ? { ...store.webUiOverview, settings } : undefined);
-      });
+      const settings = await window.workbenchClient.saveWebUiSettings({ showUsage: !sendKeySettings?.showUsage });
+      store.setWebUiSettings(settings);
       store.setUserInput("");
       return;
     }
     if (normalizedName === "/theme") {
       const theme = (["green-light", "light", "slate", "oled", "default-large"].includes(arg) ? arg : "green-light") as "green-light" | "light" | "slate" | "oled" | "default-large";
       const settings = await window.workbenchClient.saveWebUiSettings({ theme });
-      store.setWebUiOverview(store.webUiOverview ? { ...store.webUiOverview, settings } : {
-        settings,
-        projects: [],
-        spaces: [],
-        skills: [],
-        memory: [],
-        crons: [],
-        profiles: [],
-        slashCommands: [],
-      });
+      store.setWebUiSettings(settings);
       store.setUserInput("");
       return;
     }
@@ -603,7 +594,7 @@ export function ChatInput(props: {
     setSendKeySaving(true);
     try {
       const settings = await window.workbenchClient.saveWebUiSettings({ sendKey, sendKeyHintDismissed: true });
-      store.setWebUiOverview(store.webUiOverview ? { ...store.webUiOverview, settings } : undefined);
+      store.setWebUiSettings(settings);
       store.success("发送方式已保存", sendKey === "enter" ? "Enter 会直接发送。" : "Ctrl+Enter 会直接发送。");
       textareaRef.current?.focus();
     } catch (error) {
@@ -688,7 +679,7 @@ export function ChatInput(props: {
                 applyCommand(commands[commandIndex]?.name ?? commands[0].name);
                 return;
               }
-              const sendKey = store.webUiOverview?.settings.sendKey ?? "enter";
+              const sendKey = sendKeySettings?.sendKey ?? "enter";
               const wantsSend = sendKey === "mod-enter" ? (event.metaKey || event.ctrlKey) : !event.shiftKey;
               if (event.key === "Enter" && wantsSend && !event.nativeEvent.isComposing) {
                 event.preventDefault();

@@ -93,6 +93,12 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v7
+
+      - name: Extract release notes
+        run: node scripts/extract-release-notes.js
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -102,5 +108,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: false
+          name: Hermes Forge ${{ github.ref_name }}
           prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: release/release-notes-generated.md
           files: release-artifacts/**/*

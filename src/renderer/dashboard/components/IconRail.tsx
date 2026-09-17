@@ -9,11 +9,14 @@ export function IconRail() {
   const store = useAppStore(useShallow((state) => ({
     activePanel: state.activePanel,
     webUiOverview: state.webUiOverview,
+    webUiSettings: state.webUiSettings,
     setActivePanel: state.setActivePanel,
     setView: state.setView,
-    setWebUiOverview: state.setWebUiOverview,
+    setWebUiSettings: state.setWebUiSettings,
+    error: state.error,
   })));
-  const dark = store.webUiOverview?.settings.theme === "slate" || store.webUiOverview?.settings.theme === "oled";
+  const theme = store.webUiOverview?.settings.theme ?? store.webUiSettings?.theme;
+  const dark = theme === "slate" || theme === "oled";
   const items: Array<{ id: PanelId; label: string; icon: typeof MessageSquare }> = [
     { id: "chat", label: "聊天", icon: MessageSquare },
     { id: "workspace", label: "工作区", icon: FolderOpen },
@@ -21,20 +24,12 @@ export function IconRail() {
   ];
 
   async function toggleTheme() {
-    const current = store.webUiOverview?.settings ?? {
-      theme: "green-light" as const,
-      language: "zh" as const,
-      sendKey: "enter" as const,
-      sendKeyHintDismissed: true,
-      showUsage: false,
-      showCliSessions: true,
-    };
-    const settings = await window.workbenchClient.saveWebUiSettings({
-      theme: dark ? "green-light" : "slate",
-    });
-    store.setWebUiOverview(store.webUiOverview
-      ? { ...store.webUiOverview, settings }
-      : { settings: { ...current, ...settings }, projects: [], spaces: [], skills: [], memory: [], crons: [], profiles: [], slashCommands: [] });
+    try {
+      const settings = await window.workbenchClient.saveWebUiSettings({ theme: dark ? "green-light" : "slate" });
+      store.setWebUiSettings(settings);
+    } catch {
+      store.error("主题保存失败", "请稍后重试。");
+    }
   }
 
   return (

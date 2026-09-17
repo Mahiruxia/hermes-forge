@@ -37,6 +37,8 @@ import { resolveRunningTaskState, runningSessionLabel } from "./sessionRunState"
 import { useAppStore, type RecentWorkspace } from "./store";
 import { resolveSelectedModelProfileId } from "./modelSelection";
 import { safePromiseWithFallback } from "./utils/safePromise";
+import { preferenceStorage } from "./utils/resilientStorage";
+import { AppErrorBoundary } from "./AppErrorBoundary";
 import { hasInlineLocalFilePath } from "../shared/local-file-paths";
 import "./styles.css";
 
@@ -107,8 +109,8 @@ function App() {
   }
 
   useEffect(() => {
-    applyTheme(store.webUiOverview?.settings.theme ?? "green-light");
-  }, [store.webUiOverview?.settings.theme]);
+    applyTheme(store.webUiOverview?.settings.theme ?? store.webUiSettings?.theme ?? "green-light");
+  }, [store.webUiOverview?.settings.theme, store.webUiSettings?.theme]);
 
   useEffect(() => {
     void bootstrap();
@@ -316,7 +318,7 @@ function App() {
       store.setRecentWorkspaces(readRecentWorkspaces());
       
       // 快速选择会话，提前进入主界面
-      const activeSession = sessions[0];
+      const activeSession = sessions.find((session) => session.id === useAppStore.getState().activeSessionId) ?? sessions[0];
       
       if (activeSession) {
         store.upsertSession(activeSession);
@@ -345,6 +347,11 @@ function App() {
       // Gateway status/start, or WebUI file scans. Those remain explicit
       // refresh actions after the shell is interactive.
       Promise.all([
+        safePromiseWithFallback(
+          workbenchClient.getWebUiSettings(),
+          undefined,
+          { errorMessage: "读取界面偏好失败", showNotification: false, timeoutMs: 5000 }
+        ).then((settings) => { if (settings) store.setWebUiSettings(settings); }),
         // 密钥状态
         safePromiseWithFallback(
           workbenchClient.getSecretStatus(),
@@ -1025,17 +1032,17 @@ function fixTargetForFailure(message: string, action?: string): FixTarget {
 
 function readRecentWorkspaces(): RecentWorkspace[] {
   try {
-    const raw = localStorage.getItem(RECENT_WORKSPACES_KEY);
+    const raw = preferenceStorage.getItem(RECENT_WORKSPACES_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as RecentWorkspace[];
-    return Array.isArray(parsed) ? parsed.filter((item) => item.path && item.name) : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.path === "string" && typeof item.name === "string") : [];
   } catch {
     return [];
   }
 }
 
 function writeRecentWorkspaces(workspaces: RecentWorkspace[]) {
-  localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(workspaces.slice(0, 12)));
+  preferenceStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(workspaces.slice(0, 12)));
 }
 
 try {
@@ -1045,9 +1052,11 @@ try {
     throw new Error("Root element not found");
   }
   createRoot(rootElement).render(
-    <Suspense fallback={<PageLoader />}>
-      <App />
-    </Suspense>
+    <AppErrorBoundary onRecover={() => useAppStore.setState({ view: "home", activePanel: "chat", loadingStates: {}, toasts: [] })}>
+      <Suspense fallback={<PageLoader />}>
+        <App />
+      </Suspense>
+    </AppErrorBoundary>
   );
 } catch (error) {
   console.error("Failed to render app:", error);

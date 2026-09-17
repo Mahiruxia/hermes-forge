@@ -47,9 +47,9 @@ if (limitMatch) {
 }
 
 // Remove intro paragraph (lines before first ###)
-const firstHeading = section.search(/\n### /);
+const firstHeading = section.search(/^### /m);
 if (firstHeading !== -1) {
-  section = section.slice(firstHeading + 1).trim();
+  section = section.slice(firstHeading).trim();
 }
 
 // Simplify: keep only ### 核心修复, ### 新增功能, ### 体验优化/调整, ### 性能优化
@@ -85,6 +85,7 @@ if (!output) {
   process.exit(1);
 }
 
+fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 fs.writeFileSync(outputPath, output, 'utf-8');
 console.log(`Release notes extracted to ${outputPath}`);
 console.log('---');

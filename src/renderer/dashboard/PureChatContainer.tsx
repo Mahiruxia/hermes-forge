@@ -269,7 +269,7 @@ function ChatMessageCard(props: { role: "user" | "assistant"; createdAt: string;
 function AssistantMessageCard(props: { run: TaskRunProjection; onOpenFix?: (target: FixTarget) => void }) {
   const { run } = props;
   const eventsForRun = useAppStore((state) => state.taskEventsByRunId[run.taskRunId]) ?? EMPTY_EVENTS;
-  const showUsage = useAppStore((state) => state.webUiOverview?.settings.showUsage);
+  const showUsage = useAppStore((state) => state.webUiOverview?.settings.showUsage ?? state.webUiSettings?.showUsage);
   const content = run.assistantMessage.content.trim();
   const usage = useMemo(() => preferredUsageForRun(eventsForRun), [eventsForRun]);
   const thoughtStatus = useMemo(() => buildThoughtStatus(run, eventsForRun), [run, eventsForRun]);

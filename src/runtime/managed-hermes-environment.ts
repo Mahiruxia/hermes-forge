@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getPlatformKind } from "../platform";
 import type { PlatformKind } from "../platform/platform-types";
+import { mergeProcessEnvironment, nativeToolEnvironment } from "./native-tool-environment";
 
 export interface ManagedHermesEnvironment {
   rootPath: string;
@@ -42,10 +43,13 @@ export function managedHermesEnvironmentEnv(
   environment: ManagedHermesEnvironment,
   extra: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
-  const inheritedPath = extra.PATH ?? extra.Path ?? process.env.PATH ?? process.env.Path ?? "";
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
+  const nativeEnv = nativeToolEnvironment(environment.rootPath, mergeProcessEnvironment({
     ...extra,
+    PATH: extra.PATH ?? extra.Path ?? process.env.PATH ?? process.env.Path ?? "",
+  }));
+  const inheritedPath = nativeEnv.PATH ?? "";
+  const env: NodeJS.ProcessEnv = {
+    ...nativeEnv,
     VIRTUAL_ENV: environment.venvPath,
     UV_PROJECT_ENVIRONMENT: environment.venvPath,
     PYTHONUTF8: "1",

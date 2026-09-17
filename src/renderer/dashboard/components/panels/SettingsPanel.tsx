@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BookOpen,
@@ -74,6 +74,7 @@ export function SettingsPanel(props: {
   const [savingRuntime, setSavingRuntime] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [installingHermes, setInstallingHermes] = useState(false);
+  const maintenanceRequestPending = useRef(false);
   const [importingHermesConfig, setImportingHermesConfig] = useState(false);
   const [installEvent, setInstallEvent] = useState<HermesInstallEvent | undefined>();
   const [installLogLines, setInstallLogLines] = useState<string[]>([]);
@@ -98,9 +99,9 @@ export function SettingsPanel(props: {
         setInstallLogLines((lines) => [...lines.slice(-79), event.logLine!]);
       }
       const isRunning = !["completed", "failed", "cancelled"].includes(event.stage);
-      setInstallingHermes(isRunning);
-      if (isRunning && !installStartTime) {
-        setInstallStartTime(Date.now());
+      setInstallingHermes(isRunning || maintenanceRequestPending.current);
+      if (isRunning) {
+        setInstallStartTime((current) => current ?? Date.now());
       }
       if (event.stage === "completed" || event.stage === "failed" || event.stage === "cancelled") {
         setInstallStartTime(null);
@@ -192,13 +193,18 @@ export function SettingsPanel(props: {
   }
 
   async function handleCancelInstall() {
-    const result = await window.workbenchClient.cancelInstallHermes();
-    if (result.ok) store.info("正在取消安装", result.message);
-    else store.warning("取消安装", result.message);
+    try {
+      const result = await window.workbenchClient.cancelInstallHermes();
+      if (result.ok) store.info("正在取消安装", result.message);
+      else store.warning("取消安装", result.message);
+    } catch {
+      store.error("取消请求未送达", "请重试，安装状态会继续更新。");
+    }
   }
 
   async function installHermes(kind: InstallSourceChoice) {
-    if (installingHermes) return;
+    if (installingHermes || maintenanceRequestPending.current) return;
+    maintenanceRequestPending.current = true;
     setSourceDialogOpen(false);
     setLastInstallSourceKind(kind);
     setInstallingHermes(true);
@@ -215,13 +221,18 @@ export function SettingsPanel(props: {
         source: { kind },
       });
       if (result.rootPath) setRootPath(result.rootPath);
-      await reloadOverview();
-      await props.onRefresh();
       if (result.ok) store.success("Hermes 已准备好", result.message);
       else if (result.message.includes("已取消")) store.info("Hermes 安装已取消", result.message);
       else store.error("Hermes 安装失败", result.message);
+      await Promise.all([reloadOverview(), props.onRefresh()]).catch(() => {
+        store.warning("安装状态刷新未完成", "请点击重新检测查看当前状态。");
+      });
+    } catch (error) {
+      store.error("Hermes 安装未完成", error instanceof Error ? error.message : "请重试或查看安装日志。");
     } finally {
+      maintenanceRequestPending.current = false;
       setInstallingHermes(false);
+      setInstallStartTime(null);
     }
   }
 
@@ -260,7 +271,8 @@ export function SettingsPanel(props: {
   }
 
   async function updateHermesAgent() {
-    if (installingHermes) return;
+    if (installingHermes || maintenanceRequestPending.current) return;
+    maintenanceRequestPending.current = true;
     setInstallingHermes(true);
     setInstallEvent(undefined);
     setInstallStartTime(Date.now());
@@ -278,6 +290,7 @@ export function SettingsPanel(props: {
     } catch (error) {
       store.error("Hermes Agent 更新失败", error instanceof Error ? error.message : "未知错误");
     } finally {
+      maintenanceRequestPending.current = false;
       setInstallingHermes(false);
       setTimeout(() => {
         setInstallEvent(undefined);
@@ -290,7 +303,7 @@ export function SettingsPanel(props: {
     setSavingPreference(savingKeyValue);
     try {
       const nextSettings = await window.workbenchClient.saveWebUiSettings(input);
-      store.setWebUiOverview(store.webUiOverview ? { ...store.webUiOverview, settings: nextSettings } : undefined);
+      store.setWebUiSettings(nextSettings);
       store.success("设置已保存", successMessage);
     } catch (error) {
       store.error("设置保存失败", error instanceof Error ? error.message : "无法保存工作台偏好。");
@@ -380,7 +393,7 @@ export function SettingsPanel(props: {
   const matrix = permissionOverview.data ? overviewMatrix(permissionOverview.data) : enforcementMatrix(effectiveRuntime(), bridge);
   const policyBlock = permissionOverview.data?.blockReason ?? policyBlockReason(effectiveRuntime());
   const bridgeCapabilities = permissionOverview.data ? overviewBridgeCapabilities(permissionOverview.data) : bridgeCapabilityRows(bridge, effectiveRuntime());
-  const webSettings = store.webUiOverview?.settings;
+  const webSettings = store.webUiOverview?.settings ?? store.webUiSettings;
   return (
     <div className="space-y-3">
       <InstallSourceDialog
@@ -466,7 +479,7 @@ export function SettingsPanel(props: {
               installStartTime={installStartTime}
               onCancel={() => void handleCancelInstall()}
               onRetryMirror={() => void installHermes("mirror")}
-              showMirrorRetry={installEvent.stage === "failed" && lastInstallSourceKind === "official"}
+              showMirrorRetry={!installingHermes && installEvent.stage === "failed" && lastInstallSourceKind === "official"}
             />
           ) : null}
         </div>

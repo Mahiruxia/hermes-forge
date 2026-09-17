@@ -251,7 +251,7 @@ export type IpcServices = {
   clientInfo: () => ClientInfo;
 };
 
-export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServices) {
+export function registerIpcHandlers(mainWindow: BrowserWindow | (() => BrowserWindow | undefined), services: IpcServices) {
   let maintenanceRunning = false;
   let activeRuntimeOperations = 0;
   const changingSessions = new Set<string>();
@@ -268,7 +268,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, services: IpcServ
   const ipcMain = {
     handle(channel: string, listener: Parameters<typeof electronIpcMain.handle>[1]) {
       electronIpcMain.handle(channel, async (event, ...args) => {
-        if (!isTrustedIpcSender(event, mainWindow)) {
+        const currentWindow = typeof mainWindow === "function" ? mainWindow() : mainWindow;
+        if (!currentWindow || !isTrustedIpcSender(event, currentWindow)) {
           throw new Error(`拒绝来自非主应用页面的 IPC 调用：${channel}`);
         }
         if (!runtimeOperationChannels.has(channel)) return listener(event, ...args);

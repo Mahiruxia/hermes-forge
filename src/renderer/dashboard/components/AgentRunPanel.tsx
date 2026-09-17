@@ -48,12 +48,13 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
     taskRunOrderBySession: state.taskRunOrderBySession,
     taskRunProjectionsById: state.taskRunProjectionsById,
     webUiOverview: state.webUiOverview,
+    webUiSettings: state.webUiSettings,
     error: state.error,
     info: state.info,
     setActivePanel: state.setActivePanel,
     setKnowledgeTab: state.setKnowledgeTab,
     setRuntimeConfig: state.setRuntimeConfig,
-    setWebUiOverview: state.setWebUiOverview,
+    setWebUiSettings: state.setWebUiSettings,
     success: state.success,
   })));
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -92,7 +93,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
   const contextUsed = store.contextBundle?.usedCharacters ?? insight?.memory?.usedCharacters ?? 0;
   const contextMax = store.contextBundle?.maxCharacters ?? insight?.memory?.maxCharacters ?? 0;
   const contextPercent = contextMax > 0 ? Math.min(100, Math.round((contextUsed / contextMax) * 100)) : 0;
-  const settings = store.webUiOverview?.settings;
+  const settings = store.webUiOverview?.settings ?? store.webUiSettings;
   const permissions = store.runtimeConfig?.enginePermissions?.hermes;
   const runStatus = activeRun ? runStatusLabel(activeRun.status) : runStatusLabel(insight?.latestRuntime?.status);
 
@@ -100,7 +101,7 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
     setSavingKey(savingKeyValue);
     try {
       const nextSettings = await window.workbenchClient.saveWebUiSettings(input);
-      store.setWebUiOverview(store.webUiOverview ? { ...store.webUiOverview, settings: nextSettings } : undefined);
+      store.setWebUiSettings(nextSettings);
       store.success("设置已保存", successMessage);
     } catch (error) {
       store.error("设置保存失败", error instanceof Error ? error.message : "无法保存 Web UI 设置。");

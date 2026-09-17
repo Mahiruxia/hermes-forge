@@ -42,6 +42,22 @@ beforeEach(() => {
 });
 
 describe("ModelConfigWizard", () => {
+  it.each([true, false])("keeps a saved model when refresh succeeds: %s", async (refreshOk) => {
+    const onStartChat = vi.fn();
+    renderWizard({ onStartChat, onRefresh: refreshOk ? vi.fn().mockResolvedValue(undefined) : vi.fn().mockRejectedValue(new Error("refresh unavailable")) });
+    fireEvent.click(screen.getByRole("button", { name: "JSON 输入" }));
+    fireEvent.change(screen.getByLabelText("JSON 输入"), { target: { value: JSON.stringify({ provider: "custom", base_url: "https://api.example.com/v1", api_key: "test-key", model: { id: "test-model" } }) } });
+    fireEvent.click(screen.getByRole("button", { name: "测试并添加为默认" }));
+    if (refreshOk) {
+      fireEvent.click(await screen.findByRole("button", { name: "开始第一条对话" }));
+      expect(onStartChat).toHaveBeenCalledTimes(1);
+    } else {
+      expect(await screen.findByText("模型已保存，列表刷新未完成")).toBeInTheDocument();
+      expect(screen.queryByText("保存没有完成")).toBeNull();
+      expect(screen.queryByRole("button", { name: "开始第一条对话" })).toBeNull();
+    }
+    expect(updateModelConfig).toHaveBeenCalledTimes(1);
+  });
   it("shows the compact three-entry template picker", () => {
     renderWizard();
 
@@ -178,7 +194,7 @@ function openTemplate(groupName: string, providerName: string) {
   fireEvent.click(screen.getByRole("button", { name: providerName }));
 }
 
-function renderWizard(overrides: { models?: Parameters<typeof ModelConfigWizard>[0]["models"]; onRefresh?: () => Promise<void>; onSaved?: (message: string) => void } = {}) {
+function renderWizard(overrides: { models?: Parameters<typeof ModelConfigWizard>[0]["models"]; onRefresh?: () => Promise<void>; onSaved?: (message: string) => void; onStartChat?: () => void } = {}) {
   return render(
     <ModelConfigWizard
       models={overrides.models ?? {
@@ -189,6 +205,7 @@ function renderWizard(overrides: { models?: Parameters<typeof ModelConfigWizard>
       secrets={[]}
       onRefresh={overrides.onRefresh ?? vi.fn().mockResolvedValue(undefined)}
       onSaved={overrides.onSaved ?? vi.fn()}
+      onStartChat={overrides.onStartChat}
     />,
   );
 }

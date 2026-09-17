@@ -6,6 +6,7 @@ import type { RuntimeConfigStore } from "../main/runtime-config";
 import type { RuntimeResolver } from "./runtime-resolver";
 import { managedHermesEnvironmentEnv, resolveManagedHermesEnvironment } from "./managed-hermes-environment";
 import { resolveHermesCliPath } from "./hermes-cli-paths";
+import { nativeToolEnvironment } from "./native-tool-environment";
 import type {
   RuntimeBridgeProbe,
   RuntimeCommandProbe,
@@ -51,7 +52,7 @@ export class RuntimeProbeService {
         ? this.probeCommand("powershell.exe", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], "PowerShell", "windows")
         : Promise.resolve({ available: false, message: "macOS 使用原生运行环境。" } satisfies RuntimeCommandProbe),
       this.probeNativePython(runtime, rootPath),
-      this.probeCommand("git", ["--version"], "Git", runtime.mode),
+      this.probeCommand("git", ["--version"], "Git", runtime.mode, nativeToolEnvironment(rootPath)),
       process.platform === "win32"
         ? this.probeCommand("winget", ["--version"], "winget", "windows")
         : Promise.resolve({ available: false, message: "非 Windows 平台跳过 winget 检测。" } satisfies RuntimeCommandProbe),
@@ -122,12 +123,13 @@ export class RuntimeProbeService {
     };
   }
 
-  private async probeCommand(command: string, args: string[], label: string, runtimeKind: RuntimeKind): Promise<RuntimeCommandProbe> {
+  private async probeCommand(command: string, args: string[], label: string, runtimeKind: RuntimeKind, env?: NodeJS.ProcessEnv): Promise<RuntimeCommandProbe> {
     const result = await runCommand(command, args, {
       cwd: process.cwd(),
       timeoutMs: COMMAND_TIMEOUT_MS,
       commandId: `runtime.probe.${label.toLowerCase()}`,
       runtimeKind,
+      env,
     });
     const output = (result.stdout || result.stderr).trim();
     return {

@@ -51,6 +51,17 @@ describe("ChatInput", () => {
     return onStartTask;
   }
 
+  it("honors restored send-key preferences before optional overview data loads", async () => {
+    const settings = { theme: "slate", language: "zh", sendKey: "mod-enter", sendKeyHintDismissed: true, showUsage: false, showCliSessions: true } as const;
+    useAppStore.setState({ webUiOverview: undefined, webUiSettings: settings, userInput: "hello" });
+    const onStartTask = renderInput();
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onStartTask).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(onStartTask).toHaveBeenCalledTimes(1));
+  });
+
   it("does not launch unsupported /goal commands", () => {
     const onStartTask = renderInput();
     const input = screen.getByLabelText("给 Hermes 发送消息");

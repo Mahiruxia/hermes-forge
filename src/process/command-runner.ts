@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { redactSensitiveText } from "../shared/redaction";
+import { mergeProcessEnvironment } from "../runtime/native-tool-environment";
 
 export type CommandResult = {
   exitCode: number | null;
@@ -74,6 +75,9 @@ export function runCommand(command: string, args: string[], options: CommandOpti
 }
 
 export function executeCommand(command: string, args: string[], options: CommandOptions): Promise<CommandResult> {
+  if (options.signal?.aborted) {
+    return Promise.resolve({ exitCode: null, stdout: "", stderr: "操作已取消，未启动子进程。" });
+  }
   return new Promise((resolve) => {
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
@@ -83,7 +87,7 @@ export function executeCommand(command: string, args: string[], options: Command
     let spawnError: string | undefined;
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: mergeProcessEnvironment(options.env),
       windowsHide: true,
       shell: false,
       detached: options.detached ?? false,
@@ -178,11 +182,16 @@ export async function* streamCommand(
   args: string[],
   options: CommandOptions,
 ): AsyncIterable<CommandLineEvent> {
+  if (options.signal?.aborted) {
+    yield { type: "stderr", line: "操作已取消，未启动子进程。" };
+    yield { type: "exit", exitCode: null };
+    return;
+  }
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
   const child = spawn(command, args, {
     cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+    env: mergeProcessEnvironment(options.env),
     windowsHide: true,
     shell: false,
     detached: options.detached ?? false,
