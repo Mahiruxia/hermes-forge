@@ -39,7 +39,29 @@
 - 打包后的真实应用执行 `--smoke-test`：11 项检查全部通过，包括全新临时用户目录、首次引导、聊天、preload、IPC、SQL WASM 和主进程依赖。
 - 首次引导 DOM 就绪 1,452 ms；聊天 DOM 就绪 3,585 ms，后者包含前一页截图等待。已查看实际界面截图，版本号和布局正确。
 - 15 秒空闲期间外部子进程启动、HTTP / WebSocket 请求、后台扫描、Renderer / preload 错误均为 0。总工作集从 450,836 KB 到 447,284 KB；没有同条件旧版基准，不据此声称性能提升比例。
-- GitHub 标签触发 Windows / macOS 的类型检查、单元测试、Python 回归、打包及离线启动检查；发布结果随后追加。
+- 包冒烟与模型审计完成后没有本安装包的残留进程。受管 Python 环境文件共 167,038,448 字节；本地 `release` 目录含旧包和测试环境共 3,528,952,298 字节。
+
+## 正式发布结果
+
+- 标签 `v0.2.33` 对应提交 `6d029f09b19f745aa2cb5be481cf20181c183b33`，代码已推送到 `main`。
+- [发布流水线](https://github.com/Mahiruxia/hermes-forge/actions/runs/35196527391)的 Windows、macOS 和发布任务全部成功。
+- Windows CI：572 项 TypeScript 测试、27 项 Python 测试通过；macOS CI：560 项 TypeScript 测试通过、12 项平台专用测试跳过，27 项 Python 测试通过。两平台均完成真实打包应用的离线启动检查。
+- [GitHub Release](https://github.com/Mahiruxia/hermes-forge/releases/tag/v0.2.33) 已公开发布并标记为最新正式版，包含 Windows x64 安装器、macOS Apple Silicon DMG / ZIP 及自动更新清单和 blockmap，共 8 个附件。
+- 已下载核对 `latest.yml` 与 `latest-mac.yml`，版本均为 `0.2.33`，文件名和大小与发布附件一致。未把清单校验表述为客户端完成更新安装。
+
+GitHub 发布资产提供的 SHA256：
+
+| 安装包 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| `Hermes-Forge-0.2.33-x64.exe` | 94,212,574 | `9173b2c055051f5cdf0c341dc47ee397bd36b7754ea0d62f8019553e4a0cd5ec` |
+| `Hermes-Forge-0.2.33-arm64.dmg` | 101,870,508 | `7327cc60fa27be396f6eb983332c9bf6faa3d965c65fe1e4f91018bbfbb3e11f` |
+| `Hermes-Forge-0.2.33-arm64.zip` | 98,352,114 | `857aaf76677945c486e477086ea19d2d8f95d9c34f0fc2bbd8110c96c1f4a2ab` |
+
+## 真实模型验证
+
+最终本地安装包执行 `--system-audit`，并设置 `HERMES_FORGE_RELEASE_AUDIT=1`，使用现有模型凭据。默认模型 `kimi-for-coding` 的模型请求、跨独立进程恢复官方会话、特殊路径附件读取、约 9 MB 日志处理和原生命令执行共 5 项通过。
+
+另一个已保存的模型配置仍返回 `HTTP 401: Invalid API Key`，切换模型项未通过，因此完整审计按设计返回非零退出码。该配置需有效凭据后重新验收，未把它报告为模型切换成功。默认跳过跨工作区写入，没有开启深度审计。
 
 ## 功能边界
 
@@ -50,3 +72,5 @@
 - 未宣称复刻官方终端的全部交互功能。安装器仍未配置代码签名。
 
 本地测试报告、截图和包文件保存在 `release/agent-parity-0.2.33/`，不提交运行环境、模型凭据或用户数据。
+
+新包验收后尝试清理旧构建产物，删除操作被自动审批策略拒绝，未提供更具体原因；原文件已保留，新包和官方环境不受影响。

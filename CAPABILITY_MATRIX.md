@@ -22,7 +22,7 @@
 | 安装与升级 | 官方固定 SHA、原地同步 | 同一受管 Python；不自动备份或 stash；失败可重试。 |
 | 客户端更新 | electron-updater + GitHub Release | 标签触发双平台构建、包冒烟和自动更新清单发布。 |
 | Windows | 主要验收平台 | 本机结果见验收记录。 |
-| macOS | 原生策略和 CI | v0.2.32 已通过 CI 打包及离线启动；本轮结果见验收记录，完整 Hermes 安装和真实模型仍需实机验收。 |
+| macOS | 原生策略和 CI | v0.2.33 已通过 CI 回归、打包及离线启动；完整 Hermes 安装和真实模型仍需实机验收。 |
 | WSL | 迁移入口 | 不作为新任务运行路径。 |
 | Kanban | 移除客户端页面及专属 IPC | 不删除已有官方任务数据。 |
 | 离线包冒烟 | --smoke-test | 隔离 userData，真实 Renderer/preload/IPC/SQL WASM，不依赖模型或 Hermes 安装。 |
