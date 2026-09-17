@@ -3,6 +3,20 @@ import { RuntimeEnvResolver } from "./runtime-env-resolver";
 import type { RuntimeConfig } from "../shared/types";
 
 describe("RuntimeEnvResolver", () => {
+  it("refreshes cached runtime limits after provider discovery or a manual window change", async () => {
+    const config: RuntimeConfig = {
+      defaultModelProfileId: "a", modelProfiles: [{ id: "a", provider: "custom", model: "same-model", maxTokens: 32000 }], updateSources: {},
+    };
+    const resolver = new RuntimeEnvResolver({ read: async () => config } as never, { readSecret: async () => undefined } as never);
+    expect((await resolver.resolve()).contextWindow).toBe(32000);
+    config.modelProfiles[0].maxTokens = 64000;
+    expect((await resolver.resolve()).contextWindow).toBe(64000);
+    config.providerProfiles = [{ id: "a", label: "A", provider: "custom", status: "ready", models: [{ id: "same-model", label: "same-model", contextWindow: 16000 }] }];
+    expect((await resolver.resolve()).contextWindow).toBe(16000);
+    config.providerProfiles[0].models[0].contextWindow = 8000;
+    expect((await resolver.resolve()).contextWindow).toBe(8000);
+  });
+
   it("injects OpenRouter API key aliases for OpenRouter profiles", async () => {
     const publicFixtureSecret = "public-fixture-secret";
     const config: RuntimeConfig = {

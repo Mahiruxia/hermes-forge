@@ -74,10 +74,10 @@ function toEngineEvent(parsed: ParsedJsonEvent): EngineEvent | undefined {
       return {
         type: "tool_result",
         toolName: tool,
-        outputPreview: output.slice(0, 400),
+        outputPreview: output.slice(0, 6000),
         callId: typeof (parsed as Record<string, unknown>).call_id === "string" ? String((parsed as Record<string, unknown>).call_id) : undefined,
         success,
-        status: "complete",
+        status: success ? "complete" : "failed",
         at: now(),
       };
     }
@@ -148,8 +148,12 @@ function toEngineEvent(parsed: ParsedJsonEvent): EngineEvent | undefined {
         cacheWriteTokens: numberFrom(parsed, "cache_write_tokens") ?? numberFrom(parsed, "cacheWriteTokens"),
         reasoningTokens: numberFrom(parsed, "reasoning_tokens") ?? numberFrom(parsed, "reasoningTokens"),
         contextTokens: numberFrom(parsed, "context_tokens") ?? numberFrom(parsed, "contextTokens") ?? numberFrom(parsed, "last_prompt_tokens"),
-        contextWindow: numberFrom(parsed, "context_window") ?? numberFrom(parsed, "contextWindow") ?? numberFrom(parsed, "context_length"),
+        contextOutputTokens: numberFrom(parsed, "context_output_tokens") ?? numberFrom(parsed, "contextOutputTokens"),
+        contextSource: record.context_source === "actual" || record.context_source === "estimated" ? record.context_source : undefined,
+        contextWindow: (numberFrom(parsed, "context_window") ?? numberFrom(parsed, "contextWindow") ?? numberFrom(parsed, "context_length")) || undefined,
         contextPercent: numberFrom(parsed, "context_percent") ?? numberFrom(parsed, "contextPercent"),
+        modelId: typeof record.model === "string" ? record.model : undefined,
+        modelProfileId: typeof record.model_profile_id === "string" ? record.model_profile_id : undefined,
         costSource: typeof (parsed as Record<string, unknown>).cost_source === "string"
           ? String((parsed as Record<string, unknown>).cost_source)
           : typeof (parsed as Record<string, unknown>).costSource === "string"
@@ -184,6 +188,7 @@ function toEngineEvent(parsed: ParsedJsonEvent): EngineEvent | undefined {
         type: "result",
         success,
         outcome: cancelled ? "cancelled" : success ? "completed" : "failed",
+        isFinalResponse: record.is_final_response === true,
         title: cancelled ? "任务已取消" : success ? "Hermes 回复" : "Hermes 执行失败",
         detail: content || "Hermes 已运行，但没有返回可显示的内容。",
         at: now(),

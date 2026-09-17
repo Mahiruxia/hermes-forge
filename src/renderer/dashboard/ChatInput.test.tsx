@@ -71,7 +71,7 @@ describe("ChatInput", () => {
 
     expect(onStartTask).not.toHaveBeenCalled();
     expect(useAppStore.getState().pendingClarifyCards).toEqual([]);
-    expect(useAppStore.getState().userInput).toBe("");
+    expect(useAppStore.getState().userInput).toBe("/goal 做完这个功能");
   });
 
   it("omits /goal from help and completion with old cached commands", () => {
@@ -84,10 +84,10 @@ describe("ChatInput", () => {
     fireEvent.change(input, { target: { value: "/help" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(useAppStore.getState().pendingClarifyCards[0]?.question).not.toContain("/goal");
+    expect(useAppStore.getState().toasts.at(-1)?.message).not.toContain("/goal");
   });
 
-  it("updates a single /help card instead of stacking duplicates", () => {
+  it("shows help without creating a pending clarification", () => {
     renderInput();
     const input = screen.getByLabelText("给 Hermes 发送消息");
 
@@ -97,9 +97,42 @@ describe("ChatInput", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     const cards = useAppStore.getState().pendingClarifyCards;
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({ id: "slash-help-session-1", sessionId: "session-1", status: "pending" });
+    expect(cards).toHaveLength(0);
+    expect(useAppStore.getState().toasts).toHaveLength(1);
+    expect(useAppStore.getState().toasts[0]).toMatchObject({ title: "可用命令", message: expect.stringContaining("/技能名") });
     expect(useAppStore.getState().userInput).toBe("");
+  });
+
+  it("offers commands before overview data loads and opens the native knowledge views", () => {
+    useAppStore.setState({ webUiOverview: undefined });
+    renderInput();
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+    fireEvent.change(input, { target: { value: "/" } });
+    expect(screen.getByRole("button", { name: /\/skills 查看已安装技能/ })).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "/memory" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useAppStore.getState()).toMatchObject({ activePanel: "knowledge", knowledgeTab: "memory", userInput: "" });
+  });
+
+  it("passes named skill invocations and absolute file paths to the native runner", async () => {
+    const onStartTask = renderInput();
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+    fireEvent.change(input, { target: { value: "/my-skill 分析这些文件" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onStartTask).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { value: "/Users/demo/report.txt 请总结这个文件" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onStartTask).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps a command draft when settings cannot be saved", async () => {
+    window.workbenchClient.saveWebUiSettings = vi.fn().mockRejectedValue(new Error("Settings unavailable"));
+    renderInput();
+    const input = screen.getByLabelText("给 Hermes 发送消息");
+    fireEvent.change(input, { target: { value: "/theme light" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(useAppStore.getState().toasts.at(-1)?.title).toBe("命令执行失败"));
+    expect(useAppStore.getState().userInput).toBe("/theme light");
   });
 
   it("shows stop only for the active session running task", () => {
@@ -233,7 +266,7 @@ describe("ChatInput", () => {
     fireEvent.keyDown(screen.getByLabelText("给 Hermes 发送消息"), { key: "Enter" });
 
     expect(useAppStore.getState().conversationMessages).toEqual([]);
-    expect(useAppStore.getState().userInput).toBe("");
+    expect(useAppStore.getState().userInput).toBe("/compact MiniMax");
     expect(useAppStore.getState().taskRunProjectionsById["task-2"].assistantMessage.content).toContain("第二轮回答");
   });
 
@@ -265,6 +298,50 @@ describe("ChatInput", () => {
     const meter = screen.getByLabelText(/实测当前上下文占用/);
     expect(meter).toHaveAttribute("aria-label", expect.stringContaining("701 tokens"));
     expect(meter).toHaveAttribute("aria-label", expect.stringContaining("剩余：299 tokens"));
+  });
+
+  it("shows the last request footprint and cache hit rate without counting the whole tool-loop bill as context", () => {
+    useAppStore.setState({
+      userInput: "abcd",
+      taskEventsByRunId: { "task-1": [{ taskRunId: "task-1", workSessionId: "session-1", engineId: "hermes", event: {
+        type: "usage", source: "actual", inputTokens: 900000, outputTokens: 30000, totalTokens: 930000,
+        contextTokens: 600, contextOutputTokens: 100, contextWindow: 1000, contextSource: "actual",
+        cacheReadTokens: 810000, modelId: "qwen", modelProfileId: "main", estimatedCostUsd: 0, message: "usage", at: "2026-09-17T00:00:00Z",
+      } }] },
+    });
+    renderInput();
+    const meter = screen.getByLabelText(/实测当前上下文占用/);
+    expect(meter).toHaveAttribute("aria-label", expect.stringContaining("701 tokens"));
+    expect(meter).toHaveAttribute("aria-label", expect.stringContaining("剩余：299 tokens"));
+    fireEvent.click(meter);
+    expect(screen.getByText("90.0%")).toBeInTheDocument();
+    expect(screen.getByText("810,000 tokens")).toBeInTheDocument();
+  });
+
+  it("switches to the selected model window and does not label the old model's context or cache rate as current", () => {
+    useAppStore.setState({
+      userInput: "",
+      taskEventsByRunId: { "task-1": [{ taskRunId: "task-1", workSessionId: "session-1", engineId: "hermes", event: {
+        type: "usage", source: "actual", inputTokens: 600, outputTokens: 100, contextTokens: 600, contextOutputTokens: 100,
+        contextWindow: 1000000, modelId: "different-model", modelProfileId: "old", cacheReadTokens: 500,
+        estimatedCostUsd: 0, message: "usage", at: "2026-09-17T00:00:00Z",
+      } }] },
+    });
+    renderInput();
+    const meter = screen.getByLabelText(/估算当前上下文占用/);
+    expect(meter).toHaveAttribute("aria-label", expect.stringContaining("模型窗口上限：1,000 tokens"));
+    expect(meter).toHaveAttribute("aria-label", expect.stringContaining("剩余：300 tokens"));
+    fireEvent.click(meter);
+    expect(screen.getByText("未报告")).toBeInTheDocument();
+  });
+
+  it("labels context after compaction as estimated while retaining actual billing", () => {
+    useAppStore.setState({ taskEventsByRunId: { "task-1": [{ taskRunId: "task-1", workSessionId: "session-1", engineId: "hermes", event: {
+      type: "usage", source: "actual", inputTokens: 900000, outputTokens: 30000,
+      contextTokens: 100, contextOutputTokens: 0, contextSource: "estimated", estimatedCostUsd: 0, message: "usage", at: "2026-09-17T00:00:00Z",
+    } }] } });
+    renderInput();
+    expect(screen.getByLabelText(/估算当前上下文占用/)).toHaveAttribute("aria-label", expect.stringContaining("100 tokens"));
   });
 
   it("does not label a newer estimated run as actual because an older run had actual usage", () => {

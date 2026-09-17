@@ -5,6 +5,9 @@ import type { ClipboardEvent, DragEvent, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { EngineEvent, EngineUpdateStatus, ModelProfile, SessionAgentInsightUsage } from "../../shared/types";
 import { estimateTextTokens } from "../../shared/token-estimator";
+import { resolveModelContextWindow } from "../../shared/model-context";
+import { cacheHitPercent, currentContextTokens, type TokenUsage } from "../../shared/token-usage";
+import { DESKTOP_SLASH_COMMANDS, isDesktopSlashCommand } from "../../shared/slash-commands";
 import { useAppStore } from "../store";
 import { resolveSelectedModelProfileId } from "../modelSelection";
 import { resolveRunningTaskState } from "../sessionRunState";
@@ -58,7 +61,6 @@ export function ChatInput(props: {
     taskEventsByRunId: state.taskEventsByRunId,
     taskRunOrderBySession: state.taskRunOrderBySession,
     taskRunProjectionsById: state.taskRunProjectionsById,
-    upsertClarifyCard: state.upsertClarifyCard,
     userInput: state.userInput,
     warning: state.warning,
     webUiOverview: state.webUiOverview,
@@ -113,10 +115,14 @@ export function ChatInput(props: {
       sessionInsightUsage: store.sessionAgentInsight?.usage,
       conversationMessages: store.conversationMessages,
       contextWindow: currentContextWindow,
+      modelProfile: currentModelProfile,
+      sessionInsightModelId: store.sessionAgentInsight?.latestRuntime?.modelId,
       attachmentCount: store.attachments.length,
     }),
     [
       currentContextWindow,
+      currentModelProfile,
+      store.sessionAgentInsight?.latestRuntime?.modelId,
       store.activeSessionId,
       store.attachments.length,
       store.conversationMessages,
@@ -340,8 +346,13 @@ export function ChatInput(props: {
 
   function handleSubmit() {
     const trimmedInput = store.userInput.trim();
-    if (trimmedInput.startsWith("/")) {
-      void dispatchSlashCommand(trimmedInput);
+    const command = trimmedInput.split(/\s+/, 1)[0].toLowerCase();
+    if (isDesktopSlashCommand(command)) {
+      applyCommand(trimmedInput);
+      return;
+    }
+    if (["/goal", "/compact"].includes(command)) {
+      store.warning("此命令暂未接入", "桌面端会自动管理上下文；可使用 /help 查看可用命令。输入内容已保留。");
       return;
     }
     if (preflight.blocked) {
@@ -504,8 +515,8 @@ export function ChatInput(props: {
   const commandQuery = store.userInput.startsWith("/") ? store.userInput.trim().toLowerCase() : "";
   const commands = useMemo(() => {
     if (!commandQuery) return [];
-    return (store.webUiOverview?.slashCommands ?? []).filter((command) => !["/goal", "/compact"].includes(command.name.toLowerCase()) && command.name.toLowerCase().startsWith(commandQuery)).slice(0, 8);
-  }, [commandQuery, store.webUiOverview?.slashCommands]);
+    return DESKTOP_SLASH_COMMANDS.filter((command) => command.name.startsWith(commandQuery)).slice(0, 9);
+  }, [commandQuery]);
 
   async function dispatchSlashCommand(raw: string) {
     const [name, ...rest] = raw.split(/\s+/);
@@ -521,7 +532,13 @@ export function ChatInput(props: {
       return;
     }
     if (normalizedName === "/help") {
-      store.upsertClarifyCard({ id: `slash-help-${store.activeSessionId ?? "local"}`, sessionId: store.activeSessionId, question: "可用命令：/help /clear /model /workspace /new /usage /theme。主题可选：green-light、light、slate、oled、default-large", status: "pending", createdAt: new Date().toISOString() });
+      store.info("可用命令", `${DESKTOP_SLASH_COMMANDS.map(command => command.name).join(" ")}。也可使用 /技能名 任务描述，直接调用已安装的 Hermes 技能。`);
+      store.setUserInput("");
+      return;
+    }
+    if (normalizedName === "/skills" || normalizedName === "/memory") {
+      useAppStore.getState().setKnowledgeTab(normalizedName === "/skills" ? "skills" : "memory");
+      useAppStore.getState().setActivePanel("knowledge");
       store.setUserInput("");
       return;
     }
@@ -580,7 +597,9 @@ export function ChatInput(props: {
   }
 
   function applyCommand(name: string) {
-    void dispatchSlashCommand(name);
+    void dispatchSlashCommand(name).catch((error: unknown) => {
+      store.error("命令执行失败", error instanceof Error ? error.message : "操作未完成，输入内容已保留。");
+    });
   }
 
   function fillInput(prefix: string) {
@@ -902,6 +921,9 @@ type ContextMeter = {
   outputTokens?: number;
   baseTokens?: number;
   contextTokens?: number;
+  contextOutputTokens?: number;
+  cacheReadTokens?: number;
+  cacheHitPercent?: number;
   measuredAt?: string;
 };
 
@@ -994,7 +1016,7 @@ function ContextMeterPill(props: { meter: ContextMeter }) {
         >
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-[13px] font-semibold text-slate-950">{meter.source === "actual" ? "真实上下文" : "等待真实上下文"}</p>
+              <p className="text-[13px] font-semibold text-slate-950">{meter.source === "actual" ? "真实上下文" : "估算上下文"}</p>
               <p className="mt-0.5 text-[11px] text-slate-400">{meter.source === "actual" ? "来自 Hermes usage，并叠加当前草稿" : "发送完成后会替换为 Hermes 实测值"}</p>
             </div>
             <span className={cn("rounded-full px-2 py-1 text-[10px] font-semibold", meter.source === "actual" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>
@@ -1005,12 +1027,15 @@ function ContextMeterPill(props: { meter: ContextMeter }) {
             <ContextDetailRow label="当前占用" value={`${displayTokenLabel} tokens`} />
             <ContextDetailRow label="剩余窗口" value={remainingLabel} />
             {typeof meter.contextTokens === "number" ? <ContextDetailRow label={meter.source === "actual" ? "实测 Prompt" : "估算 Prompt"} value={`${meter.contextTokens.toLocaleString()} tokens`} /> : null}
-            {typeof meter.inputTokens === "number" ? <ContextDetailRow label="最近输入" value={`${meter.inputTokens.toLocaleString()} tokens`} /> : null}
-            {typeof meter.outputTokens === "number" ? <ContextDetailRow label="最近输出" value={`${meter.outputTokens.toLocaleString()} tokens`} /> : null}
+            {typeof meter.contextOutputTokens === "number" ? <ContextDetailRow label="最近一次回复" value={`${meter.contextOutputTokens.toLocaleString()} tokens`} /> : null}
+            {typeof meter.inputTokens === "number" ? <ContextDetailRow label="本轮累计输入" value={`${meter.inputTokens.toLocaleString()} tokens`} /> : null}
+            {typeof meter.outputTokens === "number" ? <ContextDetailRow label="本轮累计输出" value={`${meter.outputTokens.toLocaleString()} tokens`} /> : null}
+            <ContextDetailRow label="缓存命中" value={meter.cacheHitPercent === undefined ? "未报告" : `${meter.cacheHitPercent.toFixed(1)}%`} />
+            {typeof meter.cacheReadTokens === "number" ? <ContextDetailRow label="缓存读取" value={`${meter.cacheReadTokens.toLocaleString()} tokens`} /> : null}
             <ContextDetailRow label="当前草稿" value={`约 +${meter.draftTokens.toLocaleString()} tokens`} />
             <ContextDetailRow label="模型窗口上限" value={contextWindowLabel} />
           </div>
-          <p className="mt-2 text-[11px] leading-5 text-slate-400">有 Hermes 实测 Prompt 时按真实上下文占用计算，并叠加输入框草稿；缺少实测时使用本地估算。</p>
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">窗口占用按最近一次请求、回复和当前草稿计算；压缩或切换模型后等待新的实测值。缓存复用可减少重复计算，命中内容仍占用窗口。</p>
           {typeof meter.percent === "number" ? (
             <div className="mt-3">
               <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
@@ -1194,22 +1219,29 @@ function buildContextMeter(input: {
   sessionInsightUsage?: SessionAgentInsightUsage;
   conversationMessages: ReturnType<typeof useAppStore.getState>["conversationMessages"];
   contextWindow?: number;
+  modelProfile?: ModelProfile;
+  sessionInsightModelId?: string;
   attachmentCount: number;
 }): ContextMeter {
-  const latestUsage = latestUsageForSession(input.activeSessionId, input.taskEventsByRunId, input.sessionInsightUsage);
+  const latestUsage = latestUsageForSession(input.activeSessionId, input.taskEventsByRunId, input.sessionInsightUsage, input.projections);
+  const usageModel = latestUsage?.modelId ?? input.sessionInsightModelId;
+  const modelChanged = Boolean(input.modelProfile && (
+    (latestUsage?.modelProfileId && latestUsage.modelProfileId !== input.modelProfile.id)
+    || (usageModel && usageModel !== input.modelProfile.model)
+  ));
   const historyText = contextTextFromProjections(input.activeSessionId, input.projections, input.runOrder)
     || contextTextFromMessages(input.activeSessionId, input.conversationMessages);
   const attachmentOverhead = input.attachmentCount * 48;
   const draftTokens = Math.max(0, estimateTokens(input.userInput) + attachmentOverhead);
   const fallbackTokens = Math.max(0, estimateTokens(`${historyText}\n${input.userInput}`) + attachmentOverhead);
   const usageBaseTokens = latestUsage
-    ? Math.max(latestUsage.contextTokens ?? 0, latestUsage.totalTokens ?? 0, latestUsage.inputTokens + latestUsage.outputTokens)
+    ? currentContextTokens(latestUsage)
     : undefined;
-  const effectiveContextWindow = latestUsage?.contextWindow ?? input.contextWindow;
+  const effectiveContextWindow = modelChanged ? input.contextWindow : latestUsage?.contextWindow ?? input.contextWindow;
   const usedTokens = usageBaseTokens !== undefined
     ? Math.max(0, usageBaseTokens + draftTokens)
     : fallbackTokens;
-  const source = latestUsage?.source ?? "estimated";
+  const source = modelChanged ? "estimated" : latestUsage?.contextSource ?? latestUsage?.source ?? "estimated";
   const remainingTokens = effectiveContextWindow && effectiveContextWindow > 0
     ? effectiveContextWindow - usedTokens
     : undefined;
@@ -1238,6 +1270,9 @@ function buildContextMeter(input: {
     outputTokens: latestUsage?.outputTokens,
     baseTokens: usageBaseTokens,
     contextTokens: latestUsage?.contextTokens,
+    contextOutputTokens: latestUsage?.contextOutputTokens,
+    cacheReadTokens: !modelChanged && latestUsage?.source === "actual" ? latestUsage.cacheReadTokens : undefined,
+    cacheHitPercent: !modelChanged && latestUsage?.source === "actual" ? cacheHitPercent(latestUsage.cacheReadTokens, latestUsage.promptTokens ?? latestUsage.inputTokens) : undefined,
     measuredAt: latestUsage?.at,
   };
 }
@@ -1247,19 +1282,23 @@ function resolveComposerContextWindow(
   modelProfile: ModelProfile | undefined,
   modelLabel: string,
 ) {
-  if (store.sessionAgentInsight?.latestRuntime?.contextWindow) return store.sessionAgentInsight.latestRuntime.contextWindow;
   const providerProfiles = store.runtimeConfig?.providerProfiles ?? store.providerProfiles;
-  const matchedModel = providerProfiles
-    .flatMap((profile) => profile.models)
-    .find((model) => model.id === modelLabel || model.label === modelLabel || model.id === modelProfile?.model || model.label === modelProfile?.model);
-  return matchedModel?.contextWindow ?? modelProfile?.maxTokens;
+  const configured = resolveModelContextWindow(modelProfile, providerProfiles);
+  const latestRuntime = store.sessionAgentInsight?.latestRuntime;
+  const sameModel = latestRuntime?.modelId === modelLabel
+    && (!latestRuntime.providerId || latestRuntime.providerId === modelProfile?.provider);
+  return configured ?? (sameModel ? latestRuntime.contextWindow : undefined);
 }
+
+type ContextUsage = Pick<TokenUsage, "inputTokens" | "outputTokens" | "totalTokens" | "promptTokens" | "contextTokens" | "contextOutputTokens" | "contextSource" | "contextWindow" | "cacheReadTokens" | "modelId" | "modelProfileId">
+  & { source: "actual" | "estimated"; at?: string };
 
 function latestUsageForSession(
   activeSessionId: string | undefined,
   eventsByRunId: ReturnType<typeof useAppStore.getState>["taskEventsByRunId"],
   insightUsage?: SessionAgentInsightUsage,
-): { inputTokens: number; outputTokens: number; totalTokens?: number; contextTokens?: number; contextWindow?: number; source: "actual" | "estimated"; at?: string } | undefined {
+  projections: ReturnType<typeof useAppStore.getState>["taskRunProjectionsById"] = {},
+): ContextUsage | undefined {
   const usageEvents = Object.values(eventsByRunId)
     .flat()
     .filter((event) => (!activeSessionId || event.workSessionId === activeSessionId) && event.event.type === "usage");
@@ -1271,14 +1310,12 @@ function latestUsageForSession(
       latestByRun.set(envelope.taskRunId, usage);
     }
   }
-  const preferred = latestByTimestamp([...latestByRun.values()]);
-  if (preferred) {
+  const preferredEntry = [...latestByRun.entries()].sort((left, right) => right[1].at.localeCompare(left[1].at))[0];
+  if (preferredEntry) {
+    const [taskRunId, preferred] = preferredEntry;
     return {
-      inputTokens: preferred.inputTokens,
-      outputTokens: preferred.outputTokens,
-      totalTokens: preferred.totalTokens,
-      contextTokens: preferred.contextTokens,
-      contextWindow: preferred.contextWindow,
+      ...preferred,
+      modelId: preferred.modelId ?? projections[taskRunId]?.modelId,
       source: preferred.source === "actual" ? "actual" : "estimated",
       at: preferred.at,
     };
@@ -1289,13 +1326,15 @@ function latestUsageForSession(
     outputTokens: insightUsage.latestOutputTokens,
     totalTokens: insightUsage.latestTotalTokens ?? insightUsage.latestInputTokens + insightUsage.latestOutputTokens,
     contextTokens: insightUsage.latestContextTokens,
+    contextOutputTokens: insightUsage.latestContextOutputTokens,
+    contextSource: insightUsage.latestContextSource,
     contextWindow: insightUsage.latestContextWindow,
+    modelId: insightUsage.latestModelId,
+    modelProfileId: insightUsage.latestModelProfileId,
+    cacheReadTokens: insightUsage.latestCacheReadTokens,
     source: insightUsage.source === "actual" ? "actual" : "estimated",
+    at: insightUsage.updatedAt,
   };
-}
-
-function latestByTimestamp<T extends { at: string }>(events: T[]) {
-  return events.reduce<T | undefined>((latest, event) => (!latest || event.at >= latest.at ? event : latest), undefined);
 }
 
 function SendKeyInlinePrompt(props: { value: "enter" | "mod-enter"; saving: boolean; onChange: (sendKey: "enter" | "mod-enter") => void }) {

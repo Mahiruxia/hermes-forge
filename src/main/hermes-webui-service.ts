@@ -7,6 +7,7 @@ import { runCommand } from "../process/command-runner";
 import type { RuntimeAdapterFactory } from "../runtime/runtime-adapter";
 import { requireManagedHermesEnvironment, managedHermesEnvironmentEnv } from "../runtime/managed-hermes-environment";
 import { validateSkillId, validateProfileName, validateCronSchedule, validateSkillDirectoryName, validateSkillUploadPath } from "../security";
+import { DESKTOP_SLASH_COMMANDS } from "../shared/slash-commands";
 import type {
   FilePreviewResult,
   FileBreadcrumbItem,
@@ -17,7 +18,6 @@ import type {
   HermesWebUiOverview,
   HermesWebUiSettings,
   ProjectGroup,
-  SlashCommand,
   ThemePreference,
   WorkspaceSpace,
   RuntimeConfig,
@@ -31,16 +31,6 @@ const DEFAULT_SETTINGS: HermesWebUiSettings = {
   showUsage: false,
   showCliSessions: true,
 };
-
-const SLASH_COMMANDS: SlashCommand[] = [
-  { name: "/help", description: "显示可用命令", usage: "/help" },
-  { name: "/clear", description: "清空当前会话", usage: "/clear" },
-  { name: "/model", description: "切换或查看模型", usage: "/model <模型名>" },
-  { name: "/workspace", description: "切换工作区", usage: "/workspace <名称或路径>" },
-  { name: "/new", description: "新建会话", usage: "/new" },
-  { name: "/usage", description: "显示/隐藏用量", usage: "/usage" },
-  { name: "/theme", description: "切换主题", usage: "/theme <green-light|light|slate|oled>" },
-];
 
 export class HermesWebUiService {
   constructor(
@@ -56,7 +46,7 @@ export class HermesWebUiService {
       this.listProjects(),
       this.listSpaces(),
     ]);
-    return { settings, projects, spaces, skills: [], memory: [], crons: [], profiles: [], slashCommands: SLASH_COMMANDS };
+    return { settings, projects, spaces, skills: [], memory: [], crons: [], profiles: [], slashCommands: DESKTOP_SLASH_COMMANDS };
   }
 
   async getSettings(): Promise<HermesWebUiSettings> {

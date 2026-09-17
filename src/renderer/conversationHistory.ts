@@ -12,11 +12,11 @@ export function buildConversationHistory(input: {
   taskRunProjectionsById: Record<string, TaskRunProjection>;
 }): ConversationHistoryEntry[] {
   const order = input.taskRunOrderBySession[input.workSessionId] ?? [];
-  const rawEntries = order
+  const turns = order
     .map((taskRunId) => input.taskRunProjectionsById[taskRunId])
     .filter((run): run is NonNullable<typeof run> => Boolean(run) && run.workSessionId === input.workSessionId)
     .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
-    .flatMap<ConversationHistoryEntry>((run) => {
+    .map((run) => {
       const entries: ConversationHistoryEntry[] = [];
       if (run.userMessage?.content.trim()) {
         entries.push({
@@ -26,7 +26,7 @@ export function buildConversationHistory(input: {
           taskRunId: run.taskRunId,
         });
       }
-      if (run.assistantMessage.content.trim() && run.status === "complete") {
+      if (entries.length && run.assistantMessage.content.trim() && run.status === "complete") {
         entries.push({
           role: "assistant",
           content: compactHistoryContent(run.assistantMessage.content.trim()),
@@ -36,20 +36,22 @@ export function buildConversationHistory(input: {
       }
       return entries;
     })
-    .filter((entry) => entry.content.trim())
-    .slice(-MAX_HISTORY_ENTRIES);
+    .filter((entries) => entries.length);
 
-  const kept: ConversationHistoryEntry[] = [];
+  const kept: ConversationHistoryEntry[][] = [];
   let totalChars = 0;
-  for (let index = rawEntries.length - 1; index >= 0; index -= 1) {
-    const entry = rawEntries[index];
-    if (kept.length > 0 && totalChars + entry.content.length > MAX_HISTORY_TOTAL_CHARS) {
-      continue;
-    }
-    kept.push(entry);
-    totalChars += entry.content.length;
+  let totalEntries = 0;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    const characters = turn.reduce((sum, entry) => sum + entry.content.length, 0);
+    // Keep a contiguous suffix of whole turns. Skipping individual messages
+    // invents gaps and can retain an answer after discarding its question.
+    if (totalEntries + turn.length > MAX_HISTORY_ENTRIES || totalChars + characters > MAX_HISTORY_TOTAL_CHARS) break;
+    kept.push(turn);
+    totalChars += characters;
+    totalEntries += turn.length;
   }
-  return kept.reverse();
+  return kept.reverse().flat();
 }
 
 export function compactHistoryContent(content: string) {

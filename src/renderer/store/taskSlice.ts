@@ -160,6 +160,18 @@ function upsertToolEvent(
   return tools.map((tool, index) => (index === existingIndex ? { ...tool, ...next } : tool));
 }
 
+function settlePendingTools(tools: TaskRunProjection["toolEvents"], status: TaskRunStatus, at: string) {
+  if (!["complete", "failed", "cancelled", "interrupted"].includes(status)) return tools;
+  return tools.map((tool) => tool.status === "running" ? {
+    ...tool,
+    status: "failed" as const,
+    summary: status === "cancelled" || status === "interrupted"
+      ? "任务已停止，工具执行未完成。"
+      : "任务已结束，未收到该工具的完成结果。",
+    finishedAt: at,
+  } : tool);
+}
+
 function appendAssistantContent(projection: TaskRunProjection, content: string, at: string, status: TaskRunStatus, separatorMode: "exact" | "line" = "line") {
   const separator = separatorMode === "line" && projection.assistantMessage.content && content && !projection.assistantMessage.content.endsWith("\n") ? "\n" : "";
   return {
@@ -189,6 +201,7 @@ function applyEngineEventToProjection(projection: TaskRunProjection, envelope: T
     return {
       ...base,
       status,
+      toolEvents: settlePendingTools(base.toolEvents, status, event.at),
       assistantMessage: {
         ...base.assistantMessage,
         status: statusForMessage(status),
@@ -200,6 +213,7 @@ function applyEngineEventToProjection(projection: TaskRunProjection, envelope: T
 
   const toolEvent = toolEventFromEngineEvent(event, envelope.taskRunId);
   if (toolEvent) {
+    if (event.type === "tool_call" && ["complete", "failed", "cancelled", "interrupted"].includes(base.status)) return base;
     return {
       ...base,
       toolEvents: upsertToolEvent(base.toolEvents, toolEvent),
@@ -215,11 +229,14 @@ function applyEngineEventToProjection(projection: TaskRunProjection, envelope: T
     const streamed = base.assistantMessage.content;
     const resultContent = content ?? "";
     const finalContent = status === "complete"
-      ? chooseFinalAssistantContent(streamed, resultContent, base.status === "streaming")
+      ? event.isFinalResponse && resultContent
+        ? resultContent
+        : chooseFinalAssistantContent(streamed, resultContent, base.status === "streaming")
       : resultContent || streamed;
     return {
       ...base,
       status,
+      toolEvents: settlePendingTools(base.toolEvents, status, event.at),
       assistantMessage: {
         ...base.assistantMessage,
         content: finalContent,

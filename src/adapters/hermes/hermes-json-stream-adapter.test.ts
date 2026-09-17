@@ -14,6 +14,17 @@ async function collect(proc: ChildProcessWithoutNullStreams, options: HermesJson
 }
 
 describe("readHermesJsonStream", () => {
+  it("preserves tool failures and the authoritative final answer", async () => {
+    const events = await collect(fakeProcess(`emit({type:'tool_result',tool:'terminal',call_id:'call-1',success:false,output:'command exited with code 2'}); emit({type:'result',success:true,content:'Resolved after retry.',is_final_response:true});`));
+    expect(events[0]).toMatchObject({ type: "tool_result", callId: "call-1", success: false, status: "failed" });
+    expect(events[1]).toMatchObject({ type: "result", isFinalResponse: true, detail: "Resolved after retry." });
+  });
+
+  it("preserves cache counters, current context and model identity independently", async () => {
+    const events = await collect(fakeProcess(`emit({type:'usage',source:'actual',input_tokens:30000,output_tokens:900,cache_read_tokens:24000,cache_write_tokens:3000,context_tokens:12000,context_output_tokens:100,context_source:'estimated',context_window:32000,model:'qwen',model_profile_id:'profile-a'}); emit({type:'result',success:true,content:'done'});`));
+    expect(events[0]).toMatchObject({ type: "usage", inputTokens: 30000, cacheReadTokens: 24000, cacheWriteTokens: 3000, contextTokens: 12000, contextOutputTokens: 100, contextSource: "estimated", contextWindow: 32000, modelId: "qwen", modelProfileId: "profile-a" });
+  });
+
   it("parses lifecycle and result events from a Python echo script", async () => {
     const script = `
 import sys

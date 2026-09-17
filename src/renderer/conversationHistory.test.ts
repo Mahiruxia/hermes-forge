@@ -34,6 +34,17 @@ describe("buildConversationHistory", () => {
     expect(history.every((entry) => entry.content.length <= 12_000)).toBe(true);
     expect(history.reduce((sum, entry) => sum + entry.content.length, 0)).toBeLessThanOrEqual(56_000);
     expect(history.at(-1)?.taskRunId).toBe("task-29");
+    expect(history[0].role).toBe("user");
+    expect(history.length % 2).toBe(0);
+  });
+
+  it("keeps complete contiguous turns when the next older turn exceeds the budget", () => {
+    const ids = ["task-0", "task-1", "task-2", "task-3"];
+    const history = buildConversationHistory({
+      workSessionId: "session-1", taskRunOrderBySession: { "session-1": ids },
+      taskRunProjectionsById: Object.fromEntries(ids.map((id, index) => [id, runFor(id, "session-1", index === 0 ? "short" : "q".repeat(11000), index === 0 ? "short" : "a".repeat(11000))])),
+    });
+    expect(history.map((entry) => entry.taskRunId)).toEqual(["task-2", "task-2", "task-3", "task-3"]);
   });
 });
 

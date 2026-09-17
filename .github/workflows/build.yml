@@ -41,6 +41,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test Python bridges
+        run: python -B -m unittest discover -s resources/tests -p "test_*.py"
+
       - name: Build app
         run: npm run build
 

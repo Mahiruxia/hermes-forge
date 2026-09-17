@@ -884,15 +884,13 @@ export class HermesCliAdapter implements EngineAdapter {
       "--task-run-id", request.sessionId,
       "--workspace-path", workspacePath,
       "--source", "zhenghebao-client",
-      "--max-turns", "90",
       "--pass-session-id",
     ];
     if (historyPath) {
       args.push("--history-file", historyPath);
     }
-    const firstImage = request.attachments?.find((attachment) => attachment.kind === "image");
-    if (firstImage) {
-      args.push("--image-path", firstImage.path);
+    for (const attachment of request.attachments ?? []) {
+      if (attachment.kind === "image") args.push("--image-path", attachment.path);
     }
     if (process.env.HERMES_IGNORE_RULES === "1") {
       args.push("--skip-context-files", "--skip-memory");
@@ -935,7 +933,6 @@ export class HermesCliAdapter implements EngineAdapter {
   private async writeWindowsAgentHistoryFile(request: EngineRunRequest) {
     const history = (request.conversationHistory ?? [])
       .filter((entry) => (entry.role === "user" || entry.role === "assistant") && typeof entry.content === "string" && entry.content.trim())
-      .slice(-16)
       .map((entry) => ({ role: entry.role, content: entry.content }));
     if (history.length === 0) return undefined;
 
@@ -1731,6 +1728,7 @@ export class HermesCliAdapter implements EngineAdapter {
         HERMES_INFERENCE_PROVIDER: this.hermesProvider(runtimeEnv.provider, normalizedSourceType),
         AI_MODEL: normalizedModel,
         OPENAI_MODEL: normalizedModel,
+        HERMES_FORGE_MODEL_PROFILE_ID: runtimeEnv.profileId,
         ...(runtimeEnv.contextWindow ? { HERMES_FORGE_CONTEXT_WINDOW: String(runtimeEnv.contextWindow) } : {}),
       } : {}),
     };

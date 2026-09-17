@@ -117,6 +117,7 @@ describe("HermesModelSyncService", () => {
         profileId: "local-gpt",
         provider: "custom",
         model: "gpt-5.4",
+        contextWindow: 64000,
         baseUrl: "http://127.0.0.1:8080/v1",
         env: {
           AI_PROVIDER: "custom",
@@ -134,7 +135,7 @@ describe("HermesModelSyncService", () => {
 
     expect(result.synced).toBe(true);
     await expect(fs.readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toContain("default: \"gpt-5.4\"");
-    await expect(fs.readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toContain("context_length: 128000");
+    await expect(fs.readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toContain("context_length: 64000");
     await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.toContain("HERMES_INFERENCE_PROVIDER=custom");
     await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.toContain("OPENAI_API_KEY=pwd");
     await expect(fs.readFile(path.join(profileHome, ".env"), "utf8")).resolves.not.toMatch(/^(?:AI_MODEL|OPENAI_MODEL)=/m);

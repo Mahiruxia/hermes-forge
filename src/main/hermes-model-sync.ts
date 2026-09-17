@@ -66,7 +66,7 @@ export class HermesModelSyncService {
       provider,
       model: chatRuntimeEnv.model,
       baseUrl: persistedModelBaseUrl(chatProfile, chatRuntimeEnv, provider),
-      contextLength: normalizeContextLength(chatProfile.maxTokens),
+      contextLength: normalizeContextLength(chatRuntimeEnv.contextWindow ?? chatProfile.maxTokens),
       supportsVision: chatProfile.supportsVision,
     };
     const roles: NonNullable<HermesModelSyncResult["roles"]> = {

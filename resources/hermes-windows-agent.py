@@ -335,16 +335,123 @@ def _model_from_env() -> str:
     return (os.environ.get("AI_MODEL") or os.environ.get("OPENAI_MODEL") or "").strip()
 
 
-def _prepare_user_message(query: str, image_path: str | None):
-    if not image_path:
+def _prepare_user_message(query: str, image_paths: list[str] | str | None):
+    if not image_paths:
         return query
-    path = Path(image_path)
-    mime = mimetypes.guess_type(path.name)[0] or "image/png"
-    data = base64.b64encode(path.read_bytes()).decode("ascii")
-    return [
-        {"type": "text", "text": query},
-        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}},
-    ]
+    paths = [image_paths] if isinstance(image_paths, str) else image_paths
+    content = [{"type": "text", "text": query}]
+    for image_path in dict.fromkeys(paths):
+        path = Path(image_path)
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+    return content
+
+
+def _load_agent_options(args) -> dict:
+    """Inherit the official local-chat configuration without importing the TUI.
+
+    Desktop model credentials, callbacks and session routing are applied by main;
+    all other preferences remain owned by the active Hermes profile.
+    """
+    from hermes_cli.config import load_config, resolve_turn_limit
+    from hermes_cli.personality import resolve_ephemeral_system_prompt
+    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_constants import resolve_reasoning_config, get_hermes_home
+    from agent.skill_utils import parse_config_string_list
+
+    config = load_config()
+    agent_config = config.get("agent") or {}
+    checkpoints = config.get("checkpoints") or {}
+    if isinstance(checkpoints, bool):
+        checkpoints = {"enabled": checkpoints}
+    routing = config.get("provider_routing") or {}
+    turn_limit = next((value for value in (args.max_turns, agent_config.get("max_turns"), config.get("max_turns"),
+                                         os.environ.get("HERMES_MAX_ITERATIONS")) if value is not None), None)
+    # Use a desktop-specific list when explicitly configured; otherwise match
+    # `hermes tools` for the local CLI. Preserve [] (all tools disabled).
+    tool_platform = args.source if args.source in (config.get("platform_toolsets") or {}) else "cli"
+    options = {
+        "max_iterations": resolve_turn_limit(turn_limit),
+        "run_budget_seconds": agent_config.get("run_budget_seconds"),
+        "enabled_toolsets": sorted(_get_platform_tools(config, tool_platform)),
+        "disabled_toolsets": parse_config_string_list(agent_config.get("disabled_toolsets")),
+        "ephemeral_system_prompt": args.system_prompt or os.environ.get("HERMES_EPHEMERAL_SYSTEM_PROMPT")
+                                   or resolve_ephemeral_system_prompt(config) or None,
+        "reasoning_config": resolve_reasoning_config(config, _model_from_env()),
+        "fallback_model": get_fallback_chain(config) or None,
+        "checkpoints_enabled": args.checkpoints or bool(checkpoints.get("enabled", False)),
+        "checkpoint_max_snapshots": checkpoints.get("max_snapshots", 20),
+        "checkpoint_max_total_size_mb": checkpoints.get("max_total_size_mb", 500),
+        "checkpoint_max_file_size_mb": checkpoints.get("max_file_size_mb", 10),
+        "providers_allowed": routing.get("only"),
+        "providers_ignored": routing.get("ignore"),
+        "providers_order": routing.get("order"),
+        "provider_sort": routing.get("sort"),
+        "provider_require_parameters": routing.get("require_parameters", False),
+        "provider_data_collection": routing.get("data_collection"),
+    }
+    # Same aliases accepted by the CLI's persisted fast-mode preference.
+    tier = str(agent_config.get("service_tier") or "").strip().lower()
+    if tier in ("fast", "priority", "on"):
+        options["service_tier"] = "priority"
+    elif tier in ("auto", "cold"):
+        options["service_tier"] = tier
+    prefill = (os.environ.get("HERMES_PREFILL_MESSAGES_FILE", "").strip()
+               or str(config.get("prefill_messages_file") or agent_config.get("prefill_messages_file") or "").strip())
+    if prefill:
+        prefill_path = Path(prefill).expanduser()
+        if not prefill_path.is_absolute():
+            prefill_path = get_hermes_home() / prefill_path
+        try:
+            messages = json.loads(prefill_path.read_text(encoding="utf-8"))
+            if not isinstance(messages, list):
+                raise ValueError("预置消息应为 JSON 数组")
+            options["prefill_messages"] = messages
+        except (OSError, ValueError) as exc:
+            emit("diagnostic", {"category": "prefill", "message": f"无法读取 Hermes 预置消息，继续当前任务：{exc}"})
+    return options
+
+
+def _prepare_mcp_tools(options: dict) -> None:
+    from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build, set_mcp_server_filter
+    enabled = options.get("enabled_toolsets")
+    if enabled == []:
+        return
+    # Each desktop turn owns a fresh process, like an official oneshot call.
+    # Discover before AIAgent snapshots its schemas; use the official bounded wait.
+    set_mcp_server_filter(enabled)
+    ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
+
+
+def _expand_skill_query(query: str, task_id: str) -> str:
+    stripped = query.lstrip()
+    if not stripped.startswith("/"):
+        return query
+    head, *tail = stripped.split(None, 1)
+    if not re.fullmatch(r"/[\w-]+", head):
+        return query
+    from agent.skill_commands import (
+        resolve_skill_command_key, build_skill_invocation_message,
+        split_stacked_skill_commands, build_stacked_skill_invocation_message,
+    )
+    key = resolve_skill_command_key(head[1:])
+    if key is None:
+        raise ValueError(f"未找到技能命令 {head}。请在“技能与记忆”中检查已安装技能，或使用 /help 查看桌面命令。")
+    rest = tail[0] if tail else ""
+    extra, instruction = split_stacked_skill_commands(rest)
+    if extra:
+        built = build_stacked_skill_invocation_message([key, *extra], user_instruction=instruction, task_id=task_id)
+        message = built[0] if built else None
+        if built and built[2]:
+            emit("diagnostic", {"category": "skill", "message": "部分技能未能加载：" + ", ".join(built[2])})
+    else:
+        message = build_skill_invocation_message(key, user_instruction=rest, task_id=task_id)
+    if not message:
+        raise ValueError(f"无法加载技能 {head}，请检查技能文件和启用状态。")
+    emit("status", {"level": "info", "message": "已加载技能：" + " ".join([key, *extra])})
+    return message
 
 
 def _load_conversation_history(history_file: str | None) -> list[dict]:
@@ -374,20 +481,46 @@ def _load_conversation_history(history_file: str | None) -> list[dict]:
     return history
 
 
-def _load_session_history(session_db, session_id: str | None) -> list[dict]:
+def _load_session_history(session_db, session_id: str | None) -> list[dict] | None:
     if not session_db or not session_id:
-        return []
+        return None
     try:
         resolved = session_db.resolve_resume_session_id(session_id)
     except Exception:
         resolved = session_id
     try:
-        messages = session_db.get_messages_as_conversation(resolved, include_ancestors=True, repair_alternation=True)
+        if session_db.get_session(resolved) is None:
+            return None
+        messages = session_db.get_messages_as_conversation(resolved, include_ancestors=False, repair_alternation=True)
     except Exception as exc:
         raise RuntimeError("无法读取 Hermes 会话历史，请先修复会话存储后重试。") from exc
-    # Preserve tool-call pairing, summaries and multimodal content. Hermes owns
-    # compaction; flattening these messages loses the official resume contract.
+    # Ancestors are DISPLAY history. Replaying them regrows the context that
+    # Hermes already compressed and changes the cached prefix on every restart.
+    # Keep the active tip verbatim, including api_content, reasoning and tool pairs.
     return messages
+
+
+def _configure_context_window(agent) -> None:
+    raw = os.environ.get("HERMES_FORGE_CONTEXT_WINDOW", "").strip()
+    if not raw:
+        return
+    try:
+        window = int(raw)
+        if window <= 0:
+            raise ValueError("context window must be positive")
+        compressor = getattr(agent, "context_compressor", None)
+        descriptor = getattr(type(compressor), "context_length", None)
+        if not isinstance(descriptor, property) or descriptor.fset is None:
+            # A third-party context engine owns its budgets. Do not create a
+            # cosmetic attribute which its compaction policy may never read.
+            return
+        # The official setter invalidates derived thresholds/tail budgets while
+        # retaining durable compression cooldowns. update_model() resets those
+        # counters, which would re-arm ineffective compaction on every process.
+        compressor.context_length = window
+    except (TypeError, ValueError, AttributeError) as exc:
+        emit("diagnostic", {"severity": "warning", "category": "context-window",
+                            "message": f"无法应用模型上下文窗口，继续使用 Hermes 检测值：{exc}"})
 
 
 def _estimate_tokens(text: str) -> int:
@@ -424,12 +557,12 @@ def _make_agent_callbacks(session_id: str | None, control: ForgeInteractionContr
         if delta:
             emit("reasoning", {"content": str(delta), "session_id": session_id})
 
-    def tool_progress(*args):
+    def tool_progress(*args, **kwargs):
         event = str(args[0]) if args else "tool.progress"
         name = str(args[1]) if len(args) > 1 else "unknown"
         preview = str(args[2]) if len(args) > 2 and args[2] is not None else ""
         emit("status", {
-            "level": "info",
+            "level": "warning" if kwargs.get("is_error") or event == "tool.output_risk" else "info",
             "message": f"{event}: {name} {preview}".strip(),
             "session_id": session_id,
         })
@@ -443,10 +576,12 @@ def _make_agent_callbacks(session_id: str | None, control: ForgeInteractionContr
         })
 
     def tool_complete(call_id, name, args, result):
+        from agent.display import _detect_tool_failure
+        failed, _ = _detect_tool_failure(str(name or "unknown"), result)
         emit("tool_result", {
             "tool": str(name or "unknown"),
-            "output": _safe_preview(result, 1200),
-            "success": True,
+            "output": _safe_preview(result, 6000),
+            "success": not failed,
             "call_id": str(call_id or ""),
             "session_id": session_id,
         })
@@ -523,7 +658,6 @@ def _install_windows_git_bash_path_compat() -> None:
 
     original_quote_cwd = env_base.BaseEnvironment._quote_cwd_for_cd
     original_extract_cwd = env_base.BaseEnvironment._extract_cwd_from_output
-    original_wait_for_process = env_base.BaseEnvironment._wait_for_process
     original_update_cwd = LocalEnvironment._update_cwd
     original_escape_shell_arg = ShellFileOperations._escape_shell_arg
 
@@ -541,28 +675,10 @@ def _install_windows_git_bash_path_compat() -> None:
     def escape_shell_arg(self, arg: str) -> str:
         return original_escape_shell_arg(self, _win_to_git_bash_path(arg))
 
-    def wait_for_process(self, proc, timeout: int = 120):
-        try:
-            output, _ = proc.communicate(timeout=timeout)
-            return {"output": output or "", "returncode": proc.returncode}
-        except subprocess.TimeoutExpired:
-            try:
-                self._kill_process(proc)
-            finally:
-                try:
-                    output, _ = proc.communicate(timeout=2)
-                except Exception:
-                    output = ""
-            return {
-                "output": ((output or "") + f"\n[Command timed out after {timeout}s]").strip(),
-                "returncode": 124,
-            }
-        except Exception:
-            return original_wait_for_process(self, proc, timeout)
-
     env_base.BaseEnvironment._quote_cwd_for_cd = staticmethod(quote_cwd_for_cd)
     env_base.BaseEnvironment._extract_cwd_from_output = extract_cwd_from_output
-    env_base.BaseEnvironment._wait_for_process = wait_for_process
+    # Hermes 0.21.3 handles Windows pipe draining, bounded output and cooperative
+    # interruption itself. Keep that implementation and its keyword arguments.
     LocalEnvironment._update_cwd = update_cwd
     ShellFileOperations._escape_shell_arg = escape_shell_arg
 
@@ -670,9 +786,13 @@ def _agent_session_usage(agent) -> dict:
             return value
         return _int_value(getattr(agent, fallback, 0))
 
-    input_tokens = g("session_input_tokens", "session_prompt_tokens")
+    cache_read = g("session_cache_read_tokens")
+    cache_write = g("session_cache_write_tokens")
+    # Hermes' session_input_tokens counts UNCACHED input. The desktop's input
+    # denominator must include cache reads/writes for every provider protocol.
+    prompt_tokens = g("session_prompt_tokens") or g("session_input_tokens") + cache_read + cache_write
+    input_tokens = prompt_tokens
     output_tokens = g("session_output_tokens", "session_completion_tokens")
-    prompt_tokens = g("session_prompt_tokens", "session_input_tokens")
     completion_tokens = g("session_completion_tokens", "session_output_tokens")
     total_tokens = g("session_total_tokens")
     if not total_tokens:
@@ -683,18 +803,44 @@ def _agent_session_usage(agent) -> dict:
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
-        "cache_read_tokens": g("session_cache_read_tokens"),
-        "cache_write_tokens": g("session_cache_write_tokens"),
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
         "reasoning_tokens": g("session_reasoning_tokens"),
         "api_calls": g("session_api_calls"),
+        "estimated_cost_usd": _float_value(getattr(agent, "session_estimated_cost_usd", 0)),
+        "cost_source": getattr(agent, "session_cost_source", None),
     }
+
+
+def _normalize_usage(source: dict) -> dict:
+    normalized = dict(source)
+    # Fallback for runtimes returning provider usage directly instead of the
+    # official session counters. Keep protocol-specific arithmetic here.
+    detail = source.get("prompt_tokens_details") or source.get("input_tokens_details") or {}
+    if not isinstance(detail, dict):
+        detail = {}
+    cache_read = _first_int_from_sources([source, detail], "cache_read_tokens", "cache_read_input_tokens",
+                                         "prompt_cache_hit_tokens", "cached_tokens", "cachedContentTokenCount", default=None)
+    cache_write = _first_int_from_sources([source, detail], "cache_write_tokens", "cache_creation_input_tokens", "cache_creation_tokens", default=None)
+    prompt = _first_int_from_sources([source], "prompt_tokens", "promptTokenCount", default=None)
+    input_tokens = _first_int_from_sources([source], "input_tokens", default=None)
+    if prompt is None and input_tokens is not None:
+        prompt = input_tokens
+        if "cache_read_input_tokens" in source or "cache_creation_input_tokens" in source:
+            prompt += (cache_read or 0) + (cache_write or 0)
+    output = _first_int_from_sources([source], "output_tokens", "completion_tokens", "candidatesTokenCount", default=None)
+    for key, value in (("input_tokens", prompt), ("prompt_tokens", prompt), ("output_tokens", output),
+                       ("cache_read_tokens", cache_read), ("cache_write_tokens", cache_write)):
+        if value is not None:
+            normalized[key] = value
+    return normalized
 
 
 def _usage_sources(result, agent) -> list[dict]:
     sources: list[dict] = []
     if isinstance(result, dict):
         sources.append(result)
-        for key in ("usage", "token_usage", "tokens", "metadata", "response_metadata"):
+        for key in ("usage", "token_usage", "tokens", "metadata", "response_metadata", "usageMetadata"):
             value = result.get(key)
             if isinstance(value, dict):
                 sources.append(value)
@@ -707,40 +853,50 @@ def _usage_sources(result, agent) -> list[dict]:
             sources.append(value)
     session_usage = _agent_session_usage(agent)
     if any(session_usage.get(key, 0) for key in ("input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens")):
-        sources.append(session_usage)
-    return sources
+        # These cover every tool-loop request, whereas last_usage may describe
+        # only the final call. Never combine totals with one call's cache reads.
+        sources.insert(0, session_usage)
+    return [_normalize_usage(source) for source in sources]
 
 
-def _agent_context_usage(agent) -> dict:
+def _agent_context_usage(agent, messages: list[dict] | None = None) -> dict:
     compressor = getattr(agent, "context_compressor", None)
     context_tokens = _int_value(getattr(compressor, "last_prompt_tokens", 0) if compressor else 0)
     context_window = _int_value(getattr(compressor, "context_length", 0) if compressor else 0)
+    context_output_tokens = _int_value(getattr(compressor, "last_completion_tokens", 0) if compressor else 0)
+    measured = context_tokens > 0 and not getattr(compressor, "awaiting_real_usage_after_compression", False)
+    if context_tokens <= 0 and messages is not None:
+        context_tokens = sum(_message_tokens(item) for item in messages if isinstance(item, dict))
+        if not any(item.get("role") == "system" for item in messages if isinstance(item, dict)):
+            context_tokens += _estimate_tokens(str(getattr(agent, "_cached_system_prompt", "") or ""))
+        context_tokens += _estimate_tokens(json.dumps(getattr(agent, "tools", []) or [], ensure_ascii=False, default=str))
+        context_output_tokens = 0  # Already included in the working messages.
     context_percent = 0
     if context_tokens and context_window:
-        context_percent = max(0, min(100, round((context_tokens / context_window) * 100)))
+        context_percent = max(0, min(100, round(((context_tokens + context_output_tokens) / context_window) * 100)))
     return {
         "context_tokens": context_tokens,
         "context_window": context_window,
+        "context_output_tokens": context_output_tokens,
+        "context_source": "actual" if measured else "estimated",
         "context_percent": context_percent,
         "api_calls": _int_value(getattr(agent, "session_api_calls", 0)),
     }
 
 
-def _first_int_from_sources(sources: list[dict], *keys: str, default: int = 0) -> int:
+def _first_int_from_sources(sources: list[dict], *keys: str, default: int | None = 0) -> int | None:
     for source in sources:
         for key in keys:
             if key in source and source.get(key) is not None:
                 value = _int_value(source.get(key))
-                if value:
-                    return value
+                return max(0, value)
         for key, value in source.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
             for wanted in keys:
                 wanted_normalized = re.sub(r"[^a-z0-9]", "", wanted.lower())
                 if normalized == wanted_normalized and value is not None:
                     parsed = _int_value(value)
-                    if parsed:
-                        return parsed
+                    return max(0, parsed)
     return default
 
 
@@ -772,9 +928,9 @@ def main() -> int:
     parser.add_argument("--interaction-timeout-seconds", type=float, default=300, help="审批和澄清等待上限")
     parser.add_argument("--workspace-path", help="当前工作区路径")
     parser.add_argument("--history-file", help="Forge 传入的同一对话窗口历史 JSON")
-    parser.add_argument("--image-path", help="图片附件路径")
+    parser.add_argument("--image-path", action="append", help="图片附件路径，可重复传入多张图片")
     parser.add_argument("--source", default="hermes-forge-desktop", help="调用来源标识")
-    parser.add_argument("--max-turns", type=int, default=90, help="最大对话轮数")
+    parser.add_argument("--max-turns", help="最大工具调用轮数，默认遵循 Hermes 配置")
     parser.add_argument("--checkpoints", action="store_true", help="启用文件修改前的自动检查点")
     parser.add_argument("--pass-session-id", action="store_true", help="在工具调用输出中附加 session ID")
     parser.add_argument("--skip-context-files", action="store_true", help="跳过自动注入 SOUL.md、AGENTS.md、.cursorrules")
@@ -840,28 +996,31 @@ def main() -> int:
         session_token = approval_context.set_current_session_key(active_session_id or task_run_id)
 
         callbacks = _make_agent_callbacks(active_session_id, control)
+        options = _load_agent_options(args)
+        _prepare_mcp_tools(options)
         agent = AIAgent(
             base_url=_base_url_from_env(),
             api_key=_api_key_from_env(),
             provider=_provider_from_env(),
             model=_model_from_env(),
-            max_iterations=args.max_turns,
             quiet_mode=True,
-            ephemeral_system_prompt=args.system_prompt or None,
             session_id=active_session_id,
             platform=args.source,
             session_db=session_db,
             skip_context_files=args.skip_context_files,
             skip_memory=args.skip_memory,
-            checkpoints_enabled=args.checkpoints,
             pass_session_id=args.pass_session_id,
+            **options,
             **callbacks,
         )
+        _configure_context_window(agent)
         control.attach_agent(agent)
 
-        user_message = _prepare_user_message(args.query, args.image_path)
+        user_message = _prepare_user_message(_expand_skill_query(args.query, task_run_id), args.image_path)
         db_history = _load_session_history(session_db, active_session_id)
-        conversation_history = db_history or _load_conversation_history(args.history_file)
+        # An intentionally empty official history (clear/reset) is authoritative;
+        # never resurrect the renderer's older display transcript in that case.
+        conversation_history = db_history if db_history is not None else _load_conversation_history(args.history_file)
         prompt_estimate = sum(_message_tokens(item) for item in conversation_history) + _estimate_tokens(str(user_message)) + 16
         emit("usage", {
             "source": "estimated",
@@ -884,10 +1043,7 @@ def main() -> int:
             output_tokens = _first_int_from_sources(usage_sources, "output_tokens", "outputTokens", "completion_tokens", "completionTokens", "completionTokenCount", "output", "completion")
             total_tokens = _first_int_from_sources(usage_sources, "total_tokens", "totalTokens", "totalTokenCount", "total", default=input_tokens + output_tokens)
             if input_tokens or output_tokens or total_tokens:
-                context_usage = _agent_context_usage(agent)
-                context_tokens = _first_int_from_sources(usage_sources, "context_tokens", "contextTokens", "last_prompt_tokens", "lastPromptTokens", default=context_usage["context_tokens"])
-                context_window = _first_int_from_sources(usage_sources, "context_window", "contextWindow", "context_length", "contextLength", default=context_usage["context_window"])
-                context_percent = _first_int_from_sources(usage_sources, "context_percent", "contextPercent", default=context_usage["context_percent"])
+                context_usage = _agent_context_usage(agent, final_messages)
                 emit("usage", {
                     "source": "actual",
                     "input_tokens": input_tokens,
@@ -895,15 +1051,14 @@ def main() -> int:
                     "total_tokens": total_tokens,
                     "prompt_tokens": _first_int_from_sources(usage_sources, "prompt_tokens", "promptTokens", "promptTokenCount"),
                     "completion_tokens": _first_int_from_sources(usage_sources, "completion_tokens", "completionTokens", "completionTokenCount"),
-                    "cache_read_tokens": _first_int_from_sources(usage_sources, "cache_read_tokens", "cacheReadTokens", "cache_read"),
-                    "cache_write_tokens": _first_int_from_sources(usage_sources, "cache_write_tokens", "cacheWriteTokens", "cache_write"),
+                    "cache_read_tokens": _first_int_from_sources(usage_sources, "cache_read_tokens", "cacheReadTokens", "cache_read", default=None),
+                    "cache_write_tokens": _first_int_from_sources(usage_sources, "cache_write_tokens", "cacheWriteTokens", "cache_write", default=None),
                     "reasoning_tokens": _first_int_from_sources(usage_sources, "reasoning_tokens", "reasoningTokens", "reasoning"),
-                    "context_tokens": context_tokens,
-                    "context_window": context_window,
-                    "context_percent": context_percent,
-                    "api_calls": context_usage["api_calls"],
+                    **context_usage,
+                    "model": getattr(agent, "model", None) or _model_from_env(),
+                    "model_profile_id": os.environ.get("HERMES_FORGE_MODEL_PROFILE_ID") or None,
                     "estimated_cost_usd": _first_float_from_sources(usage_sources, "estimated_cost_usd", "cost_usd", "cost"),
-                    "cost_source": usage_sources[0].get("cost_source"),
+                    "cost_source": next((source.get("cost_source") for source in usage_sources if source.get("cost_source")), None),
                     "session_id": args.session_id,
                 })
         actual_session_id = getattr(agent, "session_id", None) or args.session_id
@@ -927,6 +1082,7 @@ def main() -> int:
             "outcome": outcome,
             "interrupted": outcome == "cancelled",
             "content": final_response,
+            "is_final_response": isinstance(result, dict) and bool(result.get("final_response")),
             "session_id": args.session_id,
             "taskRunId": task_run_id,
         })

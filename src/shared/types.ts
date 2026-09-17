@@ -348,16 +348,23 @@ export type SessionAgentInsightUsage = {
   totalOutputTokens: number;
   totalTokens?: number;
   totalEstimatedCostUsd: number;
+  totalCacheReadTokens?: number;
+  totalCacheWriteTokens?: number;
+  totalCacheInputTokens?: number;
   latestInputTokens: number;
   latestOutputTokens: number;
   latestTotalTokens?: number;
   latestContextTokens?: number;
+  latestContextOutputTokens?: number;
+  latestContextSource?: "estimated" | "actual";
   latestContextWindow?: number;
   latestContextPercent?: number;
   latestEstimatedCostUsd: number;
   latestReasoningTokens?: number;
   latestCacheReadTokens?: number;
   latestCacheWriteTokens?: number;
+  latestModelId?: string;
+  latestModelProfileId?: string;
   source?: "estimated" | "actual";
   updatedAt: string;
 };
@@ -1072,13 +1079,13 @@ export type EngineEvent =
   | { type: "diagnostic"; category: string; message: string; provider?: string; model?: string; authMode?: string; durationMs?: number; at: string }
   | { type: "stdout"; line: string; at: string }
   | { type: "stderr"; line: string; at: string }
-  | { type: "usage"; inputTokens: number; outputTokens: number; estimatedCostUsd: number; message: string; at: string; source?: "estimated" | "actual"; totalTokens?: number; promptTokens?: number; completionTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number; contextTokens?: number; contextWindow?: number; contextPercent?: number; costSource?: string }
+  | { type: "usage"; inputTokens: number; outputTokens: number; estimatedCostUsd: number; message: string; at: string; source?: "estimated" | "actual"; totalTokens?: number; promptTokens?: number; completionTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number; contextTokens?: number; contextOutputTokens?: number; contextSource?: "estimated" | "actual"; contextWindow?: number; contextPercent?: number; modelId?: string; modelProfileId?: string; costSource?: string }
   | { type: "tool_call"; toolName: string; argsPreview: string; callId?: string; status?: "running" | "complete" | "failed"; summary?: string; at: string }
   | { type: "tool_result"; toolName: string; outputPreview?: string; callId?: string; success?: boolean; status?: "running" | "complete" | "failed"; summary?: string; at: string }
   | { type: "file_change"; path: string; changeType: "create" | "update" | "delete"; at: string }
   | { type: "approval"; request: ApprovalRequest; outcome: "requested" | "approved" | "denied" | "expired" | "auto_approved"; choice?: ApprovalChoice; message: string; at: string }
   | { type: "memory_access"; engineId: EngineId; action: "read" | "write" | "summarize"; source: string; at: string }
-  | { type: "result"; success: boolean; title: string; detail: string; outcome?: "completed" | "failed" | "cancelled"; at: string };
+  | { type: "result"; success: boolean; title: string; detail: string; outcome?: "completed" | "failed" | "cancelled"; isFinalResponse?: boolean; at: string };
 
 export type AppErrorCode = "ENGINE_NOT_READY" | "MODEL_NOT_CONFIGURED" | "SECRET_MISSING" | "WORKSPACE_LOCKED" | "SNAPSHOT_FAILED" | "INSTALL_REQUIRED" | "CLI_FAILED";
 

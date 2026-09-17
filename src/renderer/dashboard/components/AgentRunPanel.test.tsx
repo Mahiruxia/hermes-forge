@@ -259,6 +259,18 @@ describe("AgentRunPanel", () => {
     expect(screen.queryByText("约 2.1K")).toBeNull();
   });
 
+  it("shows weighted reported cache reads separately from current context", () => {
+    useAppStore.setState({ events: [
+      { taskRunId: "task-1", workSessionId: "session-1", engineId: "hermes", event: { type: "usage", source: "actual", inputTokens: 1000, outputTokens: 10, cacheReadTokens: 900, cacheWriteTokens: 100, contextTokens: 600, contextOutputTokens: 50, estimatedCostUsd: 0, message: "usage", at: "2026-09-17T00:00:00Z" } },
+      { taskRunId: "task-2", workSessionId: "session-1", engineId: "hermes", event: { type: "usage", source: "actual", inputTokens: 9000, outputTokens: 1000, cacheReadTokens: 900, contextTokens: 600, contextOutputTokens: 50, estimatedCostUsd: 0, message: "usage", at: "2026-09-17T00:01:00Z" } },
+    ] });
+    render(<AgentRunPanel open />);
+    expect(screen.getByText("18.0%")).toBeInTheDocument();
+    expect(screen.getByText("1,800")).toBeInTheDocument();
+    expect(screen.getByText("缓存写入 100 tokens")).toBeInTheDocument();
+    expect(screen.getByText("实测 650")).toBeInTheDocument();
+  });
+
   it("marks file and memory activity in tool status", () => {
     useAppStore.setState({
       events: [

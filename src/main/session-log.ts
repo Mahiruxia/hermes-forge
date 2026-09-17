@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
+import { aggregateCacheUsage } from "../shared/token-usage";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import type { AppPaths } from "./app-paths";
@@ -115,12 +116,16 @@ export class SessionLog {
     let latestOutputTokens = 0;
     let latestTotalTokens: number | undefined;
     let latestContextTokens: number | undefined;
+    let latestContextOutputTokens: number | undefined;
+    let latestContextSource: "estimated" | "actual" | undefined;
     let latestContextWindow: number | undefined;
     let latestContextPercent: number | undefined;
     let latestEstimatedCostUsd = 0;
     let latestReasoningTokens: number | undefined;
     let latestCacheReadTokens: number | undefined;
     let latestCacheWriteTokens: number | undefined;
+    let latestModelId: string | undefined;
+    let latestModelProfileId: string | undefined;
     let latestSource: "estimated" | "actual" = "estimated";
     let updatedAt = "";
 
@@ -155,12 +160,16 @@ export class SessionLog {
         latestOutputTokens = usage.outputTokens;
         latestTotalTokens = usage.totalTokens;
         latestContextTokens = usage.contextTokens;
+        latestContextOutputTokens = usage.contextOutputTokens;
+        latestContextSource = usage.contextSource;
         latestContextWindow = usage.contextWindow;
         latestContextPercent = usage.contextPercent;
         latestEstimatedCostUsd = usage.estimatedCostUsd;
         latestReasoningTokens = usage.reasoningTokens;
         latestCacheReadTokens = usage.cacheReadTokens;
         latestCacheWriteTokens = usage.cacheWriteTokens;
+        latestModelId = usage.modelId;
+        latestModelProfileId = usage.modelProfileId;
         latestSource = usage.source === "actual" ? "actual" : "estimated";
         updatedAt = usage.at;
       }
@@ -170,21 +179,28 @@ export class SessionLog {
       return undefined;
     }
 
+    const cacheUsage = aggregateCacheUsage([...latestByTaskRun.values()]);
     return {
       totalInputTokens,
       totalOutputTokens,
       ...(totalTokens !== totalInputTokens + totalOutputTokens ? { totalTokens } : {}),
       totalEstimatedCostUsd,
+      ...(cacheUsage.cacheReadTokens !== undefined ? { totalCacheReadTokens: cacheUsage.cacheReadTokens, totalCacheInputTokens: cacheUsage.cacheInputTokens } : {}),
+      ...(cacheUsage.cacheWriteTokens !== undefined ? { totalCacheWriteTokens: cacheUsage.cacheWriteTokens } : {}),
       latestInputTokens,
       latestOutputTokens,
       ...(typeof latestTotalTokens === "number" ? { latestTotalTokens } : {}),
       ...(typeof latestContextTokens === "number" ? { latestContextTokens } : {}),
+      ...(typeof latestContextOutputTokens === "number" ? { latestContextOutputTokens } : {}),
+      ...(latestContextSource ? { latestContextSource } : {}),
       ...(typeof latestContextWindow === "number" ? { latestContextWindow } : {}),
       ...(typeof latestContextPercent === "number" ? { latestContextPercent } : {}),
       latestEstimatedCostUsd,
       ...(typeof latestReasoningTokens === "number" ? { latestReasoningTokens } : {}),
       ...(typeof latestCacheReadTokens === "number" ? { latestCacheReadTokens } : {}),
       ...(typeof latestCacheWriteTokens === "number" ? { latestCacheWriteTokens } : {}),
+      ...(latestModelId ? { latestModelId } : {}),
+      ...(latestModelProfileId ? { latestModelProfileId } : {}),
       source: latestSource,
       updatedAt,
     };

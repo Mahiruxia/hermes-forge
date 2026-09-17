@@ -15,6 +15,28 @@ describe("task terminal projection", () => {
   }
   const at = "2026-09-15T06:00:00Z";
 
+  it("uses the official final answer even when interim narration is longer", () => {
+    apply({ type: "message_chunk", content: "A long provisional plan and tool commentary that precedes the actual answer.", at });
+    apply({ type: "result", success: true, isFinalResponse: true, title: "Reply", detail: "The answer is 42.", at });
+    expect(store.getState().taskRunProjectionsById["task-1"].assistantMessage.content).toBe("The answer is 42.");
+  });
+
+  it("stops pending tool indicators on cancellation and ignores a late start", () => {
+    apply({ type: "tool_call", toolName: "terminal", callId: "call-1", argsPreview: "{}", at });
+    apply({ type: "result", success: false, outcome: "cancelled", title: "Cancelled", detail: "Cancelled", at });
+    apply({ type: "tool_call", toolName: "terminal", callId: "late-call", argsPreview: "{}", at });
+    const tools = store.getState().taskRunProjectionsById["task-1"].toolEvents;
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({ id: "call-1", status: "failed", summary: "任务已停止，工具执行未完成。", finishedAt: at });
+  });
+
+  it("keeps a tool's reported failure after a successful recovery", () => {
+    apply({ type: "tool_call", toolName: "terminal", callId: "call-1", argsPreview: "{}", at });
+    apply({ type: "tool_result", toolName: "terminal", callId: "call-1", success: false, status: "failed", outputPreview: "exit 2", at });
+    apply({ type: "result", success: true, title: "Reply", detail: "Recovered.", at });
+    expect(store.getState().taskRunProjectionsById["task-1"].toolEvents[0]).toMatchObject({ status: "failed", summary: "exit 2" });
+  });
+
   it("keeps a failed result visible after partial text and a late completed lifecycle", () => {
     apply({ type: "message_chunk", content: "A much longer provisional response that never completed.", at });
     apply({ type: "result", success: false, outcome: "failed", title: "Failure", detail: "Model failed", at });

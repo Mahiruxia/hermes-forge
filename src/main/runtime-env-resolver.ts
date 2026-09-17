@@ -3,6 +3,7 @@ import type { RuntimeConfigStore } from "./runtime-config";
 import type { EngineRuntimeEnv, ModelProfile, ModelRole, RuntimeConfig } from "../shared/types";
 import { normalizeModelIdForSource, normalizeOpenAiCompatibleBaseUrl, normalizeSourceTypeForProfile } from "../shared/model-config";
 import type { ModelRuntimeProxyService } from "./model-runtime-proxy";
+import { resolveModelProviderProfile } from "../shared/model-context";
 
 export class RuntimeEnvResolver {
   private cache = new Map<string, { env: EngineRuntimeEnv; expiresAt: number }>();
@@ -56,7 +57,7 @@ export class RuntimeEnvResolver {
     }
 
     const secret = profile.secretRef ? await this.secretVault.readSecret(profile.secretRef) : undefined;
-    const providerProfile = config.providerProfiles?.find((item) => item.provider === profile.provider || item.id === profile.id);
+    const providerProfile = resolveModelProviderProfile(profile, config.providerProfiles);
     const modelOption = providerProfile?.models.find((item) => item.id === profile.model || item.label === profile.model);
     const configuredBaseUrl = profile.baseUrl ?? providerProfile?.baseUrl;
     const baseUrl = profile.provider === "anthropic" || profile.sourceType === "anthropic_api_key" || profile.sourceType === "anthropic_local_credentials"
@@ -94,8 +95,9 @@ export class RuntimeEnvResolver {
       profile.baseUrl ?? "",
       profile.sourceType ?? "",
       profile.secretRef ?? "",
+      profile.maxTokens ?? "",
       JSON.stringify(profile.settingsConfig ?? {}),
-      config.providerProfiles?.map((p) => `${p.id}:${p.provider}:${p.baseUrl ?? ""}`).join(",") ?? "",
+      JSON.stringify(config.providerProfiles?.map((p) => [p.id, p.provider, p.baseUrl, p.models.map((m) => [m.id, m.label, m.contextWindow])]) ?? []),
     ].join("|");
   }
 

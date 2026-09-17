@@ -22,6 +22,13 @@ export function SkillsPanel() {
     await refreshOverviewSection("skills");
   }
 
+  function useSkill(skill: HermesSkill) {
+    const store = useAppStore.getState();
+    const instruction = `请使用技能「${skill.name}」（文件：${skill.path}）完成任务。`;
+    store.setUserInput([instruction, store.userInput.trim()].filter(Boolean).join("\n\n"));
+    store.setActivePanel("chat");
+  }
+
   async function editSkill(skill: HermesSkill) {
     setError("");
     try {
@@ -208,6 +215,13 @@ export function SkillsPanel() {
                         ) : null}
                       </div>
                       <div className="flex gap-1">
+                        <button
+                          className="rounded-md px-2 text-xs font-medium text-indigo-600 hover:bg-indigo-50"
+                          onClick={() => useSkill(skill)}
+                          type="button"
+                        >
+                          在聊天中使用
+                        </button>
                         <button
                           className="grid h-7 w-7 place-items-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
                           title="编辑"

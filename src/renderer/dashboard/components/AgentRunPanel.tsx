@@ -20,6 +20,8 @@ import type { ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { EngineEvent, HermesWebUiSettings, ModelProfile, PermissionOverview, RuntimeConfig, SessionAgentInsightUsage, TaskEventEnvelope, TaskRunProjection } from "../../../shared/types";
 import { useAppStore } from "../../store";
+import { resolveModelContextWindow } from "../../../shared/model-context";
+import { aggregateCacheUsage, cacheHitPercent, currentContextTokens } from "../../../shared/token-usage";
 import { cn } from "../DashboardPrimitives";
 import {
   capabilityProbeUserLabel,
@@ -206,25 +208,30 @@ export function AgentRunPanel(props: { open?: boolean; onClose?: () => void; onO
           </button>
         </PanelCard>
 
-        <PanelCard title={usage.source === "actual" ? "Token 用量" : "Token 估算"} action={usage.hasUsage ? <StatusPill tone="green">{usage.source === "actual" ? "实测" : "约"} {formatCompactNumber(usage.displayTokens)}</StatusPill> : undefined}>
+        <PanelCard title={usage.source === "actual" ? "Token 用量" : "Token 估算"} action={usage.hasUsage ? <StatusPill tone="green">{usage.contextSource === "actual" ? "实测" : "约"} {formatCompactNumber(usage.displayTokens)}</StatusPill> : undefined}>
           {usage.hasUsage ? (
             <>
               <div className="grid grid-cols-3 gap-2 text-[12px]">
                 <TokenMetric label={usage.source === "actual" ? "实测输入" : "估算输入"} value={formatExactNumber(usage.totalInput)} />
                 <TokenMetric label={usage.source === "actual" ? "实测输出" : "估算输出"} value={formatExactNumber(usage.totalOutput)} />
                 <TokenMetric
-                  label={typeof usage.latestContextTokens === "number" ? (usage.source === "actual" ? "实测上下文" : "估算上下文") : "估算费用"}
+                  label={typeof usage.latestContextTokens === "number" ? (usage.contextSource === "actual" ? "实测上下文" : "估算上下文") : "估算费用"}
                   value={typeof usage.latestContextTokens === "number" ? formatExactNumber(usage.latestContextTokens) : formatCost(usage.totalCost)}
                 />
               </div>
               <div className="mt-3 flex items-center justify-between text-[12px]">
-                <span className="text-slate-500">本轮占用</span>
+                <span className="text-slate-500">当前窗口占用</span>
                 <span className="font-semibold text-emerald-600">{usage.contextPercent}%</span>
               </div>
               <ProgressBar value={usage.contextPercent} data-testid="agent-token-progress" />
               <p className="mt-2 text-[11px] leading-5 text-slate-400">
                 最近一次{usage.source === "actual" ? "实测" : "估算"}：{formatExactNumber(usage.latestInput)} in / {formatExactNumber(usage.latestOutput)} out
               </p>
+              <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 text-[12px]">
+                <TokenMetric label="缓存命中" value={usage.cacheHitPercent === undefined ? "未报告" : `${usage.cacheHitPercent.toFixed(1)}%`} />
+                <TokenMetric label="缓存读取" value={usage.cacheReadTokens === undefined ? "未报告" : formatExactNumber(usage.cacheReadTokens)} />
+              </div>
+              {usage.cacheWriteTokens !== undefined ? <p className="mt-2 text-[11px] text-slate-400">缓存写入 {formatExactNumber(usage.cacheWriteTokens)} tokens</p> : null}
             </>
           ) : (
             <EmptyInline text="暂无 Token 估算，运行任务后自动汇总。" />
@@ -362,10 +369,7 @@ function resolveModelProfile(runtimeConfig: RuntimeConfig | undefined, activeRun
 
 function resolveContextWindow(store: Pick<ReturnType<typeof useAppStore.getState>, "providerProfiles" | "runtimeConfig">, modelProfile: ModelProfile | undefined, modelLabel: string) {
   const providerProfiles = store.runtimeConfig?.providerProfiles ?? store.providerProfiles;
-  const matchedModel = providerProfiles
-    .flatMap((profile) => profile.models)
-    .find((model) => model.id === modelLabel || model.label === modelLabel || model.id === modelProfile?.model || model.label === modelProfile?.model);
-  return matchedModel?.contextWindow ?? modelProfile?.maxTokens;
+  return resolveModelContextWindow(modelProfile ? { ...modelProfile, model: modelLabel } : undefined, providerProfiles);
 }
 
 function activeSessionEvents(store: Pick<ReturnType<typeof useAppStore.getState>, "activeSessionId" | "events">) {
@@ -389,10 +393,11 @@ function summarizeUsage(events: TaskEventEnvelope[], contextWindow?: number) {
   const totalCost = latestEvents.reduce((sum, event) => sum + event.estimatedCostUsd, 0);
   const latest = latestEvents.sort((left, right) => right.at.localeCompare(left.at))[0];
   const latestContextTokens = latest?.contextTokens;
-  const latestTotal = latest ? (latestContextTokens ?? usageTotalTokens(latest)) : 0;
+  const latestTotal = latest ? currentContextTokens(latest) : 0;
   const effectiveContextWindow = latest?.contextWindow ?? contextWindow;
   const latestSource = latest?.source ?? "estimated";
   return {
+    ...aggregateCacheUsage(latestEvents),
     hasUsage: usageEvents.length > 0,
     totalInput,
     totalOutput,
@@ -403,13 +408,17 @@ function summarizeUsage(events: TaskEventEnvelope[], contextWindow?: number) {
     latestOutput: latest?.outputTokens ?? 0,
     latestContextTokens,
     source: latestSource,
+    contextSource: latest?.contextSource ?? latestSource,
     contextPercent: effectiveContextWindow ? Math.min(100, Math.round((latestTotal / effectiveContextWindow) * 100)) : 0,
   };
 }
 
 function usageFromInsight(usage: SessionAgentInsightUsage | undefined, contextWindow?: number) {
-  const latestTotal = usage?.latestContextTokens ?? usage?.latestTotalTokens ?? (usage ? usage.latestInputTokens + usage.latestOutputTokens : 0);
+  const latestTotal = usage ? currentContextTokens({ inputTokens: usage.latestInputTokens, outputTokens: usage.latestOutputTokens, totalTokens: usage.latestTotalTokens, contextTokens: usage.latestContextTokens, contextOutputTokens: usage.latestContextOutputTokens }) : 0;
   return {
+    cacheReadTokens: usage?.totalCacheReadTokens,
+    cacheWriteTokens: usage?.totalCacheWriteTokens,
+    cacheHitPercent: cacheHitPercent(usage?.totalCacheReadTokens, usage?.totalCacheInputTokens),
     hasUsage: Boolean(usage),
     totalInput: usage?.totalInputTokens ?? 0,
     totalOutput: usage?.totalOutputTokens ?? 0,
@@ -420,7 +429,8 @@ function usageFromInsight(usage: SessionAgentInsightUsage | undefined, contextWi
     latestOutput: usage?.latestOutputTokens ?? 0,
     latestContextTokens: usage?.latestContextTokens,
     source: usage?.source ?? "estimated",
-    contextPercent: (usage?.latestContextWindow ?? contextWindow) ? Math.min(100, Math.round(((usage?.latestContextTokens ?? usage?.latestTotalTokens ?? ((usage?.latestInputTokens ?? 0) + (usage?.latestOutputTokens ?? 0))) / (usage?.latestContextWindow ?? contextWindow ?? 1)) * 100)) : 0,
+    contextSource: usage?.latestContextSource ?? usage?.source ?? "estimated",
+    contextPercent: (usage?.latestContextWindow ?? contextWindow) ? Math.min(100, Math.round(latestTotal / (usage?.latestContextWindow ?? contextWindow ?? 1) * 100)) : 0,
   };
 }
 
@@ -430,10 +440,7 @@ function prefersUsageEvent(next: Extract<EngineEvent, { type: "usage" }>, curren
 }
 
 function usageTotalTokens(usage: Extract<EngineEvent, { type: "usage" }>) {
-  return usage.totalTokens
-    ?? (usage.source === "actual" && typeof usage.contextTokens === "number"
-      ? usage.contextTokens + usage.outputTokens
-      : usage.inputTokens + usage.outputTokens);
+  return usage.totalTokens ?? usage.inputTokens + usage.outputTokens;
 }
 
 function PermissionDiagnosticsView(props: { diagnostics: ReturnType<typeof extractPermissionDiagnostics>; runtimeConfig?: RuntimeConfig; overview?: PermissionOverview }) {
